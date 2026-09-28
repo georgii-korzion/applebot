@@ -50,7 +50,7 @@ function writeStatic() {
   for (const f of ['popup.html', 'options.html', 'offscreen.html', 'ui.css']) {
     copyFileSync(join(root, 'src/ui', f), join(outdir, f));
   }
-  const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(root, 'src/manifest.json'), 'utf8'));
   manifest.icons = { 16: 'icons/icon16.png', 48: 'icons/icon48.png', 128: 'icons/icon128.png' };
   manifest.action.default_icon = manifest.icons;
   if (dev) {

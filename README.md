@@ -22,7 +22,7 @@ npm run build          # → dist/
 ```
 
 1. Chrome → создать профили `Drop 1 … Drop N` (папка профиля видна в `chrome://version` → «Путь к профилю»).
-2. В каждом профиле: `chrome://extensions` → «Режим разработчика» → «Загрузить распакованное» → папка `dist/`. Закрепить иконку.
+2. В каждом профиле: `chrome://extensions` → «Режим разработчика» → «Загрузить распакованное» → выбрать **папку `dist/`** (внутри неё лежит `manifest.json`; корень репозитория — это исходники, он не загружается). Закрепить иконку.
 3. В каждом профиле: иконка → **Настройки** → «Импорт JSON» ([config.example.json](config.example.json)) или вставить JSON справа → «Применить JSON в форму» → указать свой **profileId** → «Проверить и сохранить». `profileId` хранится отдельно: повторный импорт общего JSON его не перетирает.
 4. (Опционально) хаб: `npm run hub` → дашборд <http://127.0.0.1:8765>, в конфиге `"hubUrl": "ws://127.0.0.1:8765"`.
 5. В каждом профиле: popup → **Prepare** → в popup зелёная строка «Prepare ✓».
@@ -108,7 +108,7 @@ Playwright в e2e — только тестовый стенд, чтобы за�
 ## Структура
 
 ```
-manifest.json          база; build.mjs добавляет иконки и dev-разрешения для мока
+src/manifest.json      база манифеста; build.mjs кладёт итоговый в dist/ (+ иконки, dev-разрешения для мока)
 build.mjs              esbuild → dist/ (prod) | dist-dev/ (+ http://127.0.0.1:4777) | dist-test/
 src/shared/            config.ts (схема+валидация) · parts.ts · selectors.ts · messages.ts · log.ts
 src/sw/                index · orchestrator · watcher (роли) · hubClient · notify · windows · diag (webRequest)
