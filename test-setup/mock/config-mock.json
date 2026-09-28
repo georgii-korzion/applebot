@@ -1,0 +1,68 @@
+{
+  "profileId": "drop-1",
+  "hubUrl": "",
+  "openAt": "2026-09-01T16:00:00+04:00",
+  "mode": "auto",
+  "orders": [
+    {
+      "id": "A",
+      "priority": 1,
+      "profiles": [
+        "drop-1"
+      ],
+      "racersPerProfile": 2,
+      "targets": [
+        "MK254AH/A",
+        "MK244AH/A"
+      ],
+      "stores": [
+        "R597",
+        "R596",
+        "R706"
+      ],
+      "city": "Dubai",
+      "slot": {
+        "day": null,
+        "after": null,
+        "before": null
+      },
+      "payment": "manual",
+      "applePayFallback": "manual",
+      "allowApplePayExpress": false,
+      "contact": {
+        "firstName": "Test",
+        "lastName": "Mock",
+        "email": "test.mock@example.com",
+        "phone": "0501234567"
+      },
+      "deliveryFallback": false,
+      "address": {
+        "street": "",
+        "area": "",
+        "city": "Dubai"
+      }
+    }
+  ],
+  "timing": {
+    "pollMs": 1200,
+    "preOpenReloadMs": 3000,
+    "postOpenReloadMs": 1500,
+    "minReloadMs": 1500,
+    "jitterPct": 30,
+    "graceSec": 20,
+    "atbTimeoutMs": 15000,
+    "atb404BackoffMs": 1500,
+    "atb404MaxInRow": 5,
+    "holdLoserBagSec": 90,
+    "manualPayTimeoutSec": 600,
+    "assistAfterFailures": 3
+  },
+  "retries": {
+    "checkout": 4,
+    "slotsPerStore": 4
+  },
+  "limits": {
+    "maxTabsTotal": 12
+  },
+  "baseUrl": "http://127.0.0.1:4777"
+}
