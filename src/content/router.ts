@@ -3,8 +3,9 @@
 
 export function routeKey(href: string): string {
   const u = new URL(href);
-  const s = u.searchParams.get('_s');
-  return `${u.pathname}|${s ?? ''}|${u.searchParams.get('step') ?? ''}`;
+  // «Fulfillment-init» и «Fulfillment» — один шаг: не прерывать идущий шаг из-за смены суффикса
+  const s = (u.searchParams.get('_s') ?? '').replace(/-init$/i, '').toLowerCase();
+  return `${u.pathname}|${s}|${u.searchParams.get('step') ?? ''}`;
 }
 
 export function watchRoute(onChange: (href: string, prev: string) => void): () => void {

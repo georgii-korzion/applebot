@@ -6,6 +6,7 @@ import { PARTS, getPart, matchBagName, partByPath, partUrl } from '../src/shared
 import { fmtLine, maskEmail, maskPhone, maskUrl, rel, scrub } from '../src/shared/log';
 import { orderWindows, parseSlot } from '../src/content/slots';
 import { routeKey } from '../src/content/router';
+import { fmUrl, parseFm } from '../src/shared/watch';
 
 const validOrder = () => ({
   ...defaultOrder('A'),
@@ -134,4 +135,29 @@ test('фазы и рефреш закрытого магазина', () => {
     const q = closedReloadMs(cfg, undefined, openAt + 5000);
     assert.ok(q >= 1500 && q <= 1950, `post ${q} (не чаще minReloadMs)`);
   }
+});
+
+test('router: -init не считается сменой шага', () => {
+  assert.equal(routeKey('https://secure7.store.apple.com/ae/shop/checkout?_s=Fulfillment-init'), routeKey('https://secure7.store.apple.com/ae/shop/checkout?_s=Fulfillment'));
+});
+
+test('watch: разбор fulfillment-messages', () => {
+  const j = { body: { content: {
+    deliveryMessage: {
+      'MK254AH/A': { compact: { buyability: { isBuyable: false, reason: 'COMING_SOON' }, quote: '' } },
+      'MJR54AH/A': { compact: { buyability: { isBuyable: true }, quote: 'Delivers Oct 23' } },
+    },
+    pickupMessage: { stores: [
+      { storeNumber: 'R597', partsAvailability: { 'MJR54AH/A': { pickupDisplay: 'available' } } },
+      { storeNumber: 'R999', partsAvailability: { 'MJR54AH/A': { pickupDisplay: 'available' } } },
+    ] },
+  } } };
+  const r = parseFm(j, ['MK254AH/A', 'MJR54AH/A'], ['R597']);
+  assert.equal(r.statuses['MK254AH/A'].isBuyable, false);
+  assert.equal(r.statuses['MK254AH/A'].reason, 'COMING_SOON');
+  assert.equal(r.statuses['MJR54AH/A'].isBuyable, true);
+  assert.deepEqual(r.pick, ['R597:MJR54AH/A=available']);
+  assert.match(fmUrl('https://www.apple.com', ['MK254AH/A'], 'R597'), /parts\.0=MK254AH%2FA&searchNearby=true&store=R597$/);
+  const closed = parseFm('<!doctype html>', ['MK254AH/A'], ['R597']);
+  assert.equal(closed.statuses['MK254AH/A'].isBuyable, false);
 });

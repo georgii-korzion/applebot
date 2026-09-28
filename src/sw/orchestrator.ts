@@ -6,6 +6,7 @@ import {
   type C2S, type Cmd, type Hub2S, type Mode, type OrderState, type Role, type S2C, type TabRow, type TabState,
 } from '../shared/messages';
 import { partLabel, partUrl, storeName } from '../shared/parts';
+import { pollFm } from '../shared/watch';
 import { HubClient } from './hubClient';
 import { notify, playSound } from './notify';
 import { focusTab } from './windows';
@@ -50,6 +51,10 @@ export class Orchestrator {
   private awayCount = new Map<number, number>();
   private awayTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private storeNotifiedAt = 0;
+  private tabTickAt = 0;
+  private swWatchTimer: ReturnType<typeof setTimeout> | undefined;
+  private swWatchErrors = 0;
+  private swWatchBusy = false;
 
   constructor() {
     this.hub = new HubClient((m) => this.onHub(m), (c) => this.onHubState(c));
@@ -66,6 +71,12 @@ export class Orchestrator {
     this.payQueue = pq.queue ?? [];
     this.payActive = pq.active ?? null;
     this.hub.setUrl(this.cfg.hubUrl);
+    this.ensureSwWatch();
+  }
+
+  /** Вкладку гонки/чекаута Chrome не должен выгружать (Memory Saver): content script там — вся логика. */
+  private keepTab(tabId: number): void {
+    chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
   }
 
   // ---------- утилиты ----------
@@ -134,6 +145,7 @@ export class Orchestrator {
         this.tabs.set(tabId, t);
       }
       Object.assign(t, { port, windowId, url: m.url, mode: ts.mode, state: ts.state });
+      if (ts.mode !== 'idle') this.keepTab(tabId);
       const role = computeRoles(this).get(tabId) ?? 'idle';
       t.role = role;
       port.postMessage({
@@ -168,14 +180,12 @@ export class Orchestrator {
       case 'OPEN':
         await this.onOpen(m.source, m.buyable, false);
         break;
-      case 'WATCH': {
-        const at = Date.now();
-        this.os.watch = Object.fromEntries(Object.entries(m.statuses).map(([p, s]) => [p, { ...s, at }]));
-        const txt = Object.entries(m.statuses).map(([p, s]) => `${p} ${s.isBuyable ? 'BUYABLE' : s.reason ?? '?'}${s.quote ? ` «${s.quote}»` : ''}`).join('; ');
-        this.log(tabId, 'WATCH', `${txt}${m.pickup ? ` | pickup ${m.pickup}` : ''}`);
-        void this.saveOs();
+      case 'WATCH':
+        this.recordWatch(tabId, m.statuses, m.pickup, 'tab');
         break;
-      }
+      case 'WATCH_TICK':
+        if (m.ok) this.tabTickAt = Date.now();
+        break;
       case 'ATB_LOCK_REQ':
         this.sendTab(tabId, { t: 'ATB_LOCK', ...this.lockReq(tabId, m.ttl) }, false);
         break;
@@ -197,9 +207,11 @@ export class Orchestrator {
       case 'BAG':
         if (m.ok) await this.onBagOk(tabId, m.detail ?? '');
         else if (this.os.winnerTabId === tabId || this.os.lock?.tabId === tabId) {
+          const wasWinner = this.os.winnerTabId === tabId;
           this.log(tabId, 'BAG', `корзина не подтверждена: ${m.detail}`, 'warn');
           Object.assign(this.os, { inBag: false, inBagVerified: false, winnerTabId: undefined, decision: undefined, lock: undefined });
           await this.saveOs(true);
+          if (wasWinner) this.rearmRace(tabId);
         }
         break;
       case 'BILLING_READY':
@@ -334,6 +346,69 @@ export class Orchestrator {
     }
   }
 
+  /** Победитель потерял корзину — вернуть остановленные вкладки профиля в гонку. */
+  private rearmRace(except: number): void {
+    if (!this.os.armed) return;
+    let n = 0;
+    for (const id of this.os.raceTabs) {
+      const t = this.tabs.get(id);
+      if (!t || id === except || t.mode !== 'idle') continue;
+      this.sendTab(id, { t: 'MODE', mode: 'race', extra: { ...newTabState('race'), target: this.os.activeTarget } });
+      n++;
+    }
+    if (n) this.log('sw', 'REARM', `корзина потеряна — ${n} остановленных вкладок снова в гонке`);
+  }
+
+  private recordWatch(from: number | string, statuses: Record<string, { isBuyable: boolean; reason?: string; quote?: string }>, pickup: string | undefined, source: 'tab' | 'sw'): void {
+    const at = Date.now();
+    const txt = Object.entries(statuses).map(([p, s]) => `${p} ${s.isBuyable ? 'BUYABLE' : s.reason ?? '?'}${s.quote ? ` «${s.quote}»` : ''}`).join('; ');
+    const prev = JSON.stringify(Object.fromEntries(Object.entries(this.os.watch ?? {}).map(([p, s]) => [p, [s.isBuyable, s.reason, s.quote]])));
+    const next = JSON.stringify(Object.fromEntries(Object.entries(statuses).map(([p, s]) => [p, [s.isBuyable, s.reason, s.quote]])));
+    this.os.watch = Object.fromEntries(Object.entries(statuses).map(([p, s]) => [p, { ...s, at }]));
+    this.os.watchAt = at;
+    this.os.watchSource = source;
+    if (prev !== next || source === 'tab') this.log(from, 'WATCH', `${source === 'sw' ? '[sw] ' : ''}${txt}${pickup ? ` | pickup ${pickup}` : ''}`);
+    void this.saveOs();
+  }
+
+  // ---------- страховочный поллер OPEN в SW ----------
+  // Основной наблюдатель живёт во вкладке (§7.3, запросы same-origin). Скрытую вкладку Chrome тормозит
+  // (таймеры, Memory Saver), поэтому SW опрашивает сам, пока вкладка не подтверждает тиками, что жива.
+  ensureSwWatch(): void {
+    const me = this.cfg.profileId;
+    const otherWatches = this.hub.connected && !!this.watcherProfile && this.watcherProfile !== me;
+    const should = this.os.armed && !this.os.openedAt && !!this.order && !otherWatches;
+    if (!should) { clearTimeout(this.swWatchTimer); this.swWatchTimer = undefined; return; }
+    if (this.swWatchTimer) return;
+    this.swWatchTimer = setTimeout(() => { this.swWatchTimer = undefined; void this.swWatchTick(); }, 1500);
+  }
+
+  private async swWatchTick(): Promise<void> {
+    if (this.swWatchBusy) return;
+    this.swWatchBusy = true;
+    let delay = this.cfg.timing.pollMs;
+    try {
+      const tabFresh = Date.now() - this.tabTickAt < 3500;
+      if (!tabFresh && this.order) {
+        const targets = [...new Set([...this.order.targets, ...(this.os.watchTargets ?? [])])];
+        try {
+          const r = await pollFm(this.cfg.baseUrl, targets, this.order.stores);
+          this.swWatchErrors = 0;
+          this.recordWatch('sw', r.statuses, r.pickup, 'sw');
+          if (this.os.watcherTabId !== undefined) this.sendTab(this.os.watcherTabId, { t: 'SW_WATCH', at: Date.now(), ok: true }, false);
+          if (r.buyable.length) await this.onOpen('sw-json', r.buyable, false);
+        } catch (e) {
+          this.swWatchErrors++;
+          if (this.swWatchErrors === 1 || this.swWatchErrors % 20 === 0) this.log('sw', 'WATCH', `[sw] ошибка опроса (${this.swWatchErrors}): ${e}`, 'warn');
+          if (this.swWatchErrors >= 3) delay = Math.min(10_000, this.cfg.timing.pollMs * 4);
+        }
+      }
+    } finally {
+      this.swWatchBusy = false;
+      if (this.os.armed && !this.os.openedAt) this.swWatchTimer = setTimeout(() => { this.swWatchTimer = undefined; void this.swWatchTick(); }, delay);
+    }
+  }
+
   // ---------- OPEN ----------
   async onOpen(source: string, buyable: string[], fromHub: boolean): Promise<void> {
     if (this.os.openedAt) return;
@@ -348,6 +423,7 @@ export class Orchestrator {
     this.broadcast({ t: 'OPEN', activeTarget: first });
     if (!fromHub) this.hub.send({ t: 'OPEN', profile: this.cfg.profileId, buyable, source });
     assignRoles(this);
+    this.ensureSwWatch();
     if (this.os.armed) void playSound('open');
   }
 
@@ -400,7 +476,11 @@ export class Orchestrator {
   private sendDecision(): void {
     const w = this.os.winnerTabId;
     if (w === undefined) return;
-    if (this.os.decision === 'go') this.sendTab(w, { t: 'GO_BAG' });
+    if (this.os.decision === 'go') {
+      this.sendTab(w, { t: 'GO_BAG' });
+      // видимая вкладка не тормозится браузером — чекаут идёт быстрее (окно не перехватываем, только вкладка)
+      chrome.tabs.update(w, { active: true }).catch(() => {});
+    }
     else if (this.os.decision === 'standby') this.sendTab(w, { t: 'STANDBY', holdSec: this.cfg.timing.holdLoserBagSec });
   }
 
@@ -462,6 +542,7 @@ export class Orchestrator {
     if (connected) this.register();
     else this.watcherProfile = null;
     assignRoles(this);
+    this.ensureSwWatch();
     this.broadcast({ t: 'OS', os: this.os }, (t) => !!t.port);
   }
 
@@ -480,6 +561,7 @@ export class Orchestrator {
         this.watcherProfile = m.profile;
         if (m.profile === me && m.targets) { this.os.watchTargets = m.targets; void this.saveOs(true); }
         assignRoles(this);
+        this.ensureSwWatch();
         break;
       case 'OPEN':
         void this.onOpen(m.source, m.buyable, true);
@@ -490,8 +572,8 @@ export class Orchestrator {
         this.log('sw', 'HUB', m.takeover ? 'TAKEOVER: победитель упал, заказ передан этому профилю' : 'WIN: этот профиль ведёт заказ');
         this.os.decision = 'go';
         void this.saveOs(true);
-        if (m.takeover && this.os.winnerTabId !== undefined && this.tabs.get(this.os.winnerTabId)?.mode === 'idle') {
-          // корзина уже очищена — гонка заново
+        if (m.takeover && this.os.winnerTabId !== undefined && ['idle', 'clean'].includes(this.tabs.get(this.os.winnerTabId)?.mode ?? '')) {
+          // корзина уже очищена (или чистится) — гонка заново
           this.sendTab(this.os.winnerTabId, { t: 'MODE', mode: 'race', extra: { state: 'INIT', target: this.os.activeTarget } });
           Object.assign(this.os, { inBag: false, inBagVerified: false, winnerTabId: undefined });
         } else this.sendDecision();
@@ -543,6 +625,7 @@ export class Orchestrator {
     this.hub.setUrl(this.cfg.hubUrl);
     if (this.hub.connected) this.register();
     this.broadcast({ t: 'CONFIG', cfg: this.cfg, order: this.order }, (t) => !!t.port);
+    this.ensureSwWatch();
     this.log('sw', 'CONFIG', `конфиг обновлён: профиль ${this.cfg.profileId}, заказ ${this.order?.id ?? '—'}, режим ${this.cfg.mode}`);
   }
 
@@ -620,10 +703,14 @@ export class Orchestrator {
       for (const tab of win?.tabs ?? []) {
         if (tab.id === undefined) continue;
         this.os.raceTabs.push(tab.id);
+        this.keepTab(tab.id);
         await this.initTab(tab.id, newTabState('race', { target, lastTargetNavAt: Date.now() }));
       }
     }
+    for (const t of reuse) this.keepTab(t.tabId);
     await this.saveOs(true);
+    this.tabTickAt = 0;
+    this.ensureSwWatch();
     this.log('sw', 'START', `заказ ${o.id}: ${want} вкладок (${reuse.length} переиспользовано), цель ${partLabel(target)}, openAt ${this.cfg.openAt}, режим ${this.cfg.mode}`);
     if (this.hub.connected) this.register();
     assignRoles(this);
@@ -639,6 +726,7 @@ export class Orchestrator {
     await this.savePay();
     this.log('sw', 'STOP', 'остановлено пользователем');
     assignRoles(this);
+    this.ensureSwWatch();
     return { ok: true };
   }
 
@@ -648,6 +736,7 @@ export class Orchestrator {
     const url = kind === 'prep' ? `${this.cfg.baseUrl}/ae/` : `${this.cfg.baseUrl}/ae/shop/bag`;
     const tab = await chrome.tabs.create({ url, active: true });
     if (tab.id === undefined) return { ok: false };
+    this.keepTab(tab.id);
     await this.initTab(tab.id, newTabState(kind, kind === 'prep' ? { prepPhase: 'home', target: o!.targets[0] } : {}));
     this.log(tab.id, kind === 'prep' ? 'PREP' : 'CLEANUP', kind === 'prep' ? 'Prepare: прогрев профиля' : 'Clean bag');
     return { ok: true, tabId: tab.id };

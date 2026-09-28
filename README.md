@@ -70,9 +70,29 @@ Apple часто закрывает магазин за несколько ча�
 
 - Наблюдатель до `openAt` не рефрешит — продолжает опрашивать JSON и первым видит открытие; по сигналу OPEN все вкладки перезагружаются сразу (0–500 мс).
 - Редирект на заглушку внутри `/ae/` — вкладка возвращается на страницу товара по тому же расписанию. Редирект вне `/ae/` (там content script не работает) — вкладку возвращает service worker, столько раз, сколько нужно, пока задача запущена.
-- Очередь «Almost there» после открытия — рефреш не реже раза в 4 с (раньше бэкофф рос до 15 с — это пропуск волны).
+- Заглушка «Almost there» после открытия — рефреш не реже раза в 4 с (долгий бэкофф = пропуск волны). Если заглушка сама себя обновляет (`<meta http-equiv="refresh">`), ей не мешаем — наш таймер только страховка.
 - Когда магазин открылся — запись `REOPEN` в логе и уведомление, дальше всё как обычно: Add to Bag → чекаут → оплата.
 - Prepare при закрытом магазине честно сообщит, что страницу товара проверить нельзя; Prepare лучше делать заранее, а Start можно жать и при закрытом магазине.
+
+### Очередь Apple и ошибки чекаута (опыт iPhone 18 Pro, 12.09.2026)
+
+Подробности и источники — [docs/RESEARCH-iphone18-preorder.md](docs/RESEARCH-iphone18-preorder.md). Коротко:
+
+- **Очередь.** Страница с текстом очереди («in line», «your turn», «don't refresh»…) или с meta refresh — состояние `QUEUE`: расширение её **не перезагружает** (рефреш может сбросить место), ждёт, пока пустит дальше, до `queueMaxWaitSec` (90 с). Очередь после клика Add to Bag тоже не провал — ждём возврата.
+- **Ошибки чекаута общего вида** («unexpected error», «something went wrong», «try again») — повтор того же Continue до `checkoutErrorRetries` (2) раз, выбранное окно не отдаётся. Ошибка про слот → следующее окно. Ошибка валидации («Please enter…») → стоп и уведомление, нужен человек.
+- **Дубли заказов.** На плашке оплаты предупреждение: ошибка после Place Order → сначала почта и номер заказа, потом повтор.
+- **Пустая корзина после Add to Bag** — до 3 повторов, потом `STUCK` с уведомлением (сломанная сессия корзины).
+
+### Фоновые вкладки Chrome
+
+Скрытые вкладки Chrome тормозит: цепочки таймеров через 5 минут выполняются раз в минуту, а Memory Saver может выгрузить вкладку целиком. Поэтому:
+
+- наблюдатель рвёт цепочку таймеров (MessageChannel) и делается активной вкладкой своего окна;
+- service worker ведёт **страховочный опрос** `fulfillment-messages`, пока вкладка-наблюдатель не подтверждает тиками, что жива (два поллера одновременно не работают — не больше одного запроса в `pollMs` на профиль);
+- вкладкам гонки и чекаута ставится `autoDiscardable: false`;
+- вкладка-победитель становится активной в своём окне на время чекаута.
+
+Окна профилей лучше не сворачивать и не перекрывать полностью, но и это уже не критично.
 
 ### Режим ассистента (§7.8)
 
@@ -97,10 +117,12 @@ Playwright в e2e — только тестовый стенд, чтобы за�
 | `hostile` | 2 вкладки, выбор страны, 404 на Add to Bag (+ случайные), заглушка, смена города Abu Dhabi → Dubai через `setSelect`, Apple Pay; в корзине 1 шт., Place Order не нажат | Billing через ~6–9 с |
 | `assist` | `REQUIRE_TRUSTED=1`: 3×404 → ассистент, кнопка подсвечена, настоящий клик → дальше само до Billing | ✓ |
 | `prepare` | Prepare (страна → корзина → конфигурация) и Clean bag | ✓ |
+| `queue` | после открытия три страницы очереди с meta refresh: расширение их не рефрешит (мок считает ручные рефреши = 0), очередь сама ведёт к товару → Billing | Billing через ~11 с (6 с из них — очередь) |
+| `checkout-errors` | первый Add to Bag «призрачный» (корзина пуста) → повтор; ошибка общего вида на Continue (Fulfillment и Contact) → повтор того же окна, слот не отдан | Billing через ~11 с |
 | `closed-blank` / `closed-backsoon` / `closed-redirect` / `closed-offsite` | магазин закрыт до старта: пустая страница, «We’ll be back», редирект в `/ae/` и вне `/ae/`; вкладки обновляются по фазам (проверяются интервалы), после открытия — до Billing | Billing через 4,5–4,9 с после открытия |
 | `acceptance` | 3 заказа × 2 профиля × 2 вкладки + хаб: все 3 заказа на Billing, без дублей, корзины проигравших очищены, очередь оплаты по одному, «Следующий» | Billing через 4,8–5,1 с после OPEN |
 
-Мок вручную: `npm run build:dev` → загрузить `dist-dev/` → в настройках `baseUrl = http://127.0.0.1:4777` → `OPEN_AFTER=60 npm run mock`. Параметры мока — в шапке [test/mock-server.mjs](test/mock-server.mjs) (`STORE_CLOSED`, `ATB_404_RATE`, `ATB_404_FIRST`, `ACPART_DELAY_MS`, `COUNTRY_PICKER`, `REQUIRE_TRUSTED`, `UNAVAILABLE_STORES`, `TAKEN_FIRST_SLOT`, `DEFAULT_CITY`, …).
+Мок вручную: `npm run build:dev` → загрузить `dist-dev/` → в настройках `baseUrl = http://127.0.0.1:4777` → `OPEN_AFTER=60 npm run mock`. Параметры мока — в шапке [test/mock-server.mjs](test/mock-server.mjs) (`STORE_CLOSED`, `QUEUE_AFTER_OPEN`, `CHECKOUT_ERR_FIRST`, `EMPTY_BAG_FIRST`, `ATB_404_RATE`, `ATB_404_FIRST`, `ACPART_DELAY_MS`, `COUNTRY_PICKER`, `REQUIRE_TRUSTED`, `UNAVAILABLE_STORES`, `TAKEN_FIRST_SLOT`, `DEFAULT_CITY`, …).
 
 ### Живые тесты до 16.10 (§11.2, на iPhone 18 Pro 256 Black — `MJR54AH/A`)
 
@@ -121,6 +143,9 @@ Playwright в e2e — только тестовый стенд, чтобы за�
 - Авто-возврат на `/ae/`, если вкладку увело в другой регион, — только в гонке и Prepare; в чекауте не вмешиваемся (3-D Secure, действия человека).
 - Чтение `PRODUCT_SELECTION_BOOTSTRAP` из MAIN world (§8.4) не реализовано: по ТЗ оно нужно только для отладки, логика на него не опирается.
 - `updateSummary` ждём через `PerformanceObserver` и дублируем событием `webRequest.onCompleted` из SW (§8.5, оба варианта); `fetch`/XHR страницы не перехватываются.
+- Баннер выбора страны над готовой формой покупки после OPEN убирается один раз на вкладку; если возвращается — игнорируется ради Add to Bag (до OPEN и для модалок — обрабатывается всегда). Ссылки футера apple.com («United Arab Emirates») за баннер не принимаются.
+- Запасной HTML-сигнал OPEN срабатывает только при появлении `add-to-cart` в HTML, а не при пропаже строки «Pre-order starting»: иначе смена текста Apple дала бы ложный OPEN и часы рефреша раз в 1,5 с.
+- Страховочный опрос из service worker — отступление от «только из вкладки» (§3.0) ради устойчивости к троттлингу; он молчит, пока вкладка-наблюдатель жива.
 
 ---
 
@@ -129,13 +154,13 @@ Playwright в e2e — только тестовый стенд, чтобы за�
 ```
 src/manifest.json      база манифеста; build.mjs кладёт итоговый в dist/ (+ иконки, dev-разрешения для мока)
 build.mjs              esbuild → dist/ (prod) | dist-dev/ (+ http://127.0.0.1:4777) | dist-test/
-src/shared/            config.ts (схема+валидация) · parts.ts · selectors.ts · messages.ts · log.ts
+src/shared/            config.ts (схема+валидация) · parts.ts · selectors.ts · messages.ts · log.ts · watch.ts (разбор fulfillment-messages)
 src/sw/                index · orchestrator · watcher (роли) · hubClient · notify · windows · diag (webRequest)
 src/content/           index (диспетчер) · ctl · classify · router (SPA) · dom · overlay · assist · slots
-src/content/steps/     preopen · addToBag · bag · guest · fulfillment · contact · payment · country · prepare · common
+src/content/steps/     preopen · addToBag · bag · guest · fulfillment · contact · payment · country · closed · prepare · submit · common
 src/ui/                popup · options · offscreen (звук)
 hub/server.mjs         хаб + дашборд (Node 20+, ws)
 test/                  mock-server.mjs · e2e.mjs · unit.test.ts
 scripts/               open-profiles.command (macOS)
-docs/SPEC.md           ТЗ v3
+docs/SPEC.md           ТЗ v3 · docs/RESEARCH-iphone18-preorder.md — как прошёл предзаказ 18 Pro и что учтено
 ```

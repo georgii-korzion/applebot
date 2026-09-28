@@ -17,6 +17,18 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Продолжить в новой задаче через MessageChannel: у задачи из postMessage timer nesting level = 0,
+ * поэтому следующий setTimeout не считается «цепочкой» и не попадает под intensive throttling скрытых вкладок.
+ */
+export function yieldTask(): Promise<void> {
+  return new Promise((resolve) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => { ch.port1.close(); resolve(); };
+    ch.port2.postMessage(0);
+  });
+}
+
 export const q = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector<T>(sel);
 export const qa = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => Array.from(root.querySelectorAll<T>(sel));
 

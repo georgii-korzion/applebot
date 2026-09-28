@@ -2,7 +2,8 @@
 import { SEL } from '../../shared/selectors';
 import { maskEmail, maskPhone } from '../../shared/log';
 import type { Ctl } from '../ctl';
-import { clickEl, countMatches, errorContext, findField, isChecked, isEnabled, pickRadio, raceFirst, setInput, sleep, waitFor, waitForNewMatch, waitForUrl, waitUntil } from '../dom';
+import { findField, isChecked, isEnabled, pickRadio, setInput, sleep, waitFor, waitForUrl, waitUntil } from '../dom';
+import { submitAndWait } from './submit';
 
 export async function contactStep(c: Ctl): Promise<void> {
   const sig = c.signal;
@@ -31,17 +32,21 @@ export async function contactStep(c: Ctl): Promise<void> {
   const label = await waitFor(SEL.contactContinue, 5000, sig);
   const btn = label ? (label.closest('button') as HTMLElement | null) ?? label : null;
   if (!btn || !isEnabled(btn)) { c.setState('STUCK', 'нет активной Continue to Payment'); return; }
-  const before = countMatches(SEL.txtContactError);
-  c.setState('CONTACT', 'Continue to Payment');
-  clickEl(btn);
-  const r = await raceFirst([
-    ['next', waitForUrl(/_s=Billing/i, 15000, sig)],
-    ['error', waitForNewMatch(SEL.txtContactError, before, 15000, sig)],
-  ], 15000, sig);
-  if (r.key === 'next') return;
-  const msg = r.key === 'error' ? errorContext(SEL.txtContactError) || String(r.value) : 'нет ответа за 15 с';
-  c.setState('STUCK', `контакты: ${msg}`);
-  c.alert(`Заказ ${o.id}: контакты`, `Apple: ${msg}`);
+  const ANY = new RegExp(`${SEL.txtContactError.source}|${SEL.txtGenericError.source}`, 'i');
+  let msg = '';
+  for (let attempt = 0; attempt <= c.t.checkoutErrorRetries; attempt++) {
+    c.setState('CONTACT', `Continue to Payment${attempt ? ` (повтор ${attempt})` : ''}`);
+    const r = await submitAndWait(c, btn, /_s=Billing/i, ANY);
+    if (r.result === 'next') return;
+    msg = r.text;
+    // ошибка валидации («Please …») — повтор не поможет, нужен человек
+    if (r.result === 'error' && !r.generic) break;
+    c.log(`Continue to Payment: ${msg} — повтор`, 'warn');
+    await sleep(1200, sig);
+  }
+  // не STUCK: заказ не потерян, поле поправит человек (STUCK передал бы заказ запасному профилю через хаб)
+  c.setState('NEED_HUMAN', `контакты: ${msg} — поправь поле и нажми Continue`);
+  c.alert(`Заказ ${o.id}: контакты`, `Apple: ${msg} — поправь поле в окне`);
   // если Apple не приняла, вкладку не трогаем — человек поправит поле, дальше продолжим сами
   const fixed = await waitForUrl(/_s=Billing/i, 600_000, sig);
   if (fixed) c.log('Billing после ручного исправления контактов');

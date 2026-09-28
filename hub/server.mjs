@@ -277,7 +277,7 @@ async function tick() {
     const tag = o?.winner === p.name ? ' ★' : o?.standby.includes(p.name) ? ' (запас)' : '';
     const tabs = p.tabs.length ? p.tabs : [{}];
     for (const t of tabs) {
-      const cls = /STUCK|TIMEOUT|ERROR/.test(t.state) ? 'err' : /ASSIST|STANDBY|BUSY|COUNTRY/.test(t.state) ? 'warn' : /BILLING|PAY|ORDERED|IN_BAG|REVIEW/.test(t.state) ? 'ok' : '';
+      const cls = /STUCK|TIMEOUT|ERROR/.test(t.state) ? 'err' : /ASSIST|STANDBY|BUSY|COUNTRY|CLOSED|QUEUE|NEED_HUMAN/.test(t.state) ? 'warn' : /BILLING|PAY|ORDERED|IN_BAG|REVIEW/.test(t.state) ? 'ok' : '';
       rows.push('<tr><td>' + esc(p.orderId) + '</td><td>' + (p.online ? '● ' : '<span class="err">○</span> ') + esc(p.name) + tag + '</td><td>' + esc(t.tabId ?? '') + '</td><td>' + esc(t.role ?? '') + '</td><td class="' + cls + '">' + esc(t.state ?? '') + '</td><td>' + esc(t.detail ?? '') + '</td><td>' + esc(t.outcome ?? '') + (t.atb404 ? ' · 404×' + t.atb404 : '') + '</td><td>' + rel(t.updatedAt, s.openedAt) + '</td></tr>');
     }
   }

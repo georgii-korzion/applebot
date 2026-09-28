@@ -388,13 +388,58 @@ function closedScenario(style, openIn) {
   };
 }
 scenarios['closed-blank'] = closedScenario('blank', 75);
+
+/** Очередь Apple после открытия: страница с meta refresh сама ведёт дальше — расширение её не рефрешит. */
+scenarios.queue = async () => {
+  await startServers({ OPEN_AFTER: '6', QUEUE_AFTER_OPEN: '3', BUSY_FIRST: '0' });
+  const p = await launchProfile('queue');
+  const profiles = [p];
+  try {
+    // одна вкладка: мок считает повторный заход на URL очереди ручным рефрешем, две вкладки одной сессии его бы исказили
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1 })], { openInSec: 6 }));
+    const r = await p.cmd({ cmd: 'start' });
+    assert.ok(r.ok, r.error);
+    const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, 60000, 'Billing', 500);
+    const ms = await mockState();
+    const passed = ms.sessions.reduce((a, s) => a + (s.queuePassed ?? 0), 0);
+    const reloads = ms.sessions.reduce((a, s) => a + (s.queueReloads ?? 0), 0);
+    const log = (await p.cmd({ cmd: 'exportLog' })).text;
+    say(`queue: Billing через ${((st.os.billingReadyAt - st.os.openedAt) / 1000).toFixed(1)} с после OPEN · страниц очереди показано ${passed}, ручных рефрешей очереди ${reloads}`);
+    assert.ok(passed >= 3, 'очередь была показана');
+    assert.equal(reloads, 0, 'расширение не рефрешит страницу очереди — она ведёт дальше сама');
+    assert.ok(/QUEUE/.test(log), 'состояние QUEUE в логе');
+  } catch (e) { await dumpOnFail(profiles, 'queue'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+/** Ошибки чекаута общего вида (12.09.2026) и пустая корзина после Add to Bag: повтор того же действия. */
+scenarios['checkout-errors'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', CHECKOUT_ERR_FIRST: '1', EMPTY_BAG_FIRST: '1' });
+  const p = await launchProfile('checkout-errors');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1 })], { openInSec: -5 }));
+    const r = await p.cmd({ cmd: 'start' });
+    assert.ok(r.ok, r.error);
+    const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, 60000, 'Billing', 500);
+    const ms = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.checkout.method) ? m : null; }, 3000, 'способ оплаты');
+    const sess = ms.sessions.find((s) => s.bag.length);
+    const log = (await p.cmd({ cmd: 'exportLog' })).text;
+    say(`checkout-errors: Billing через ${((st.os.billingReadyAt - st.os.openedAt) / 1000).toFixed(1)} с · слот ${sess.checkout.fulfillment.slot} · попыток Add to Bag ${sess.atbAttempts}`);
+    assert.equal(sess.atbAttempts, 2, 'после пустой корзины Add to Bag повторён');
+    assert.ok(/корзина пуста после Add to Bag \(1\)/.test(log), 'пустая корзина замечена');
+    assert.equal(sess.bag.length, 1);
+    assert.equal(sess.checkout.fulfillment.slot, '28-16:30-16:45', 'ошибка общего вида не заставила отдать первое свободное окно');
+    assert.ok(/повтор того же окна/.test(log), 'повтор Continue на Fulfillment');
+    assert.ok(/Continue to Payment: .* — повтор/.test(log), 'повтор Continue to Payment');
+  } catch (e) { await dumpOnFail(profiles, 'checkout-errors'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
 scenarios['closed-backsoon'] = closedScenario('backsoon', 15);
 scenarios['closed-redirect'] = closedScenario('redirect', 15);
 scenarios['closed-offsite'] = closedScenario('offsite', 15);
 
 // ---------- запуск ----------
 const want = process.argv.slice(2);
-const list = want.length ? want : ['single', 'hostile', 'assist', 'prepare', 'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'acceptance'];
+const list = want.length ? want : ['single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'acceptance'];
 let failed = 0;
 for (const name of list) {
   const fn = scenarios[name];

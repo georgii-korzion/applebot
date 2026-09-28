@@ -5,12 +5,14 @@ import { storeName } from '../../shared/parts';
 import type { Ctl } from '../ctl';
 import { assistSelect } from '../assist';
 import { orderWindows } from '../slots';
+import { submitAndWait } from './submit';
 import {
-  clickEl, countMatches, findField, findSelect, isEnabled, isVisible, pickRadio, q, qa, raceFirst,
-  setInput, setSelect, sleep, textOf, waitFor, waitForNewMatch, waitForUrl, waitUntil,
+  clickEl, findField, findSelect, isEnabled, isVisible, pickRadio, q, qa,
+  setInput, setSelect, sleep, textOf, waitFor, waitForUrl, waitUntil,
 } from '../dom';
 
 const NEXT_STEP = /[?&]_s=(PickupContact|Shipping|Billing)/i;
+const ANY_ERROR = new RegExp(`${SEL.txtSlotError.source}|${SEL.txtGenericError.source}`, 'i');
 
 export async function fulfillmentStep(c: Ctl): Promise<void> {
   const sig = c.signal;
@@ -44,6 +46,12 @@ export async function fulfillmentStep(c: Ctl): Promise<void> {
   // 5. самовывоза нет
   if (o.deliveryFallback) {
     await deliveryFallback(c);
+    return;
+  }
+  if (o.allowApplePayExpress) {
+    c.log('самовывоза нет — allowApplePayExpress: Apple Pay из корзины (доставка)', 'warn');
+    c.ts.applePayExpress = true;
+    await c.navigate(c.bagUrl(), 'нет самовывоза → Apple Pay Express из корзины');
     return;
   }
   c.setState('STUCK', 'нет самовывоза ни в одном магазине из списка');
@@ -147,15 +155,18 @@ async function tryStore(c: Ctl, sid: string): Promise<boolean> {
     }
     const chosen = Array.from(s.options).find((x) => x.value === s.value)?.text.trim() ?? w.label;
     Object.assign(c.ts, { store: sid, slot: s.value, slotLabel: `${date.label} ${chosen}`, slotAt: Date.now() });
-    c.setState('FULFILLMENT', `${name} · ${date.label} ${chosen} → Continue`);
-    const before = countMatches(SEL.txtSlotError);
-    clickEl(cont);
-    const r = await raceFirst([
-      ['next', waitForUrl(NEXT_STEP, 15000, sig)],
-      ['error', waitForNewMatch(SEL.txtSlotError, before, 15000, sig)],
-    ], 15000, sig);
-    if (r.key === 'next') return true;
-    c.log(`окно ${chosen} не принято: ${r.key === 'error' ? String(r.value) : 'нет ответа за 15 с'}`, 'warn');
+    // ошибка общего вида («unexpected error», 12.09.2026) — повторить то же окно, а не отдавать хороший слот
+    for (let attempt = 0; attempt <= c.t.checkoutErrorRetries; attempt++) {
+      cont = await waitUntil(() => { const b = q(SEL.fulfillmentContinue); return b && isEnabled(b) ? b : null; }, 3000, sig);
+      if (!cont) break;
+      c.setState('FULFILLMENT', `${name} · ${date.label} ${chosen} → Continue${attempt ? ` (повтор ${attempt})` : ''}`);
+      const r = await submitAndWait(c, cont, NEXT_STEP, ANY_ERROR);
+      if (r.result === 'next') return true;
+      if (r.result === 'error' && !r.generic) { c.log(`окно ${chosen} не принято: ${r.text}`, 'warn'); break; }
+      c.log(`Continue: ${r.result === 'error' ? `ошибка общего вида «${r.text}»` : 'нет ответа за 15 с'} — повтор того же окна`, 'warn');
+      await sleep(1200, sig);
+      if (s.value !== w.value && slotSelect()) { const x = slotSelect()!; setSelect(x, w.value); await sleep(150, sig); }
+    }
   }
   c.log(`${name}: ${limit} окон не прошли — следующий магазин`);
   return false;
@@ -214,15 +225,17 @@ export async function shippingStep(c: Ctl): Promise<void> {
   }
   const btn = await waitUntil(() => { const b = q(SEL.shippingContinue); return b && isEnabled(b) && isVisible(b) ? b : null; }, 5000, sig);
   if (!btn) { c.setState('STUCK', 'нет Continue на Shipping'); return; }
-  const before = countMatches(SEL.txtContactError);
-  clickEl(btn);
-  const r = await raceFirst([
-    ['next', waitForUrl(/_s=Billing/i, 15000, sig)],
-    ['error', waitForNewMatch(SEL.txtContactError, before, 15000, sig)],
-  ], 15000, sig);
-  if (r.key !== 'next') {
-    const msg = r.key === 'error' ? String(r.value) : 'нет ответа';
-    c.setState('STUCK', `Shipping: ${msg}`);
-    c.alert(`Заказ ${o.id}: адрес`, msg);
+  const ANY = new RegExp(`${SEL.txtContactError.source}|${SEL.txtGenericError.source}`, 'i');
+  let msg = '';
+  for (let attempt = 0; attempt <= c.t.checkoutErrorRetries; attempt++) {
+    const r = await submitAndWait(c, btn, /_s=Billing/i, ANY);
+    if (r.result === 'next') return;
+    msg = r.text;
+    if (r.result === 'error' && !r.generic) break;
+    c.log(`Shipping Continue: ${msg} — повтор`, 'warn');
+    await sleep(1200, sig);
   }
+  c.setState('NEED_HUMAN', `Shipping: ${msg} — поправь поле и нажми Continue`);
+  c.alert(`Заказ ${o.id}: адрес`, msg);
+  if (await waitForUrl(/_s=Billing/i, 600_000, sig)) c.log('Billing после ручного исправления адреса');
 }

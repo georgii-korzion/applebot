@@ -14,6 +14,10 @@
 //   HYDRATE_MS=250         задержка «гидратации» страницы конфигурации
 //   ATTACH_DELAY_MS=900    200 → beacon/atb → step=attach
 //   DEFAULT_CITY=Dubai     город в чекауте по умолчанию
+//   QUEUE_AFTER_OPEN=0     после открытия первые N заходов сессии на страницу товара — «очередь» с meta refresh (2 с),
+//                          страница сама ведёт дальше; ручные рефреши очереди считаются (queueReloads)
+//   CHECKOUT_ERR_FIRST=0   первый Continue на Fulfillment и первый Continue to Payment — ошибка общего вида
+//   EMPTY_BAG_FIRST=0      первый Add to Bag сессии проходит (step=attach), но корзина остаётся пустой
 //   STORE_CLOSED=          магазин закрыт до открытия продаж (все /ae/shop/*):
 //                            blank    — пустая страница (200), JSON — 503
 //                            backsoon — «We’ll be back.» (503) по тому же адресу
@@ -40,6 +44,9 @@ const S = {
   attachDelayMs: num(env.ATTACH_DELAY_MS, 900),
   defaultCity: env.DEFAULT_CITY ?? 'Dubai',
   storeClosed: env.STORE_CLOSED ?? '',
+  queueAfterOpen: num(env.QUEUE_AFTER_OPEN, 0),
+  checkoutErrFirst: env.CHECKOUT_ERR_FIRST === '1',
+  emptyBagFirst: env.EMPTY_BAG_FIRST === '1',
 };
 let openAt = Date.now() + S.openAfter * 1000;
 
@@ -79,7 +86,7 @@ function session(req, res) {
   let sid = ck.sid;
   if (!sid || !sessions.has(sid)) {
     sid = crypto.randomBytes(8).toString('hex');
-    sessions.set(sid, { sid, created: Date.now(), hits: [], bag: [], busyShown: false, atb: crypto.randomBytes(20).toString('hex'), atbOk: 0, atb404: 0, checkout: {}, geo: null, pending: null });
+    sessions.set(sid, { sid, created: Date.now(), hits: [], bag: [], busyShown: false, queueLeft: null, lastQueueUrl: null, queueReloads: 0, queuePassed: 0, fulfillErr: 0, contactErr: 0, atbAttempts: 0, atb: crypto.randomBytes(20).toString('hex'), atbOk: 0, atb404: 0, checkout: {}, geo: null, pending: null });
     res.appendHeader('set-cookie', `sid=${sid}; Path=/; HttpOnly; SameSite=Lax`);
   }
   const s = sessions.get(sid);
@@ -117,7 +124,11 @@ function page(s, title, body, { status, scripts = '' } = {}) {
 }
 const notFound = (s) => page(s, 'Page Not Found - Apple (AE)', '<h1>The page you’re looking for can’t be found.</h1><p>Page Not Found</p>', { status: 404 });
 const busy = (s) => page(s, 'Apple Store', '<h1>We’re busy right now.</h1><p>Almost there — so are we. Please try again in a moment.</p>', { status: 503 });
-const backSoon = (s, status = 503) => page(s, 'Apple Store', '<h1>We’ll be back.</h1><p>We’re busy updating the Apple Store for you and will be back shortly.</p>', { status });
+// текст снят с apple.com (US) перед предзаказом iPhone 17/18 Pro
+const backSoon = (s, status = 503) => page(s, 'Apple Store', '<h1>We love that early energy.</h1><p>Almost ready for you. Pre-order begins at 4:00 p.m. See you soon.</p>', { status });
+// страница очереди: сама ведёт дальше через meta refresh (как «очередь» Apple 12.09.2026)
+const queuePage = (s, nextUrl, step) => page(s, 'Apple Store', `<h1>You’re in line.</h1><p>We’ll take you to the store when it’s your turn (step ${step}). Please don’t refresh this page.</p>`
+  + `<meta http-equiv="refresh" content="2;url=${nextUrl}">`);
 const storeOpen = () => Date.now() >= openAt;
 
 function productPage(s, p) {
@@ -353,6 +364,7 @@ function checkoutClient() {
       'checkout.fulfillment.pickupTab.pickup.timeSlot.dateTimeSlots.timeZone': 'Asia/Dubai',
     }).then(function (r) {
       if (r.ok) return go('PickupContact-init');
+      if (r.generic) { setErr(r.error); enable(); return; }
       st.removed[st.slot] = true; st.slot = ''; setErr(r.error); slots(); enable();
     });
   }
@@ -476,7 +488,7 @@ const server = http.createServer(async (req, res) => {
         open: Date.now() >= openAt, openAt, settings: S,
         sessions: [...sessions.values()].map((s) => ({
           sid: s.sid, geo: s.geo, bag: s.bag.map((i) => ({ part: i.part, qty: i.qty })), atbOk: s.atbOk, atb404: s.atb404,
-          checkout: s.checkout, busyShown: s.busyShown, hits: s.hits,
+          checkout: s.checkout, busyShown: s.busyShown, hits: s.hits, queueReloads: s.queueReloads, queuePassed: s.queuePassed, atbAttempts: s.atbAttempts,
         })),
         orders,
       });
@@ -516,10 +528,12 @@ const server = http.createServer(async (req, res) => {
     if (path === '/ae/shop/beacon/atb') {
       const t = q.get('t');
       if (s.pending && s.pending.token === t) {
-        const ex = s.bag.find((i) => i.part === s.pending.part);
-        if (ex) ex.qty++;
-        else s.bag.push({ id: crypto.randomBytes(4).toString('hex'), part: s.pending.part, qty: 1 });
-        s.atbOk++;
+        if (!s.pending.ghost) {
+          const ex = s.bag.find((i) => i.part === s.pending.part);
+          if (ex) ex.qty++;
+          else s.bag.push({ id: crypto.randomBytes(4).toString('hex'), part: s.pending.part, qty: 1 });
+          s.atbOk++;
+        }
         s.pending = null;
       }
       res.writeHead(204); return res.end();
@@ -544,6 +558,7 @@ const server = http.createServer(async (req, res) => {
         const slot = body['checkout.fulfillment.pickupTab.pickup.timeSlot.dateTimeSlots.timeSlotValue'] ?? '';
         const store = body['checkout.fulfillment.pickupTab.pickup.storeLocator.selectStore'];
         if (S.unavailableStores.includes(store)) return json(res, { ok: false, error: 'This store is not available for pickup.' });
+        if (S.checkoutErrFirst && s.fulfillErr++ === 0) return json(res, { ok: false, generic: true, error: 'We’re sorry, something went wrong. Please try again.' });
         const firstOfDay = /-16:15-16:30$/.test(slot);
         if (S.takenFirstSlot && firstOfDay) return json(res, { ok: false, error: 'The pickup time you selected is no longer available. Please choose another time.' });
         s.checkout.fulfillment = { store, slot, city: body['checkout.fulfillment.pickupTab.pickup.storeLocator.searchInput'] };
@@ -558,6 +573,7 @@ const server = http.createServer(async (req, res) => {
       if (a === 'continueFromPickupContactToBilling') {
         const pre = 'checkout.pickupContact.selfPickupContact.selfContact.address.';
         if (body['checkout.pickupContact.pickupContactOptions.selectedPickupOption'] !== 'SELF') return json(res, { ok: false, error: 'Please choose who will pick up the order.' });
+        if (S.checkoutErrFirst && s.contactErr++ === 0) return json(res, { ok: false, generic: true, error: 'An unexpected error occurred. Please try again.' });
         if (!body[pre + 'firstName'] || !body[pre + 'lastName']) return json(res, { ok: false, error: 'Please enter a first and last name.' });
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body[pre + 'emailAddress'] ?? '')) return json(res, { ok: false, error: 'Please enter a valid email address.' });
         if (!/^05\d{8}$/.test(body[pre + 'mobilePhone'] ?? '')) return json(res, { ok: false, error: 'Please enter a valid mobile number.' });
@@ -583,8 +599,21 @@ const server = http.createServer(async (req, res) => {
           || (S.requireTrusted && q.get('hx') !== '1') || !isOpen(p) || s.atb404 < S.atb404First || Math.random() < S.atb404Rate;
         if (bad) { s.atb404++; return send(res, notFound(s)); }
         const token = crypto.randomBytes(6).toString('hex');
-        s.pending = { part: p.part, token };
+        s.atbAttempts++;
+        // сломанная сессия корзины: attach проходит, товар не появляется
+        s.pending = { part: p.part, token, ghost: S.emptyBagFirst && s.atbAttempts === 1 };
         return send(res, atbPendingPage(s, p, token));
+      }
+      if (isOpen(p) && S.queueAfterOpen > 0) {
+        const here = path + url.search;
+        if (s.lastQueueUrl === here) { s.queueReloads++; return send(res, queuePage(s, `${path}?qstep=${s.queuePassed}`, s.queuePassed)); }
+        if (s.queueLeft === null) s.queueLeft = S.queueAfterOpen;
+        if (s.queueLeft > 0) {
+          s.queueLeft--; s.queuePassed++;
+          s.lastQueueUrl = here;
+          return send(res, queuePage(s, `${path}?qstep=${s.queuePassed}`, s.queuePassed));
+        }
+        s.lastQueueUrl = null;
       }
       if (isOpen(p) && p.family === 'iphone-duo' && S.busyFirst && !s.busyShown) { s.busyShown = true; return send(res, busy(s)); }
       return send(res, productPage(s, p));

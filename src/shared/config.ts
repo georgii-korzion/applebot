@@ -28,6 +28,12 @@ export interface Timing {
   atb404MaxInRow: number; holdLoserBagSec: number; manualPayTimeoutSec: number; assistAfterFailures: number;
   /** Рефреш закрытого магазина / пустой страницы до openAt − 60 с. */
   closedReloadMs: number;
+  /** Сколько ждать, пока страница очереди Apple сама пустит дальше, прежде чем перезагрузить её. */
+  queueMaxWaitSec: number;
+  /** Ожидание гидратации страницы товара (есть разметка, но ещё нет формы покупки). */
+  hydrateWaitMs: number;
+  /** Повторы одного и того же действия чекаута при ошибке общего вида («unexpected error»). */
+  checkoutErrorRetries: number;
 }
 
 export interface Config {
@@ -46,7 +52,7 @@ export const DEFAULT_TIMING: Timing = {
   pollMs: 1200, preOpenReloadMs: 3000, postOpenReloadMs: 1500, minReloadMs: 1500,
   jitterPct: 30, graceSec: 20, atbTimeoutMs: 15000, atb404BackoffMs: 1500,
   atb404MaxInRow: 5, holdLoserBagSec: 90, manualPayTimeoutSec: 600, assistAfterFailures: 3,
-  closedReloadMs: 30000,
+  closedReloadMs: 30000, queueMaxWaitSec: 90, hydrateWaitMs: 12000, checkoutErrorRetries: 2,
 };
 
 export function defaultOrder(id = 'A'): OrderCfg {
@@ -196,6 +202,7 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   if (cfg.timing.postOpenReloadMs < cfg.timing.minReloadMs) warnings.push('postOpenReloadMs < minReloadMs — будет поднят до minReloadMs');
   if (cfg.timing.pollMs < 1000) errors.push('timing.pollMs < 1000 — наблюдатель не чаще раза в секунду (§7.1)');
   if (cfg.timing.closedReloadMs < 5000) errors.push('timing.closedReloadMs < 5000 — закрытый магазин до старта не чаще раза в 5 с');
+  if (cfg.timing.queueMaxWaitSec < 10) errors.push('timing.queueMaxWaitSec < 10 — страницу очереди Apple нельзя дёргать чаще');
   if (cfg.limits.maxTabsTotal > 12) warnings.push('maxTabsTotal > 12 — выше рекомендованного (§0)');
   if (!/^https?:\/\//.test(cfg.baseUrl)) errors.push('baseUrl должен начинаться с http(s)://');
   if (cfg.hubUrl && !/^wss?:\/\//.test(cfg.hubUrl)) errors.push('hubUrl должен начинаться с ws://');

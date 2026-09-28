@@ -14,10 +14,10 @@ export async function atbFlow(c: Ctl): Promise<void> {
   const sig = c.signal;
   const target = c.target();
   c.setState('ATB_PREP', `опции ${partLabel(target)}`);
-  // 1. гидратация
-  const trade = await waitFor(SEL.noTradeIn, 8000, sig);
+  // 1. гидратация: кнопка обязана быть (мы здесь из-за неё); trade-in появляется вместе с ней — ждём недолго
   let btn = await waitFor<HTMLButtonElement>(SEL.addToBag, 8000, sig);
   if (!btn) { c.log('add-to-cart пропала', 'warn'); scheduleByPhase(c); return; }
+  const trade = q(SEL.noTradeIn) ?? await waitFor(SEL.noTradeIn, 1500, sig);
   // 2. нужный ли товар в форме
   const form = btn.closest('form');
   const prod = (form?.querySelector<HTMLInputElement>(SEL.atbProductField) ?? q<HTMLInputElement>(SEL.atbProductField))?.value;
@@ -43,9 +43,9 @@ export async function atbFlow(c: Ctl): Promise<void> {
   } else if (ac) sawAcpart = true;
   else c.log('нет noapplecare — пропускаю', 'warn');
   // 5. кнопка активируется сама (disabled руками не снимаем)
-  btn = await waitUntil(() => { const b = q<HTMLButtonElement>(SEL.addToBag); return b && isEnabled(b) ? b : null; }, 10000, sig);
+  btn = await waitUntil(() => { const b = q<HTMLButtonElement>(SEL.addToBag); return b && isEnabled(b) ? b : null; }, 12000, sig);
   if (!btn) {
-    c.setState('FAST_RELOAD', 'Add to Bag не активировалась за 10 с');
+    c.setState('FAST_RELOAD', 'Add to Bag не активировалась за 12 с');
     c.scheduleReload(c.jit(c.t.postOpenReloadMs), 'atb-disabled');
     return;
   }
@@ -88,6 +88,14 @@ export async function atbResult(c: Ctl, page: PageInfo): Promise<boolean> {
     case 'closed':
       await atbFail(c, 'BUSY');
       return true;
+    case 'queue': {
+      // очередь после клика: страница сама вернёт на add-to-cart — не уходим и не рефрешим
+      c.ts.queueSince ??= Date.now();
+      const left = c.t.queueMaxWaitSec * 1000 - (Date.now() - c.ts.queueSince);
+      c.setState('ATB_PENDING', `очередь Apple после Add to Bag — ждём, лимит ещё ${Math.max(0, Math.round(left / 1000))} с`);
+      c.timer(Math.max(left, 1000), () => { c.ts.queueSince = undefined; void atbFail(c, 'ATB_TIMEOUT'); });
+      return true;
+    }
     case 'atb-pending': {
       // 200 на URL с add-to-cart= — ничего не делать и не уходить, сайт сам перейдёт на step=attach
       c.setState('ATB_PENDING', 'запрос принят, ждём step=attach — не уходим');

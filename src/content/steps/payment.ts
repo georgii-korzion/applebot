@@ -24,8 +24,9 @@ export async function paymentStep(c: Ctl): Promise<void> {
         c.log('Apple Pay недоступен — фолбэк на карту (applePayFallback=manual)', 'warn');
         method = 'manual';
       } else {
-        c.setState('STUCK', 'Apple Pay недоступен, фолбэк выключен');
-        c.alert(`Заказ ${o.id}: оплата`, 'Apple Pay недоступен');
+        c.setState('NEED_HUMAN', 'Apple Pay недоступен, фолбэк выключен — выбери способ оплаты сам');
+        c.alert(`Заказ ${o.id}: оплата`, 'Apple Pay недоступен — выбери способ оплаты в окне');
+        c.overlay.banner(`${payLabel(c)} · Apple Pay недоступен`, 'Выбери способ оплаты сам; расширение ничего не вводит', 'warn');
         return;
       }
     } else if (!isChecked(ap)) pickRadio(ap);
@@ -65,9 +66,9 @@ export function showPayBanner(c: Ctl): void {
     const what = c.ts.payMethod === 'applepay'
       ? 'подтверди Apple Pay (кнопка оплаты + Touch ID / iPhone)'
       : 'введи карту и нажми Review → Place Order';
-    c.overlay.banner(`${label} · ${what}`, 'Финальное действие — за тобой. Расширение ничего не вводит и не нажимает.', 'warn');
+    c.overlay.banner(`${label} · ${what}`, 'Финальное действие — за тобой. Если после Place Order ошибка — не жми снова: проверь почту и номер заказа, заказ мог пройти (так было 12.09, у людей вышли дубли).', 'warn');
   } else if (c.ts.state === 'REVIEW') {
-    c.overlay.banner(`${label} · нажми Place Order`, 'Расширение только наблюдает', 'warn');
+    c.overlay.banner(`${label} · нажми Place Order`, 'Расширение только наблюдает. Ошибка после Place Order → сначала проверь почту/номер заказа, потом повторяй.', 'warn');
   }
   c.renderOverlay({ timerSince: c.ts.slotAt, timerLabel: 'слот выбран' });
 }

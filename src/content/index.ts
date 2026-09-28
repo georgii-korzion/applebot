@@ -1,10 +1,13 @@
 // Вход content script: классификация страницы → шаг машины состояний (§6).
 import type { S2C } from '../shared/messages';
 import { Ctl } from './ctl';
-import { classify, type PageInfo } from './classify';
+import { classify, hasProductMarkers, isModal, type PageInfo } from './classify';
 import { watchRoute } from './router';
 import { Overlay } from './overlay';
-import { becomeStopped, busyBackoff } from './steps/common';
+import { becomeStopped, busyBackoff, queueStep } from './steps/common';
+import { assistClick } from './assist';
+import { clickable, q } from './dom';
+import { SEL } from '../shared/selectors';
 import { closedStep, reportStore } from './steps/closed';
 import { handleCountry } from './steps/country';
 import { ensureWatcher, onOpen, productStep } from './steps/preopen';
@@ -25,11 +28,24 @@ async function dispatch(c: Ctl): Promise<void> {
     return;
   }
   if (page.country) {
-    const r = await handleCountry(c, page.country);
-    if (r === 'handled') c.timer(1500, () => c.rerun('after-country'));
+    // §7.5: до старта — обрабатываем всегда (время есть, ставится гео-cookie); модалку или баннер без формы
+    // покупки — тоже. После OPEN узкий баннер над готовой формой покупки пробуем убрать один раз на вкладку,
+    // а если он возвращается — не тратим загрузки: важнее Add to Bag.
+    const must = isModal(page.country) || !hasProductMarkers();
+    if (must || !c.os.openedAt || !c.ts.countryTried) {
+      const r = await handleCountry(c, page.country);
+      if (r === 'handled') c.timer(1500, () => c.rerun('after-country'));
+      return;
+    }
+    if (c.ts.countryInRow) { c.ts.countryInRow = 0; c.log('баннер выбора страны снова рядом с формой покупки — игнорирую, иду к Add to Bag', 'warn'); void c.save(); }
+  } else if (c.ts.countryInRow) { c.ts.countryInRow = 0; void c.save(); }
+  if (page.kind !== 'queue' && c.ts.queueSince) { c.ts.queueSince = undefined; void c.save(); }
+  if (page.kind === 'queue') {
+    if (c.ts.mode === 'race' && c.ts.atbPendingSince) { await atbResult(c, page); return; }
+    if (c.ts.mode === 'prep') { prepClosed(c); return; }
+    queueStep(c, page);
     return;
   }
-  if (c.ts.countryInRow) { c.ts.countryInRow = 0; void c.save(); }
   if (page.kind === 'closed') {
     if (c.ts.mode === 'race' && c.ts.atbPendingSince) { await atbResult(c, page); return; }
     if (c.ts.mode === 'prep') { prepClosed(c); return; }
@@ -39,7 +55,7 @@ async function dispatch(c: Ctl): Promise<void> {
   if (['bag', 'signin', 'checkout', 'attach', 'atb-pending', 'thankyou'].includes(page.kind)) reportStore(c, false, page.kind);
   if (page.kind === 'busy') {
     if (c.ts.mode === 'race' && c.ts.atbPendingSince) { await atbResult(c, page); return; }
-    busyBackoff(c);
+    busyBackoff(c, page);
     return;
   }
   c.ts.busyInRow = 0;
@@ -112,7 +128,14 @@ async function bagAfterAtb(c: Ctl): Promise<void> {
     c.send({ t: 'BAG', ok: false, detail: r.detail });
     if (r.empty) {
       c.ts.lastOutcome = 'EMPTY_BAG';
-      c.setState('FAST_RELOAD', 'корзина пуста после Add to Bag — повтор');
+      const n = ++c.ts.emptyBagInRow;
+      // «bag icon still shows as empty» после Add to Bag = сломанная сессия корзины (12.09) — бесконечно не повторяем
+      if (n >= 3) {
+        c.setState('STUCK', `корзина пуста после Add to Bag ${n} раза подряд — сессия корзины сломана; помогает открыть корзину руками или другой профиль`);
+        c.alert(`Заказ ${c.order?.id}: корзина пуста ${n}×`, 'Сессия корзины сломана — проверь окно, при необходимости Clean bag и Start заново');
+        return;
+      }
+      c.setState('FAST_RELOAD', `корзина пуста после Add to Bag (${n}) — повтор`);
       await c.navigate(c.targetUrl(), 'повтор Add to Bag', true);
       return;
     }
@@ -120,6 +143,7 @@ async function bagAfterAtb(c: Ctl): Promise<void> {
     c.alert(`Заказ ${c.order?.id}: корзина`, r.detail);
     return;
   }
+  c.ts.emptyBagInRow = 0;
   c.send({ t: 'BAG', ok: true, detail: r.detail });
   c.setState('IN_BAG', `${r.detail} — ждём решения`);
   if (!applyDecision(c)) c.timer(6000, () => c.rerun('bag-decision-timeout'));
@@ -137,6 +161,7 @@ async function checkoutStep(c: Ctl, page: PageInfo): Promise<void> {
   if (c.ts.state === 'ORDERED') { showPayBanner(c); return; }
   switch (page.kind) {
     case 'bag': {
+      if (c.ts.applePayExpress) return applePayExpress(c);
       c.setState('CHECKOUT', 'корзина');
       const r = await fixBag(c, c.target());
       if (!r.ok) {
@@ -185,6 +210,17 @@ async function checkoutStep(c: Ctl, page: PageInfo): Promise<void> {
   }
 }
 
+/** Самовывоза нет, allowApplePayExpress: Apple Pay из корзины — кнопку жмёт человек (лист Apple Pay), расширение только подсвечивает. */
+async function applePayExpress(c: Ctl): Promise<void> {
+  const btn = q(SEL.bagApplePay);
+  if (!btn) { c.setState('STUCK', 'нет кнопки Apple Pay в корзине'); return; }
+  c.ts.payMethod = 'applepay';
+  c.ts.payStartedAt ??= Date.now();
+  await assistClick(c, clickable(btn), 'Apple Pay Express', 'Самовывоза нет — оплати доставку через Apple Pay из корзины');
+  c.setState('PAYING', 'Apple Pay Express — подтверди на листе Apple Pay');
+  watchForOrderNo(c);
+}
+
 // ---------- сообщения SW ----------
 function onSwMessage(c: Ctl, m: S2C): void {
   switch (m.t) {
@@ -196,7 +232,7 @@ function onSwMessage(c: Ctl, m: S2C): void {
       c.role = m.role;
       c.renderOverlay();
       ensureWatcher(c);
-      if (c.ts.mode === 'race' && ['WATCHING', 'PRE_RELOAD', 'ARMED'].includes(c.ts.state)) c.rerun('role');
+      if (c.ts.mode === 'race' && ['WATCHING', 'PRE_RELOAD', 'ARMED', 'CLOSED', 'BUSY'].includes(c.ts.state)) c.rerun('role');
       break;
     case 'OPEN':
       c.os.openedAt ??= Date.now();
@@ -263,6 +299,8 @@ async function main(): Promise<void> {
   if (w.__appleDropAssistant) return;
   w.__appleDropAssistant = true;
 
+  // буфер Resource Timing: чекаут Apple грузит сотни ресурсов, а нам нужны записи updateSummary/checkoutx
+  try { performance.setResourceTimingBufferSize(3000); } catch { /* */ }
   const c = new Ctl();
   c.dispatch = dispatch;
   c.onMessage = (m) => onSwMessage(c, m);

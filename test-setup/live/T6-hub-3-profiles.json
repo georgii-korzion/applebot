@@ -59,7 +59,10 @@
     "holdLoserBagSec": 90,
     "manualPayTimeoutSec": 600,
     "assistAfterFailures": 3,
-    "closedReloadMs": 30000
+    "closedReloadMs": 30000,
+    "queueMaxWaitSec": 90,
+    "hydrateWaitMs": 12000,
+    "checkoutErrorRetries": 2
   },
   "retries": {
     "checkout": 4,

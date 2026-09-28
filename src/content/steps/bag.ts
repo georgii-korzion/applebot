@@ -25,7 +25,12 @@ function items(): BagItem[] {
 export async function readBag(c: Ctl, timeout = 10000): Promise<{ list: BagItem[]; empty: boolean } | null> {
   const ok = await waitUntil(() => (qa(SEL.bagItemName).length || SEL.txtEmptyBag.test(bodyText()) ? true : null), timeout, c.signal);
   if (!ok) return null;
-  const list = items();
+  let list = items();
+  // «Your bag is empty» может мелькнуть до того, как позиции догрузятся — даём им 2 с
+  if (!list.length) {
+    await waitUntil(() => (qa(SEL.bagItemName).length ? true : null), 2000, c.signal);
+    list = items();
+  }
   return { list, empty: list.length === 0 };
 }
 

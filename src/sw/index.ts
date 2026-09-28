@@ -34,7 +34,7 @@ initNotifyClicks();
 
 // сброс буфера логов и проверка хаба раз в 30 с (SW может быть выгружен между событиями)
 chrome.alarms.create('tick', { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener(() => { void orch.ready.then(() => Promise.all([orch.logs.flush(), orch.checkAway()])); });
+chrome.alarms.onAlarm.addListener(() => { void orch.ready.then(() => { orch.ensureSwWatch(); return Promise.all([orch.logs.flush(), orch.checkAway()]); }); });
 
 chrome.runtime.onInstalled.addListener(async (d) => {
   if (d.reason !== 'install') return;

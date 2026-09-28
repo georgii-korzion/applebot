@@ -75,7 +75,7 @@ function render(st: Status): void {
   else if (os.storeReopenedAt) kv('Apple Store', `открылся в ${new Date(os.storeReopenedAt).toLocaleTimeString()}`, 'ok');
   if (os.watch) {
     const w = Object.entries(os.watch).map(([p, s]) => `${p}: ${s.isBuyable ? 'BUYABLE' : s.reason ?? '?'}`).join(' · ');
-    kv('наблюдатель', w);
+    kv('наблюдатель', `${w}${os.watchAt ? ` · ${ago(os.watchAt)}` : ''}${os.watchSource === 'sw' ? ' · страховочный опрос из SW' : ''}`);
   }
   kv('Prepare', st.prepared ? `${st.prepared.ok ? '✓' : '✗'} ${ago(st.prepared.at)} — ${st.prepared.detail}` : 'не выполнялся', st.prepared ? (st.prepared.ok ? 'ok' : 'err') : 'warn');
   if (st.payQueue.length || st.payActive) kv('очередь оплаты', `${st.payActive ? `сейчас вкладка ${st.payActive}` : '—'}${st.payQueue.length ? ` · ждут ${st.payQueue.map((p) => p.tabId).join(', ')}` : ''}`);
@@ -90,7 +90,7 @@ function render(st: Status): void {
   for (const t of st.tabs) {
     const tr = el('tr', undefined, 'click');
     tr.title = `${t.url ?? ''}\n${t.detail ?? ''}`;
-    const stCls = /STUCK|TIMEOUT|ERROR/.test(t.state) ? 'err' : /ASSIST|STANDBY|COUNTRY|BUSY|CLOSED/.test(t.state) ? 'warn' : /BILLING|PAY|ORDERED|IN_BAG/.test(t.state) ? 'ok' : '';
+    const stCls = /STUCK|TIMEOUT|ERROR/.test(t.state) ? 'err' : /ASSIST|STANDBY|COUNTRY|BUSY|CLOSED|QUEUE|NEED_HUMAN/.test(t.state) ? 'warn' : /BILLING|PAY|ORDERED|IN_BAG/.test(t.state) ? 'ok' : '';
     tr.append(
       el('td', String(t.tabId) + (t.tabId === st.os.winnerTabId ? ' ★' : '')),
       el('td', t.role === 'idle' ? t.mode : t.role),

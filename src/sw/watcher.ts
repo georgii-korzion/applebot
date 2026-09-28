@@ -29,6 +29,10 @@ export function assignRoles(o: Orchestrator): void {
     if (!t || t.role === role) continue;
     t.role = role;
     o.sendTab(tabId, { t: 'ROLE', role }, false);
-    if (role === 'watcher') o.log(tabId, 'ROLE', 'наблюдатель (JSON fulfillment-messages)');
+    if (role === 'watcher') {
+      o.log(tabId, 'ROLE', 'наблюдатель (JSON fulfillment-messages)');
+      // наблюдатель — активная вкладка своего окна: видимую вкладку Chrome не тормозит
+      chrome.tabs.update(tabId, { active: true }).catch(() => {});
+    }
   }
 }

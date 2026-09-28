@@ -37,13 +37,17 @@ export interface TabState {
   orderNo?: string;
   storeClosed?: boolean;
   lastTargetNavAt?: number;
+  emptyBagInRow: number;
+  queueSince?: number;
+  applePayExpress?: boolean;
+  countryTried?: boolean;
   updatedAt: number;
 }
 
 export function newTabState(mode: Mode = 'idle', extra: Partial<TabState> = {}): TabState {
   return {
     mode, state: mode === 'idle' ? 'IDLE' : 'INIT', reloads: 0, atb404InRow: 0, countryInRow: 0,
-    busyInRow: 0, fails: {}, checkoutRetries: 0, updatedAt: Date.now(), ...extra,
+    busyInRow: 0, fails: {}, checkoutRetries: 0, emptyBagInRow: 0, updatedAt: Date.now(), ...extra,
   };
 }
 
@@ -71,6 +75,8 @@ export interface OrderState {
   storeClosedSince?: number;
   storeReopenedAt?: number;
   watch?: Record<string, { isBuyable: boolean; reason?: string; quote?: string; at: number }>;
+  watchAt?: number;
+  watchSource?: 'tab' | 'sw';
   timestamps: Record<string, number>;
 }
 
@@ -99,6 +105,7 @@ export type C2S =
   | { t: 'STATE'; state: string; mode: Mode; detail?: string; outcome?: string; counters?: { reloads: number; atb404: number } }
   | { t: 'OPEN'; source: string; buyable: string[] }
   | { t: 'WATCH'; statuses: Record<string, { isBuyable: boolean; reason?: string; quote?: string }>; pickup?: string }
+  | { t: 'WATCH_TICK'; ok: boolean }
   | { t: 'ATB_LOCK_REQ'; ttl: number }
   | { t: 'ATB_RESULT'; ok: boolean; outcome: AtbOutcome; diag?: AtbDiag }
   | { t: 'BAG'; ok: boolean; detail?: string }
@@ -128,6 +135,7 @@ export type S2C =
   | { t: 'OS'; os: OrderState }
   | { t: 'DIAG'; net: { url: string; status: number; ago: number }[] }
   | { t: 'NET'; kind: 'updateSummary'; acpartNone: boolean; at: number }
+  | { t: 'SW_WATCH'; at: number; ok: boolean }
   | { t: 'MODE'; mode: Mode; extra?: Partial<TabState> };
 
 // SW ↔ hub

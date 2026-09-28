@@ -22,6 +22,8 @@ export class Ctl {
   role: Role = 'idle';
   hub = false;
   overlay!: Overlay;
+  /** Последний успешный опрос страховочного поллера в SW (сообщение SW_WATCH). */
+  swWatchAt = 0;
 
   private ac = new AbortController();
   private timers = new Set<ReturnType<typeof setTimeout>>();
@@ -112,6 +114,7 @@ export class Ctl {
       return;
     }
     if (m.t === 'NET') { for (const cb of this.netSubs) cb(m.acpartNone, m.at); return; }
+    if (m.t === 'SW_WATCH') { if (m.ok) this.swWatchAt = m.at; return; }
     const w = this.waiters.get(m.t);
     if (w) { w(m); return; }
     this.onMessage(m);

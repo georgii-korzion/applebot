@@ -56,14 +56,22 @@ export const SEL = {
   // тексты
   txtPreorder: 'Pre-order starting',
   txtBusy: /(so are we|Almost there|Be right back|busy right now|high demand|isn.t available right now)/i,
-  // магазин закрыт перед дропом («We'll be back», жёлтый стикер) [точный текст AE не снят]
-  txtClosed: /(We.ll be back|be back soon|back shortly|making updates|updating the (Apple )?(Online )?Store|Check back (soon|later)|store is (currently )?(closed|unavailable)|temporarily unavailable)/i,
+  // магазин закрыт перед дропом. Снято на iPhone 17/18 Pro (US): «We love that early energy. Almost ready for you.
+  // Pre-order begins at 5:00 a.m. PT. See you soon». Плюс классические «We'll be back» и т.п.
+  txtClosed: /(early energy|Almost ready for you|Pre-order begins at|See you soon|We.ll be back|be back soon|back shortly|making updates|updating the (Apple )?(Online )?Store|Check back (soon|later)|store is (currently )?(closed|unavailable)|temporarily unavailable)/i,
+  // страница очереди (iPhone 18 Pro: «Apple has a queue system, versus refresh-hammering, and will open the order
+  // page when it has reached your spot in the queue») [точный текст не снят] — такую страницу НЕ рефрешим сами
+  txtQueue: /(in line|in the queue|your (place|spot) in|hold your (place|spot)|don.t (refresh|reload|close)|do not (refresh|reload|close)|keep this (page|window|tab) open|we.ll (let you in|take you|bring you)|your turn|waiting room|estimated wait|you.re next|leave this page)/i,
+  // ошибка общего вида на чекауте (12.09.2026: «unexpected errors during checkout», лечится повтором) — повторить то же действие
+  txtGenericError: /(unexpected error|something went wrong|try again|temporarily unable|technical (issue|difficult)|could not (be )?process|unable to (process|complete|continue)|sorry)/i,
   txt404: /can.t be found|Page Not Found/i,
   txtCountry: /(Choose another country or region|country or region|You.re viewing)/i, // уточнить по живой разметке
   txtUAE: /United Arab Emirates|\bUAE\b/i,
   txtContinue: /^\s*(Continue|Go|Stay)/i,
   txtSlotError: /(no longer available|not available for|Please select|Please choose)/i,
   txtContactError: /Please\s[^.\n]{3,120}/i,
+  // ошибка валидации поля/выбора — повтор не поможет, нужен человек (в отличие от «Please try again»)
+  txtValidation: /(Please (select|choose|enter|provide|check|correct|complete|confirm|review|add)|is required|invalid|not valid|must be|can.t be blank)/i,
   txtEmptyBag: /Your bag is empty/i,
   txtOrderNo: /\bW\d{9,11}\b/,
   txtThanks: /(thank you|your order number|order number)/i,
