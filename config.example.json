@@ -1,0 +1,46 @@
+{
+  "profileId": "drop-1",
+  "hubUrl": "ws://127.0.0.1:8765",
+  "openAt": "2026-10-16T16:00:00+04:00",
+  "mode": "auto",
+  "orders": [
+    {
+      "id": "A",
+      "priority": 1,
+      "profiles": ["drop-1", "drop-2"],
+      "racersPerProfile": 3,
+      "targets": ["MK254AH/A", "MK244AH/A"],
+      "stores": ["R597", "R596", "R706"],
+      "city": "Dubai",
+      "slot": { "day": null, "after": null, "before": null },
+      "payment": "applepay",
+      "applePayFallback": "manual",
+      "contact": { "firstName": "", "lastName": "", "email": "", "phone": "05XXXXXXXX" },
+      "deliveryFallback": false,
+      "address": { "street": "", "area": "", "city": "Dubai" }
+    },
+    {
+      "id": "B",
+      "priority": 2,
+      "profiles": ["drop-3", "drop-4"],
+      "racersPerProfile": 3,
+      "targets": ["MK274AH/A", "MK264AH/A"],
+      "stores": ["R596", "R597", "R706"],
+      "city": "Dubai",
+      "slot": { "day": null, "after": null, "before": null },
+      "payment": "manual",
+      "applePayFallback": "manual",
+      "contact": { "firstName": "", "lastName": "", "email": "", "phone": "05XXXXXXXX" },
+      "deliveryFallback": false,
+      "address": { "street": "", "area": "", "city": "Dubai" }
+    }
+  ],
+  "timing": {
+    "pollMs": 1200, "preOpenReloadMs": 3000, "postOpenReloadMs": 1500, "minReloadMs": 1500,
+    "jitterPct": 30, "graceSec": 20, "atbTimeoutMs": 15000, "atb404BackoffMs": 1500,
+    "atb404MaxInRow": 5, "holdLoserBagSec": 90, "manualPayTimeoutSec": 600, "assistAfterFailures": 3
+  },
+  "retries": { "checkout": 4, "slotsPerStore": 4 },
+  "limits": { "maxTabsTotal": 12 },
+  "baseUrl": "https://www.apple.com"
+}

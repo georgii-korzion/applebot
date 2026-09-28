@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dist-dev/
+dist-test/
+test/.profiles/
+test/.artifacts/
+*.log
+.DS_Store

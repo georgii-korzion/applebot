@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Apple Drop Assistant</title>
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    body { width: 460px; padding: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .grid button { width: 100%; }
+    .kv { display: grid; grid-template-columns: 110px 1fr; gap: 2px 8px; }
+    td.det { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="row spread">
+    <h1>Apple Drop Assistant</h1>
+    <span id="hub" class="badge">hub —</span>
+  </div>
+  <div class="row muted" style="margin-top:4px">
+    <span id="who">…</span>
+    <span id="mode" class="badge">auto</span>
+  </div>
+
+  <div class="card kv" id="summary"></div>
+  <div id="validation" class="msg"></div>
+
+  <div class="grid">
+    <button id="start" class="primary">Start</button>
+    <button id="stop" class="danger">Stop</button>
+    <button id="prepare">Prepare</button>
+    <button id="clean">Clean bag</button>
+    <button id="next">Следующий на оплату</button>
+    <button id="assist">Ассистент: вкл</button>
+    <button id="export">Экспорт лога</button>
+    <button id="options">Настройки</button>
+    <button id="clearlog">Очистить лог</button>
+  </div>
+  <div id="result" class="msg" style="margin-top:6px"></div>
+
+  <h2>Вкладки</h2>
+  <table>
+    <thead><tr><th>tab</th><th>роль</th><th>состояние</th><th>деталь</th><th>исход</th></tr></thead>
+    <tbody id="tabs"></tbody>
+  </table>
+
+  <h2>Лог</h2>
+  <pre class="log" id="log"></pre>
+  <script src="popup.js"></script>
+</body>
+</html>

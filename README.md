@@ -1,0 +1,122 @@
+# Apple Drop Assistant — Chrome-расширение (MV3) для предзаказа на apple.com/ae
+
+Реализация ТЗ v3 ([docs/SPEC.md](docs/SPEC.md)). Расширение работает в обычных профилях Chrome, прямо на страницах Apple, без CDP/WebDriver:
+
+- ловит открытие продаж (JSON `fulfillment-messages` + запасной сигнал по HTML);
+- рефрешит вкладки по фазам (ARMED → PRE_RELOAD → FAST_RELOAD) с джиттером и лимитами;
+- обрабатывает выбор страны, заглушки «Almost there», 404 на Add to Bag (с диагностикой);
+- кладёт товар в корзину (одна вкладка по локу), проверяет корзину, Check Out, Continue as Guest;
+- выбирает самовывоз → город → магазин → дату → check-in window (занятое окно — следующее);
+- заполняет контакты получателя, выбирает способ оплаты;
+- выводит окно человеку по очереди — со звуком и уведомлением.
+
+**Чего расширение не делает (и в код не добавлять):** не вводит карту/срок/CVV, не нажимает Review / Place Order / Pay, не обходит защиту Apple (без подмены отпечатков/UA, прокси, капчи, подделки `atbtoken`/`x-aos-stk`/Shield, без `chrome.debugger`), не генерирует личности. Если Apple не принимает программный клик — включается **режим ассистента**: кнопку жмёт человек, остальное делает расширение.
+
+---
+
+## Быстрый старт (macOS)
+
+```bash
+npm i
+npm run build          # → dist/
+```
+
+1. Chrome → создать профили `Drop 1 … Drop N` (папка профиля видна в `chrome://version` → «Путь к профилю»).
+2. В каждом профиле: `chrome://extensions` → «Режим разработчика» → «Загрузить распакованное» → папка `dist/`. Закрепить иконку.
+3. В каждом профиле: иконка → **Настройки** → «Импорт JSON» ([config.example.json](config.example.json)) или вставить JSON справа → «Применить JSON в форму» → указать свой **profileId** → «Проверить и сохранить». `profileId` хранится отдельно: повторный импорт общего JSON его не перетирает.
+4. (Опционально) хаб: `npm run hub` → дашборд <http://127.0.0.1:8765>, в конфиге `"hubUrl": "ws://127.0.0.1:8765"`.
+5. В каждом профиле: popup → **Prepare** → в popup зелёная строка «Prepare ✓».
+6. В день дропа: `scripts/open-profiles.command 6` → в каждом профиле popup → **Start**.
+
+После изменения кода: `npm run build`, затем «Обновить» в `chrome://extensions` в каждом профиле.
+
+Окружение (§7.5): VPN выключен, язык Chrome — English, часовой пояс Mac — Дубай, `caffeinate -d` в Терминале.
+
+---
+
+## Как это устроено
+
+```
+Профиль Chrome
+ ├─ service worker (src/sw)     оркестратор: конфиг, состояние заказа, лок Add to Bag,
+ │                              роли вкладок, победитель, очередь оплаты, уведомления, звук, хаб
+ ├─ content script (src/content) в каждой вкладке apple.com/ae: классификация страницы → шаг,
+ │                              DOM-действия, плашка статуса, режим ассистента
+ ├─ popup / options / offscreen (src/ui)
+ └─ ws://127.0.0.1:8765 ── hub/server.mjs (необязательно): OPEN для всех, один наблюдатель,
+                                победитель между профилями, общая очередь оплаты, дашборд
+```
+
+- **Состояние вкладки** — `chrome.storage.session` `tab:<id>` (пишет content script, в том числе прямо перед кликом Add to Bag — результат клика разбирается на следующей загрузке страницы). **Состояние заказа профиля** — ключ `order` (пишет SW).
+- **Роли.** Одна вкладка профиля — `watcher` (опрос JSON раз в ~1,2 с, до OPEN не рефрешится), остальные — `racer`. С хабом наблюдатель один на всех и опрашивает объединение `targets` всех профилей.
+- **Гонка вкладок профиля.** Add to Bag жмёт только владелец лока SW (TTL `atbTimeoutMs`). Как только корзина подтверждена, остальные вкладки получают `STOP`.
+- **Гонка профилей (хаб).** Первый профиль с товаром в корзине получает `WIN`, остальные — `LOSE` → `STANDBY` (держат товар до `holdLoserBagSec`). Победитель упал → хаб отдаёт заказ следующему (`TAKEOVER`). Победитель на Billing → проигравшие чистят корзины.
+- **Очередь оплаты.** Впереди всегда одна вкладка: окно выходит вперёд, уведомление, звук, крупная плашка «Заказ A · Dubai Mall · слот · введи карту и нажми Review → Place Order». Следующая — когда текущая дошла до Review/номера заказа или по кнопке «Следующий на оплату» (popup/дашборд). Ждущие упорядочены по `priority`, затем по времени Billing.
+- **Логи** — `[HH:MM:SS.mmm +сек от OPEN] [profile · order · tab] СОСТОЯНИЕ: текст`, кольцевой буфер 5000 строк, экспорт из popup, дубль в хаб. Токены и cookie не пишутся, email/телефон маскируются.
+
+### Состояния вкладки (§6)
+
+`ARMED → PRE_RELOAD / WATCHING → FAST_RELOAD → ATB_PREP → ATB_WAIT_LOCK → ATB_PENDING → IN_BAG → CHECKOUT → GUEST → FULFILLMENT → CONTACT → BILLING → PAY_QUEUE → PAYING (человек) → REVIEW → ORDERED`, плюс `BUSY`, `COUNTRY`, `ASSIST`, `STANDBY`, `CLEANUP`, `STOPPED`, `STUCK`, `PAY_TIMEOUT`.
+
+### Режим ассистента (§7.8)
+
+Включается кнопкой в popup (или `"mode": "assist"`) либо сам для шага после `assistAfterFailures` неудач (Add to Bag — подряд 404; Check Out / Guest — URL не сменился). Кнопка обводится зелёной рамкой, окно выходит вперёд со звуком, расширение ждёт **настоящий** клик (`event.isTrusted`) и продолжает само. То же для `select` города/окна, если приложение не приняло значение.
+
+---
+
+## Тесты
+
+```bash
+npm run typecheck      # tsc
+npm test               # юнит: парты, конфиг/валидация, слоты, маскирование, формат лога
+npm run test:e2e       # мок apple.com/ae + хаб + Chromium с dev-сборкой (dist-dev/)
+node test/e2e.mjs single hostile   # отдельные сценарии; HEADED=1 — с окнами
+```
+
+Playwright в e2e — только тестовый стенд, чтобы запускать профили Chromium с расширением. Само расширение CDP не использует.
+
+| Сценарий | Что проверяет | Результат на моке |
+|---|---|---|
+| `single` | 1 профиль, 1 вкладка: OPEN → заглушка → Add to Bag → чекаут → Billing; R597 без наличия → R596; занятое окно → следующее; фокус в поле карты, поле пустое; «человек» платит → номер `W…` пойман; в логе нет токена и контактов | Billing через ~6 с после OPEN |
+| `hostile` | 2 вкладки, выбор страны, 404 на Add to Bag (+ случайные), заглушка, смена города Abu Dhabi → Dubai через `setSelect`, Apple Pay; в корзине 1 шт., Place Order не нажат | Billing через ~6–9 с |
+| `assist` | `REQUIRE_TRUSTED=1`: 3×404 → ассистент, кнопка подсвечена, настоящий клик → дальше само до Billing | ✓ |
+| `prepare` | Prepare (страна → корзина → конфигурация) и Clean bag | ✓ |
+| `acceptance` | 3 заказа × 2 профиля × 2 вкладки + хаб: все 3 заказа на Billing, без дублей, корзины проигравших очищены, очередь оплаты по одному, «Следующий» | Billing через 4,8–5,1 с после OPEN |
+
+Мок вручную: `npm run build:dev` → загрузить `dist-dev/` → в настройках `baseUrl = http://127.0.0.1:4777` → `OPEN_AFTER=60 npm run mock`. Параметры мока — в шапке [test/mock-server.mjs](test/mock-server.mjs) (`ATB_404_RATE`, `ATB_404_FIRST`, `ACPART_DELAY_MS`, `COUNTRY_PICKER`, `REQUIRE_TRUSTED`, `UNAVAILABLE_STORES`, `TAKEN_FIRST_SLOT`, `DEFAULT_CITY`, …).
+
+### Живые тесты до 16.10 (§11.2, на iPhone 18 Pro 256 Black — `MJR54AH/A`)
+
+Для T1–T7 поставьте `targets: ["MJR54AH/A"]` и `openAt` в прошлом (валидатор предупредит, но сохранит — так и надо: товар уже продаётся). **Не платить.** После каждого теста — **Clean bag** во всех профилях.
+
+Где править, если живая разметка отличается: все селекторы и тексты — в [src/shared/selectors.ts](src/shared/selectors.ts). Не снятые места: баннер выбора страны (T4), экран Review и путь Apple Pay (T5), приём `setSelect` для города/окна (T7 — при отказе включается ассистент для поля). Диагностика каждого 404 на Add to Bag (URL без токена, `acpart=none`, ответ `updateSummary` до клика, статус навигации, статусы `/ae/shop/*` за 10 с, cookie `as_atb`/`geo`, язык, часовой пояс) — в логе и дашборде.
+
+---
+
+## Решения, где ТЗ оставляло выбор
+
+- `openAt` в прошлом — предупреждение, а не ошибка: иначе нельзя провести T1–T7 на уже продающемся 18 Pro.
+- Первым на оплату выходит первый дошедший до Billing (ждать остальных — терять слот); `priority` упорядочивает ждущих.
+- С хабом наблюдатель опрашивает `targets` всех профилей, и каждый профиль сам берёт первый продающийся из своих `targets`.
+- Без хаба профили одного заказа работают независимо (как в ТЗ: «один профиль = один заказ») — дубли возможны; для гонки профилей за один заказ нужен хаб. Если хаб не ответил на `WIN_REQ` за 3 с, профиль продолжает сам.
+- Авто-возврат на `/ae/`, если вкладку увело в другой регион, — только в гонке и Prepare; в чекауте не вмешиваемся (3-D Secure, действия человека).
+- Чтение `PRODUCT_SELECTION_BOOTSTRAP` из MAIN world (§8.4) не реализовано: по ТЗ оно нужно только для отладки, логика на него не опирается.
+- `updateSummary` ждём через `PerformanceObserver` и дублируем событием `webRequest.onCompleted` из SW (§8.5, оба варианта); `fetch`/XHR страницы не перехватываются.
+
+---
+
+## Структура
+
+```
+manifest.json          база; build.mjs добавляет иконки и dev-разрешения для мока
+build.mjs              esbuild → dist/ (prod) | dist-dev/ (+ http://127.0.0.1:4777) | dist-test/
+src/shared/            config.ts (схема+валидация) · parts.ts · selectors.ts · messages.ts · log.ts
+src/sw/                index · orchestrator · watcher (роли) · hubClient · notify · windows · diag (webRequest)
+src/content/           index (диспетчер) · ctl · classify · router (SPA) · dom · overlay · assist · slots
+src/content/steps/     preopen · addToBag · bag · guest · fulfillment · contact · payment · country · prepare · common
+src/ui/                popup · options · offscreen (звук)
+hub/server.mjs         хаб + дашборд (Node 20+, ws)
+test/                  mock-server.mjs · e2e.mjs · unit.test.ts
+scripts/               open-profiles.command (macOS)
+docs/SPEC.md           ТЗ v3
+```

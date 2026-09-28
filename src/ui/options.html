@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Apple Drop Assistant — настройки</title>
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    body { max-width: 980px; margin: 0 auto; padding: 20px 16px 60px; }
+    .form { display: grid; grid-template-columns: 190px 1fr; gap: 8px 12px; align-items: center; }
+    .form label { color: var(--muted); }
+    .form input[type=text], .form input:not([type]), .form select, .form textarea { width: 100%; }
+    .hint { font-size: 11px; color: var(--muted); grid-column: 2; margin-top: -4px; }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+    #json { min-height: 420px; }
+    .sticky { position: sticky; top: 0; background: var(--bg); padding: 8px 0; z-index: 2; border-bottom: 1px solid var(--line); }
+    .parts { font-size: 11px; max-height: 140px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <div class="sticky row spread">
+    <h1>Apple Drop Assistant — настройки профиля</h1>
+    <div class="row">
+      <button id="save" class="primary">Проверить и сохранить</button>
+      <button id="export">Экспорт JSON</button>
+      <label class="row"><button id="importBtn">Импорт JSON</button><input id="import" type="file" accept="application/json,.json" hidden></label>
+    </div>
+  </div>
+  <div id="msg" class="msg card" hidden></div>
+
+  <div class="cols">
+    <div>
+      <h2>Профиль</h2>
+      <div class="form">
+        <label for="profileId">profileId</label><input id="profileId" placeholder="drop-1">
+        <div class="hint">Уникален в каждом профиле Chrome. Хранится отдельно — импорт общего JSON его не перетирает.</div>
+        <label for="hubUrl">Хаб</label><input id="hubUrl" placeholder="ws://127.0.0.1:8765 (пусто — без хаба)">
+        <label for="openAt">openAt</label><input id="openAt" placeholder="2026-10-16T16:00:00+04:00">
+        <label for="mode">Режим</label>
+        <select id="mode"><option value="auto">auto — клики делает расширение</option><option value="assist">assist — критичные кнопки жмёт человек</option></select>
+        <label for="baseUrl">baseUrl</label><input id="baseUrl" placeholder="https://www.apple.com">
+        <div class="hint">Для мок-сервера: http://127.0.0.1:4777 (нужна dev-сборка).</div>
+      </div>
+
+      <h2>Заказ</h2>
+      <div class="row" style="margin-bottom:8px">
+        <select id="orderSel"></select>
+        <button id="addOrder">+ заказ</button>
+        <button id="delOrder" class="danger">удалить</button>
+      </div>
+      <div class="form" id="orderForm">
+        <label for="o_id">id</label><input id="o_id">
+        <label for="o_priority">priority</label><input id="o_priority" type="number" min="1">
+        <label for="o_profiles">profiles</label><input id="o_profiles" placeholder="drop-1, drop-2">
+        <div class="hint">Профили, которые ведут этот заказ (гонка между профилями — через хаб).</div>
+        <label for="o_racers">вкладок в профиле</label><input id="o_racers" type="number" min="1" max="6">
+        <label for="o_targets">targets</label><input id="o_targets" placeholder="MK254AH/A, MK244AH/A">
+        <div class="hint">Парт-номера по приоритету. Список ниже.</div>
+        <label for="o_stores">stores</label><input id="o_stores" placeholder="R597, R596, R706">
+        <div class="hint">R597 Dubai Mall · R596 Mall of the Emirates · R706 Al Maryah · R595 Yas Mall · R785 Al Jimi</div>
+        <label for="o_city">Город</label>
+        <select id="o_city"><option>Dubai</option><option>Abu Dhabi</option><option>Sharjah</option><option>Al Ain</option></select>
+        <label for="o_day">Слот: день</label><input id="o_day" placeholder="число месяца, пусто — первая дата">
+        <label for="o_after">Слот: после</label><input id="o_after" placeholder="HH:MM">
+        <label for="o_before">Слот: до</label><input id="o_before" placeholder="HH:MM">
+        <label for="o_payment">Оплата</label>
+        <select id="o_payment"><option value="applepay">applepay — Apple Pay (подтверждает человек)</option><option value="manual">manual — карту вводит человек</option></select>
+        <label for="o_apfb">Фолбэк Apple Pay</label>
+        <select id="o_apfb"><option value="manual">manual</option><option value="">нет</option></select>
+        <label for="o_first">Имя</label><input id="o_first">
+        <label for="o_last">Фамилия</label><input id="o_last">
+        <label for="o_email">Email</label><input id="o_email" type="email">
+        <label for="o_phone">Мобильный</label><input id="o_phone" placeholder="05XXXXXXXX">
+        <div class="hint">Реальный получатель: Apple выдаёт заказ по документу на это имя.</div>
+        <label for="o_delivery">Фолбэк доставки</label><input id="o_delivery" type="checkbox" style="justify-self:start">
+        <label for="o_street">Адрес: улица</label><input id="o_street">
+        <label for="o_area">Адрес: Area</label><input id="o_area">
+        <label for="o_acity">Адрес: город</label><input id="o_acity">
+      </div>
+      <h2>Парт-номера</h2>
+      <div class="parts card" id="parts"></div>
+    </div>
+
+    <div>
+      <h2>JSON (весь конфиг, общий для всех профилей)</h2>
+      <textarea id="json" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:6px">
+        <button id="applyJson">Применить JSON в форму</button>
+        <button id="reset">Сбросить к умолчаниям</button>
+      </div>
+      <p class="muted">Тайминги (timing), retries и limits редактируются здесь. Минимум рефреша — 1500 мс, наблюдатель — не чаще 1000 мс.</p>
+    </div>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>
