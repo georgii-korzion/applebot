@@ -58,6 +58,22 @@ npm run build          # → dist/
 
 `ARMED → PRE_RELOAD / WATCHING → FAST_RELOAD → ATB_PREP → ATB_WAIT_LOCK → ATB_PENDING → IN_BAG → CHECKOUT → GUEST → FULFILLMENT → CONTACT → BILLING → PAY_QUEUE → PAYING (человек) → REVIEW → ORDERED`, плюс `BUSY`, `COUNTRY`, `ASSIST`, `STANDBY`, `CLEANUP`, `STOPPED`, `STUCK`, `PAY_TIMEOUT`.
 
+### Магазин закрыт перед дропом
+
+Apple часто закрывает магазин за несколько часов до старта: вместо страницы iPhone — пустая страница, «We’ll be back», 404 или редирект на заглушку. Расширение распознаёт это (состояние `CLOSED`, уведомление «Apple Store закрыт») и **само обновляет страницу товара, пока Apple не пустит на покупку**, не уходя со вкладок и не нагружая сайт:
+
+| Когда | Как часто вкладка обновляет страницу товара |
+|---|---|
+| до `openAt − 60 с` | раз в `closedReloadMs` (30 с ± джиттер) — чтобы заметить, если магазин откроется раньше |
+| последняя минута | раз в `preOpenReloadMs` (3 с) |
+| с `openAt` | раз в `postOpenReloadMs` (1,5 с) — сразу, не дожидаясь `graceSec` (закрытый магазин сигнала OPEN не даст) |
+
+- Наблюдатель до `openAt` не рефрешит — продолжает опрашивать JSON и первым видит открытие; по сигналу OPEN все вкладки перезагружаются сразу (0–500 мс).
+- Редирект на заглушку внутри `/ae/` — вкладка возвращается на страницу товара по тому же расписанию. Редирект вне `/ae/` (там content script не работает) — вкладку возвращает service worker, столько раз, сколько нужно, пока задача запущена.
+- Очередь «Almost there» после открытия — рефреш не реже раза в 4 с (раньше бэкофф рос до 15 с — это пропуск волны).
+- Когда магазин открылся — запись `REOPEN` в логе и уведомление, дальше всё как обычно: Add to Bag → чекаут → оплата.
+- Prepare при закрытом магазине честно сообщит, что страницу товара проверить нельзя; Prepare лучше делать заранее, а Start можно жать и при закрытом магазине.
+
 ### Режим ассистента (§7.8)
 
 Включается кнопкой в popup (или `"mode": "assist"`) либо сам для шага после `assistAfterFailures` неудач (Add to Bag — подряд 404; Check Out / Guest — URL не сменился). Кнопка обводится зелёной рамкой, окно выходит вперёд со звуком, расширение ждёт **настоящий** клик (`event.isTrusted`) и продолжает само. То же для `select` города/окна, если приложение не приняло значение.
@@ -81,9 +97,10 @@ Playwright в e2e — только тестовый стенд, чтобы за�
 | `hostile` | 2 вкладки, выбор страны, 404 на Add to Bag (+ случайные), заглушка, смена города Abu Dhabi → Dubai через `setSelect`, Apple Pay; в корзине 1 шт., Place Order не нажат | Billing через ~6–9 с |
 | `assist` | `REQUIRE_TRUSTED=1`: 3×404 → ассистент, кнопка подсвечена, настоящий клик → дальше само до Billing | ✓ |
 | `prepare` | Prepare (страна → корзина → конфигурация) и Clean bag | ✓ |
+| `closed-blank` / `closed-backsoon` / `closed-redirect` / `closed-offsite` | магазин закрыт до старта: пустая страница, «We’ll be back», редирект в `/ae/` и вне `/ae/`; вкладки обновляются по фазам (проверяются интервалы), после открытия — до Billing | Billing через 4,5–4,9 с после открытия |
 | `acceptance` | 3 заказа × 2 профиля × 2 вкладки + хаб: все 3 заказа на Billing, без дублей, корзины проигравших очищены, очередь оплаты по одному, «Следующий» | Billing через 4,8–5,1 с после OPEN |
 
-Мок вручную: `npm run build:dev` → загрузить `dist-dev/` → в настройках `baseUrl = http://127.0.0.1:4777` → `OPEN_AFTER=60 npm run mock`. Параметры мока — в шапке [test/mock-server.mjs](test/mock-server.mjs) (`ATB_404_RATE`, `ATB_404_FIRST`, `ACPART_DELAY_MS`, `COUNTRY_PICKER`, `REQUIRE_TRUSTED`, `UNAVAILABLE_STORES`, `TAKEN_FIRST_SLOT`, `DEFAULT_CITY`, …).
+Мок вручную: `npm run build:dev` → загрузить `dist-dev/` → в настройках `baseUrl = http://127.0.0.1:4777` → `OPEN_AFTER=60 npm run mock`. Параметры мока — в шапке [test/mock-server.mjs](test/mock-server.mjs) (`STORE_CLOSED`, `ATB_404_RATE`, `ATB_404_FIRST`, `ACPART_DELAY_MS`, `COUNTRY_PICKER`, `REQUIRE_TRUSTED`, `UNAVAILABLE_STORES`, `TAKEN_FIRST_SLOT`, `DEFAULT_CITY`, …).
 
 ### Живые тесты до 16.10 (§11.2, на iPhone 18 Pro 256 Black — `MJR54AH/A`)
 

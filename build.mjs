@@ -56,7 +56,7 @@ function writeStatic() {
   if (dev) {
     manifest.name += ' (dev)';
     manifest.host_permissions.push(`${MOCK_ORIGIN}/*`);
-    manifest.content_scripts[0].matches.push(`${MOCK_ORIGIN}/*`);
+    manifest.content_scripts[0].matches.push(`${MOCK_ORIGIN}/ae/*`);
   }
   writeFileSync(join(outdir, 'manifest.json'), JSON.stringify(manifest, null, 2));
   for (const s of [16, 48, 128]) writeFileSync(join(outdir, `icons/icon${s}.png`), makeIcon(s));

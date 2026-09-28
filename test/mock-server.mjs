@@ -14,6 +14,11 @@
 //   HYDRATE_MS=250         задержка «гидратации» страницы конфигурации
 //   ATTACH_DELAY_MS=900    200 → beacon/atb → step=attach
 //   DEFAULT_CITY=Dubai     город в чекауте по умолчанию
+//   STORE_CLOSED=          магазин закрыт до открытия продаж (все /ae/shop/*):
+//                            blank    — пустая страница (200), JSON — 503
+//                            backsoon — «We’ll be back.» (503) по тому же адресу
+//                            redirect — 302 на /ae/shop/backsoon
+//                            offsite  — 302 на /shop/backsoon (вне /ae/, content script там не работает)
 // Служебное: GET /__state, POST /__reset, POST /__config
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -34,6 +39,7 @@ const S = {
   hydrateMs: num(env.HYDRATE_MS, 250),
   attachDelayMs: num(env.ATTACH_DELAY_MS, 900),
   defaultCity: env.DEFAULT_CITY ?? 'Dubai',
+  storeClosed: env.STORE_CLOSED ?? '',
 };
 let openAt = Date.now() + S.openAfter * 1000;
 
@@ -73,7 +79,7 @@ function session(req, res) {
   let sid = ck.sid;
   if (!sid || !sessions.has(sid)) {
     sid = crypto.randomBytes(8).toString('hex');
-    sessions.set(sid, { sid, created: Date.now(), bag: [], busyShown: false, atb: crypto.randomBytes(20).toString('hex'), atbOk: 0, atb404: 0, checkout: {}, geo: null, pending: null });
+    sessions.set(sid, { sid, created: Date.now(), hits: [], bag: [], busyShown: false, atb: crypto.randomBytes(20).toString('hex'), atbOk: 0, atb404: 0, checkout: {}, geo: null, pending: null });
     res.appendHeader('set-cookie', `sid=${sid}; Path=/; HttpOnly; SameSite=Lax`);
   }
   const s = sessions.get(sid);
@@ -111,6 +117,8 @@ function page(s, title, body, { status, scripts = '' } = {}) {
 }
 const notFound = (s) => page(s, 'Page Not Found - Apple (AE)', '<h1>The page you’re looking for can’t be found.</h1><p>Page Not Found</p>', { status: 404 });
 const busy = (s) => page(s, 'Apple Store', '<h1>We’re busy right now.</h1><p>Almost there — so are we. Please try again in a moment.</p>', { status: 503 });
+const backSoon = (s, status = 503) => page(s, 'Apple Store', '<h1>We’ll be back.</h1><p>We’re busy updating the Apple Store for you and will be back shortly.</p>', { status });
+const storeOpen = () => Date.now() >= openAt;
 
 function productPage(s, p) {
   const open = isOpen(p);
@@ -468,7 +476,7 @@ const server = http.createServer(async (req, res) => {
         open: Date.now() >= openAt, openAt, settings: S,
         sessions: [...sessions.values()].map((s) => ({
           sid: s.sid, geo: s.geo, bag: s.bag.map((i) => ({ part: i.part, qty: i.qty })), atbOk: s.atbOk, atb404: s.atb404,
-          checkout: s.checkout, busyShown: s.busyShown,
+          checkout: s.checkout, busyShown: s.busyShown, hits: s.hits,
         })),
         orders,
       });
@@ -482,9 +490,26 @@ const server = http.createServer(async (req, res) => {
     }
 
     const s = session(req, res);
+    if (/^\/ae\/shop\/buy-iphone\/[^/]+\/[^/]+/.test(path) && !q.get('add-to-cart') && req.headers['sec-fetch-mode'] === 'navigate') s.hits.push(Date.now());
     if (q.get('locale') === 'ae') { s.geo = 'AE'; res.appendHeader('set-cookie', 'geo=AE; Path=/; SameSite=Lax'); }
     if (!req.headers.cookie?.includes('as_atb=')) res.appendHeader('set-cookie', `as_atb=${s.atb}; Path=/; SameSite=Lax`);
 
+    // магазин закрыт перед дропом
+    if (path === '/ae/shop/backsoon' || path === '/shop/backsoon') {
+      if (storeOpen()) { res.writeHead(302, { location: '/ae/' }); return res.end(); }
+      return send(res, backSoon(s, 200));
+    }
+    if (S.storeClosed && !storeOpen() && path.startsWith('/ae/shop/')) {
+      const isJson = /fulfillment-messages|updateSummary|bag\/status/.test(path);
+      if (S.storeClosed === 'blank') {
+        if (isJson) { res.writeHead(503); return res.end(); }
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end('<!doctype html><html><head><title></title></head><body></body></html>');
+      }
+      if (S.storeClosed === 'backsoon') return send(res, backSoon(s));
+      res.writeHead(302, { location: S.storeClosed === 'offsite' ? '/shop/backsoon' : '/ae/shop/backsoon' });
+      return res.end();
+    }
     if (path === '/ae/shop/fulfillment-messages') return json(res, fulfillmentMessages(q));
     if (path === '/ae/shop/updateSummary') { await sleep(S.acpartDelayMs); return json(res, { head: { status: 200 }, body: { summary: { acpart: q.get('acpart') ?? null } } }); }
     if (path === '/ae/shop/updateSEO' || path === '/ae/shop/dc' || path === '/ae/shop/bag/status') return json(res, { ok: true, items: s.bag.length });

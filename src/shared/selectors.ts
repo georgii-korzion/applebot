@@ -56,6 +56,8 @@ export const SEL = {
   // тексты
   txtPreorder: 'Pre-order starting',
   txtBusy: /(so are we|Almost there|Be right back|busy right now|high demand|isn.t available right now)/i,
+  // магазин закрыт перед дропом («We'll be back», жёлтый стикер) [точный текст AE не снят]
+  txtClosed: /(We.ll be back|be back soon|back shortly|making updates|updating the (Apple )?(Online )?Store|Check back (soon|later)|store is (currently )?(closed|unavailable)|temporarily unavailable)/i,
   txt404: /can.t be found|Page Not Found/i,
   txtCountry: /(Choose another country or region|country or region|You.re viewing)/i, // уточнить по живой разметке
   txtUAE: /United Arab Emirates|\bUAE\b/i,

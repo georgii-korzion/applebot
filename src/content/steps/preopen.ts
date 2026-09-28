@@ -5,6 +5,8 @@ import type { Ctl } from '../ctl';
 import type { PageInfo } from '../classify';
 import { Aborted, q, sleep, waitUntil } from '../dom';
 import { atbFlow } from './addToBag';
+import { closedStep, reportStore } from './closed';
+import { isBlankPage } from '../classify';
 
 const PRE_WINDOW_MS = 60_000;
 
@@ -17,14 +19,16 @@ export async function productStep(c: Ctl, page: PageInfo): Promise<void> {
     return;
   }
   ensureWatcher(c);
-  // гидратация: ждём, что появится раньше — активная форма Add to Bag или «Continue» до старта
+  // гидратация: ждём, что появится раньше — активная форма Add to Bag или «Continue» до старта;
+  // совсем пустая страница (магазин закрыт) — ждём недолго, чтобы не растягивать цикл рефреша
   const what = await waitUntil(
     () => (q(SEL.addToBag) ? 'atb' : q(SEL.continueDisabled) || page.preorder ? 'pre' : null),
-    c.os.openedAt ? 6000 : 3000, c.signal,
+    isBlankPage() ? 1000 : c.os.openedAt ? 6000 : 3000, c.signal,
   );
-  if (what === 'atb') return atbFlow(c);
-  if (!what) c.log('нет ни add-to-cart, ни continueButton — страница не догрузилась?', 'warn');
-  scheduleByPhase(c);
+  if (what === 'atb') { reportStore(c, false, 'Add to Bag'); return atbFlow(c); }
+  if (what === 'pre') { reportStore(c, false, 'страница товара до старта'); scheduleByPhase(c); return; }
+  // ни формы покупки, ни «Continue»: магазин закрыт / пустая страница / заглушка без текста
+  closedStep(c, page, isBlankPage() ? 'пустая страница' : 'нет формы покупки');
 }
 
 /** Рефреш по фазам §7.3: ARMED → PRE_RELOAD → FAST_RELOAD. */
@@ -59,7 +63,7 @@ export function scheduleByPhase(c: Ctl): void {
 /** Сигнал OPEN от SW: первый рефреш со случайной задержкой 0–500 мс (§7.2). */
 export function onOpen(c: Ctl): void {
   if (c.ts.mode !== 'race') return;
-  if (!['ARMED', 'PRE_RELOAD', 'WATCHING', 'FAST_RELOAD', 'INIT'].includes(c.ts.state)) return;
+  if (!['ARMED', 'PRE_RELOAD', 'WATCHING', 'FAST_RELOAD', 'INIT', 'CLOSED', 'BUSY'].includes(c.ts.state)) return;
   const delay = Math.random() * 500;
   const want = partUrl(c.base, c.target());
   const samePage = new URL(want).pathname.toLowerCase() === location.pathname.replace(/\/$/, '').toLowerCase();

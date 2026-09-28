@@ -5,6 +5,7 @@ import { classify, type PageInfo } from './classify';
 import { watchRoute } from './router';
 import { Overlay } from './overlay';
 import { becomeStopped, busyBackoff } from './steps/common';
+import { closedStep, reportStore } from './steps/closed';
 import { handleCountry } from './steps/country';
 import { ensureWatcher, onOpen, productStep } from './steps/preopen';
 import { atbResult } from './steps/addToBag';
@@ -29,6 +30,13 @@ async function dispatch(c: Ctl): Promise<void> {
     return;
   }
   if (c.ts.countryInRow) { c.ts.countryInRow = 0; void c.save(); }
+  if (page.kind === 'closed') {
+    if (c.ts.mode === 'race' && c.ts.atbPendingSince) { await atbResult(c, page); return; }
+    if (c.ts.mode === 'prep') { prepClosed(c); return; }
+    closedStep(c, page, 'Apple Store закрыт');
+    return;
+  }
+  if (['bag', 'signin', 'checkout', 'attach', 'atb-pending', 'thankyou'].includes(page.kind)) reportStore(c, false, page.kind);
   if (page.kind === 'busy') {
     if (c.ts.mode === 'race' && c.ts.atbPendingSince) { await atbResult(c, page); return; }
     busyBackoff(c);
@@ -65,8 +73,8 @@ async function raceStep(c: Ctl, page: PageInfo): Promise<void> {
       await c.navigate(c.targetUrl(), 'к странице цели', true);
       return;
     case 'notfound':
-      c.setState('FAST_RELOAD', '404 — назад к цели');
-      c.timer(c.jit(c.t.atb404BackoffMs), () => { void c.navigate(c.targetUrl(), '404', true); });
+      // 404 на странице товара (закрыт/ещё не опубликован) — рефреш по фазам, не чаще
+      closedStep(c, page, '404 вместо страницы товара');
       return;
     case 'atb-pending':
       c.setState('ATB_PENDING', 'URL add-to-cart= — ждём переход сайта');
@@ -79,8 +87,22 @@ async function raceStep(c: Ctl, page: PageInfo): Promise<void> {
       await c.navigate(c.targetUrl(), 'к странице цели', true);
       return;
     default:
+      // сразу после перехода на цель снова не там → редирект (магазин закрыт) — ждём по фазам
+      if (c.ts.storeClosed || Date.now() - (c.ts.lastTargetNavAt ?? 0) < 15000) {
+        closedStep(c, page, `вместо товара открылась ${page.url.pathname}`);
+        return;
+      }
       await c.navigate(c.targetUrl(), 'к странице цели', true);
   }
+}
+
+function prepClosed(c: Ctl): void {
+  const detail = 'Apple Store сейчас закрыт — страницу товара проверить нельзя. Prepare лучше делать до закрытия магазина; '
+    + 'Start можно нажимать: вкладки будут обновляться, пока магазин не откроется';
+  c.send({ t: 'PREPARED', ok: false, detail });
+  c.setMode('idle', { prepPhase: 'done' });
+  c.setState('PREP_FAILED', detail);
+  c.overlay.banner('Apple Store закрыт', detail, 'warn');
 }
 
 async function bagAfterAtb(c: Ctl): Promise<void> {

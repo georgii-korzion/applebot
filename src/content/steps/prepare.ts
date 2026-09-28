@@ -27,7 +27,16 @@ export async function prepStep(c: Ctl, page: PageInfo): Promise<void> {
   if (phase === 'check') {
     if (page.kind !== 'product') { await c.navigate(c.targetUrl(), 'Prepare: конфигурация цели'); return; }
     c.setState('PREP', 'проверка конфигурации');
-    await waitUntil(() => (q(SEL.addToBag) || q(SEL.continueDisabled) || q(SEL.productName) ? true : null), 8000, c.signal);
+    const loaded = await waitUntil(() => (q(SEL.addToBag) || q(SEL.continueDisabled) || q(SEL.productName) ? true : null), 8000, c.signal);
+    if (!loaded) {
+      const detail = 'страна ✓ · корзина ✓ · страница товара пустая/закрыта — Apple Store, похоже, закрыт перед дропом; Start можно нажимать, вкладки будут обновляться';
+      c.send({ t: 'PREPARED', ok: false, detail });
+      c.ts.prepPhase = 'done';
+      c.setMode('idle');
+      c.setState('PREP_FAILED', detail);
+      c.overlay.banner('Страница товара закрыта', detail, 'warn');
+      return;
+    }
     const onAe = location.pathname.toLowerCase().startsWith('/ae/');
     const aed = /AED/.test(bodyText());
     const banner = !!page.country;

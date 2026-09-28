@@ -4,7 +4,7 @@ import { partByPath, normPart } from '../shared/parts';
 import { bodyText, isVisible, qa } from './dom';
 
 export type Kind =
-  | 'busy' | 'notfound' | 'atb-pending' | 'attach' | 'product' | 'bag'
+  | 'closed' | 'busy' | 'notfound' | 'atb-pending' | 'attach' | 'product' | 'bag'
   | 'signin' | 'checkout' | 'thankyou' | 'home' | 'other';
 
 export interface PageInfo {
@@ -57,6 +57,9 @@ export function classify(): PageInfo {
   const country = findCountryContainer();
   const base = { url, status, country };
 
+  if (markers < 3 && SEL.txtClosed.test(title + '\n' + text.slice(0, 4000))) {
+    return { ...base, kind: 'closed' };
+  }
   if (status === 503 || status === 541 || (SEL.txtBusy.test(title + '\n' + text.slice(0, 4000)) && markers < 3)) {
     return { ...base, kind: 'busy' };
   }
@@ -85,6 +88,16 @@ export function classify(): PageInfo {
   }
   if (/^\/ae\/?$/.test(path)) return { ...base, kind: 'home' };
   return { ...base, kind: 'other' };
+}
+
+/** Есть ли на странице хоть что-то от страницы покупки (конфигурация/форма). */
+export function hasProductMarkers(): boolean {
+  return !!document.querySelector(`${SEL.addToBag}, ${SEL.continueDisabled}, ${SEL.productName}, ${SEL.noTradeIn}, [data-autom^="dimensionColor"], [data-autom^="dimensionCapacity"]`);
+}
+
+/** Пустая страница: ни маркеров Apple, ни осмысленного текста. */
+export function isBlankPage(): boolean {
+  return document.querySelectorAll('[data-autom]').length === 0 && (document.body?.innerText ?? '').trim().length < 300;
 }
 
 /** Короткая подпись страницы для лога/SW. */

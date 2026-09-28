@@ -58,7 +58,8 @@
     "atb404MaxInRow": 5,
     "holdLoserBagSec": 90,
     "manualPayTimeoutSec": 600,
-    "assistAfterFailures": 3
+    "assistAfterFailures": 3,
+    "closedReloadMs": 30000
   },
   "retries": {
     "checkout": 4,

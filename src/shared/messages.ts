@@ -35,6 +35,8 @@ export interface TabState {
   standbyUntil?: number;
   prepPhase?: 'home' | 'bag' | 'check' | 'done';
   orderNo?: string;
+  storeClosed?: boolean;
+  lastTargetNavAt?: number;
   updatedAt: number;
 }
 
@@ -66,6 +68,8 @@ export interface OrderState {
   slotLabel?: string;
   billingReadyAt?: number;
   orderNo?: string;
+  storeClosedSince?: number;
+  storeReopenedAt?: number;
   watch?: Record<string, { isBuyable: boolean; reason?: string; quote?: string; at: number }>;
   timestamps: Record<string, number>;
 }
@@ -105,6 +109,7 @@ export type C2S =
   | { t: 'DIAG_REQ' }
   | { t: 'PREPARED'; ok: boolean; detail: string }
   | { t: 'CLEANED'; count: number }
+  | { t: 'STORE'; closed: boolean; reason: string }
   | { t: 'LOG'; level: 'info' | 'warn' | 'error'; msg: string; state?: string }
   | { t: 'PING' };
 

@@ -100,7 +100,7 @@ export class Overlay {
     }
     const head = row(`${d.profile || '—'} · заказ ${d.order || '—'}`, d.role ?? '');
     const st = document.createElement('div');
-    st.className = 'state' + (/STUCK|TIMEOUT|ERROR/.test(d.state) ? ' err' : /ASSIST|PAUSE|STANDBY|COUNTRY/.test(d.state) ? ' warn' : '');
+    st.className = 'state' + (/STUCK|TIMEOUT|ERROR/.test(d.state) ? ' err' : /ASSIST|PAUSE|STANDBY|COUNTRY|CLOSED|BUSY/.test(d.state) ? ' warn' : '');
     st.textContent = d.paused ? `⏸ ${d.state}` : d.state;
     const det = document.createElement('div');
     det.className = 'detail';

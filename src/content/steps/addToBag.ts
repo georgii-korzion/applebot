@@ -8,7 +8,7 @@ import { navStatus, type PageInfo } from '../classify';
 import { assistClick } from '../assist';
 import { cookieNames, isChecked, isEnabled, pickRadio, q, waitFor, waitForResource, waitUntil } from '../dom';
 import { scheduleByPhase } from './preopen';
-import { becomeStopped } from './common';
+import { becomeStopped, busyMs } from './common';
 
 export async function atbFlow(c: Ctl): Promise<void> {
   const sig = c.signal;
@@ -85,6 +85,7 @@ export async function atbResult(c: Ctl, page: PageInfo): Promise<boolean> {
       await atbFail(c, 'ATB_404', await collectDiag(c));
       return true;
     case 'busy':
+    case 'closed':
       await atbFail(c, 'BUSY');
       return true;
     case 'atb-pending': {
@@ -129,9 +130,7 @@ export async function atbFail(c: Ctl, outcome: AtbOutcome, diag?: AtbDiag, stay 
     return;
   }
   if (stay) { await c.save(); return; }
-  const backoff = outcome === 'BUSY'
-    ? Math.min(c.jit(c.t.postOpenReloadMs * 1.5 ** c.ts.busyInRow++), 10000)
-    : c.jit(c.t.atb404BackoffMs);
+  const backoff = outcome === 'BUSY' ? busyMs(c) : c.jit(c.t.atb404BackoffMs);
   const assistNote = c.assistFor('atb') ? ' · дальше режим ассистента' : '';
   c.setState('FAST_RELOAD', `${outcome}, повтор через ${backoff} мс${assistNote}`);
   await c.save();

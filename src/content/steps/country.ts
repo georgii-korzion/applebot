@@ -14,6 +14,7 @@ export async function handleCountry(c: Ctl, box: HTMLElement): Promise<'handled'
     return 'stuck';
   }
   c.setState('COUNTRY', 'выбор страны → United Arab Emirates');
+  c.ts.lastTargetNavAt = undefined; // после выбора страны главная /ae/ — не признак закрытого магазина
   await c.save();
 
   const sel = box.querySelector<HTMLSelectElement>('select');

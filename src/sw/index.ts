@@ -24,14 +24,17 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => { void orch.ready.then(() => orch.onTabRemoved(tabId)); });
-chrome.tabs.onUpdated.addListener((tabId, info) => { if (info.url) void orch.ready.then(() => orch.onTabUpdated(tabId, info.url)); });
+// 'complete' приходит на каждую загрузку, даже если редирект вернул тот же адрес заглушки (url-события тогда нет)
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.url || info.status === 'complete') void orch.ready.then(() => orch.onTabUpdated(tabId, info.url ?? tab.url, info.status === 'complete'));
+});
 
 initDiag((tabId, acpartNone, at) => orch.sendTab(tabId, { t: 'NET', kind: 'updateSummary', acpartNone, at }, false));
 initNotifyClicks();
 
 // сброс буфера логов и проверка хаба раз в 30 с (SW может быть выгружен между событиями)
 chrome.alarms.create('tick', { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener(() => { void orch.ready.then(() => orch.logs.flush()); });
+chrome.alarms.onAlarm.addListener(() => { void orch.ready.then(() => Promise.all([orch.logs.flush(), orch.checkAway()])); });
 
 chrome.runtime.onInstalled.addListener(async (d) => {
   if (d.reason !== 'install') return;

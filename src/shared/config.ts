@@ -26,6 +26,8 @@ export interface Timing {
   pollMs: number; preOpenReloadMs: number; postOpenReloadMs: number; minReloadMs: number;
   jitterPct: number; graceSec: number; atbTimeoutMs: number; atb404BackoffMs: number;
   atb404MaxInRow: number; holdLoserBagSec: number; manualPayTimeoutSec: number; assistAfterFailures: number;
+  /** Рефреш закрытого магазина / пустой страницы до openAt − 60 с. */
+  closedReloadMs: number;
 }
 
 export interface Config {
@@ -44,6 +46,7 @@ export const DEFAULT_TIMING: Timing = {
   pollMs: 1200, preOpenReloadMs: 3000, postOpenReloadMs: 1500, minReloadMs: 1500,
   jitterPct: 30, graceSec: 20, atbTimeoutMs: 15000, atb404BackoffMs: 1500,
   atb404MaxInRow: 5, holdLoserBagSec: 90, manualPayTimeoutSec: 600, assistAfterFailures: 3,
+  closedReloadMs: 30000,
 };
 
 export function defaultOrder(id = 'A'): OrderCfg {
@@ -192,6 +195,7 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   if (cfg.timing.minReloadMs < 1500) errors.push('timing.minReloadMs < 1500 — не чаще раза в 1,5 с (§0)');
   if (cfg.timing.postOpenReloadMs < cfg.timing.minReloadMs) warnings.push('postOpenReloadMs < minReloadMs — будет поднят до minReloadMs');
   if (cfg.timing.pollMs < 1000) errors.push('timing.pollMs < 1000 — наблюдатель не чаще раза в секунду (§7.1)');
+  if (cfg.timing.closedReloadMs < 5000) errors.push('timing.closedReloadMs < 5000 — закрытый магазин до старта не чаще раза в 5 с');
   if (cfg.limits.maxTabsTotal > 12) warnings.push('maxTabsTotal > 12 — выше рекомендованного (§0)');
   if (!/^https?:\/\//.test(cfg.baseUrl)) errors.push('baseUrl должен начинаться с http(s)://');
   if (cfg.hubUrl && !/^wss?:\/\//.test(cfg.hubUrl)) errors.push('hubUrl должен начинаться с ws://');
@@ -201,6 +205,26 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
 /** Заказ, который ведёт этот профиль. */
 export function orderFor(cfg: Config, profileId = cfg.profileId): OrderCfg | undefined {
   return cfg.orders.find((o) => o.profiles.includes(profileId)) ?? (cfg.orders.length === 1 ? cfg.orders[0] : undefined);
+}
+
+export type Phase = 'armed' | 'pre' | 'post';
+
+/** Фаза дропа (§7.3): до openAt−60 с, последняя минута, после openAt или OPEN. */
+export function phaseOf(cfg: Config, openedAt: number | undefined, now = Date.now()): Phase {
+  const openAt = Date.parse(cfg.openAt);
+  if (openedAt || !Number.isFinite(openAt) || now >= openAt) return 'post';
+  return now >= openAt - 60_000 ? 'pre' : 'armed';
+}
+
+/**
+ * Интервал рефреша, когда магазин закрыт / пустая страница / редирект с цели:
+ * до openAt−60 с — closedReloadMs, последняя минута — preOpenReloadMs,
+ * с openAt — postOpenReloadMs (без ожидания graceSec: закрытый магазин сам сигнал OPEN не даст).
+ */
+export function closedReloadMs(cfg: Config, openedAt: number | undefined, now = Date.now()): number {
+  const t = cfg.timing;
+  const ms = { armed: t.closedReloadMs, pre: t.preOpenReloadMs, post: t.postOpenReloadMs }[phaseOf(cfg, openedAt, now)];
+  return Math.max(jitter(ms, t.jitterPct), t.minReloadMs);
 }
 
 export function jitter(ms: number, pct: number): number {

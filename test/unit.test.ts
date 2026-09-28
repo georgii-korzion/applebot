@@ -1,7 +1,7 @@
 // Юнит-тесты чистых функций: node build.mjs --unit && node --test dist-test/
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultConfig, defaultOrder, normalizeConfig, orderFor, validateConfig, jitter } from '../src/shared/config';
+import { closedReloadMs, defaultConfig, defaultOrder, normalizeConfig, orderFor, phaseOf, validateConfig, jitter } from '../src/shared/config';
 import { PARTS, getPart, matchBagName, partByPath, partUrl } from '../src/shared/parts';
 import { fmtLine, maskEmail, maskPhone, maskUrl, rel, scrub } from '../src/shared/log';
 import { orderWindows, parseSlot } from '../src/content/slots';
@@ -117,4 +117,21 @@ test('лог: формат строки §7.10', () => {
 test('router: ключ шага SPA', () => {
   assert.notEqual(routeKey('https://secure7.store.apple.com/ae/shop/checkout?_s=Fulfillment-init'), routeKey('https://secure7.store.apple.com/ae/shop/checkout?_s=PickupContact-init'));
   assert.equal(routeKey('https://www.apple.com/ae/shop/bag?a=1'), routeKey('https://www.apple.com/ae/shop/bag?a=2'));
+});
+
+test('фазы и рефреш закрытого магазина', () => {
+  const cfg = { ...defaultConfig(), openAt: '2026-10-16T16:00:00+04:00' };
+  const openAt = Date.parse(cfg.openAt);
+  assert.equal(phaseOf(cfg, undefined, openAt - 3_600_000), 'armed');
+  assert.equal(phaseOf(cfg, undefined, openAt - 30_000), 'pre');
+  assert.equal(phaseOf(cfg, undefined, openAt + 1), 'post', 'с openAt — без ожидания graceSec');
+  assert.equal(phaseOf(cfg, openAt - 90_000, openAt - 90_000), 'post', 'OPEN раньше openAt');
+  for (let i = 0; i < 100; i++) {
+    const a = closedReloadMs(cfg, undefined, openAt - 3_600_000);
+    assert.ok(a >= 21000 && a <= 39000, `armed ${a}`);
+    const p = closedReloadMs(cfg, undefined, openAt - 10_000);
+    assert.ok(p >= 2100 && p <= 3900, `pre ${p}`);
+    const q = closedReloadMs(cfg, undefined, openAt + 5000);
+    assert.ok(q >= 1500 && q <= 1950, `post ${q} (не чаще minReloadMs)`);
+  }
 });

@@ -215,6 +215,7 @@ export class Ctl {
   async navigate(url: string, why: string, rateLimited = false): Promise<void> {
     if (rateLimited) await this.respectMinReload();
     if (rateLimited) { this.ts.reloads++; this.ts.lastReloadAt = Date.now(); }
+    if (this.order && url === this.targetUrl()) this.ts.lastTargetNavAt = Date.now();
     await this.save();
     this.log(`→ ${why}: ${url.replace(this.base, '')}`);
     location.assign(url);

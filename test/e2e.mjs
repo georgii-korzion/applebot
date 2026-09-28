@@ -345,9 +345,56 @@ scenarios.prepare = async () => {
   } catch (e) { await dumpOnFail(profiles, 'prepare'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
+/**
+ * Магазин закрыт перед дропом (пустая страница / «We’ll be back» / редирект в /ae/ и вне /ae/):
+ * вкладки ждут по фазам и не долбят сайт, после открытия — до Billing.
+ */
+function closedScenario(style, openIn) {
+  return async () => {
+    await startServers({ OPEN_AFTER: String(openIn), STORE_CLOSED: style });
+    const p = await launchProfile(`closed-${style}`);
+    const profiles = [p];
+    try {
+      const order = makeOrder('A', 0, ['drop-1'], { racersPerProfile: 2 });
+      const openAt = Date.now() + openIn * 1000;
+      await fetch(`${MOCK}/__config`, { method: 'POST', body: JSON.stringify({ openAfter: openIn }) });
+      await p.setConfig(makeConfig('drop-1', [order], { openInSec: openIn, timing: { closedReloadMs: 5000 } }));
+      const r = await p.cmd({ cmd: 'start' });
+      assert.ok(r.ok, r.error);
+      await waitFor(async () => (await p.status()).os.storeClosedSince, 20000, 'обнаружено закрытие магазина');
+      const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, (openIn + 60) * 1000, 'Billing', 500);
+      const ms = await mockState();
+      // интервалы между переходами на страницу товара (вкладки профиля делят сессию; наблюдатель до старта не рефрешит)
+      const startAt = openAt - openIn * 1000;
+      const hits = ms.sessions.flatMap((s) => s.hits).sort((a, b) => a - b).filter((h) => h > startAt + 2500 && h < openAt - 300);
+      const armedEnd = openAt - 60_000;
+      const gaps = (arr) => arr.slice(1).map((h, i) => h - arr[i]);
+      const armedGaps = gaps(hits.filter((h) => h < armedEnd));
+      const preGaps = gaps(hits.filter((h) => h >= armedEnd));
+      const log = (await p.cmd({ cmd: 'exportLog' })).text;
+      const minA = armedGaps.length ? Math.min(...armedGaps) : null;
+      const minP = preGaps.length ? Math.min(...preGaps) : null;
+      say(`closed-${style}: Billing через ${((st.os.billingReadyAt - st.os.openedAt) / 1000).toFixed(1)} с после OPEN · переходов на товар до старта: ${hits.length} (мин. интервал: до openAt−60 ${minA ?? '—'} мс, последняя минута ${minP ?? '—'} мс)`);
+      assert.ok(/CLOSED/.test(log), 'закрытие в логе');
+      assert.ok(/REOPEN/.test(log), 'открытие магазина замечено');
+      if (minA !== null) assert.ok(minA >= 3400, `до openAt−60 не чаще раза в ~5 с (${minA} мс)`);
+      if (style === 'offsite') {
+        // обе вкладки возвращает SW (content script вне /ae/ не работает) — мок видит их общий поток заходов
+        const dur = (openAt - 300 - (startAt + 2500)) / 1000;
+        assert.ok(hits.length <= 2 * Math.ceil(dur / 2.1) + 2, `2 вкладки не чаще раза в ~3 с каждая (${hits.length} за ${dur.toFixed(0)} с)`);
+      } else if (minP !== null) assert.ok(minP >= 1400, `последняя минута не чаще раза в 1,5 с (${minP} мс)`);
+      assert.ok(hits.length >= Math.min(openIn, 60) / 6, `вкладки действительно обновлялись (${hits.length})`);
+    } catch (e) { await dumpOnFail(profiles, `closed-${style}`); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+  };
+}
+scenarios['closed-blank'] = closedScenario('blank', 75);
+scenarios['closed-backsoon'] = closedScenario('backsoon', 15);
+scenarios['closed-redirect'] = closedScenario('redirect', 15);
+scenarios['closed-offsite'] = closedScenario('offsite', 15);
+
 // ---------- запуск ----------
 const want = process.argv.slice(2);
-const list = want.length ? want : ['single', 'hostile', 'assist', 'prepare', 'acceptance'];
+const list = want.length ? want : ['single', 'hostile', 'assist', 'prepare', 'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'acceptance'];
 let failed = 0;
 for (const name of list) {
   const fn = scenarios[name];

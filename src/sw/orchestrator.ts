@@ -1,5 +1,5 @@
 // Оркестратор профиля (§5.1): конфиг, состояние заказа, лок Add to Bag, победитель, очередь оплаты, хаб.
-import { K, loadConfig, orderFor, validateConfig, type Config, type OrderCfg } from '../shared/config';
+import { K, closedReloadMs, loadConfig, orderFor, validateConfig, type Config, type OrderCfg } from '../shared/config';
 import { LogStore, fmtLine, scrub } from '../shared/log';
 import {
   newOrderState, newTabState,
@@ -48,6 +48,8 @@ export class Orchestrator {
   private decisionTimer: ReturnType<typeof setTimeout> | undefined;
   private statusTimer: ReturnType<typeof setTimeout> | undefined;
   private awayCount = new Map<number, number>();
+  private awayTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  private storeNotifiedAt = 0;
 
   constructor() {
     this.hub = new HubClient((m) => this.onHub(m), (c) => this.onHubState(c));
@@ -233,6 +235,9 @@ export class Orchestrator {
       case 'CLEANED':
         this.log(tabId, 'CLEANED', `корзина очищена, удалено ${m.count}`);
         break;
+      case 'STORE':
+        await this.onStore(tabId, m.closed, m.reason);
+        break;
       case 'PING':
         break;
     }
@@ -243,6 +248,7 @@ export class Orchestrator {
     this.tabs.delete(tabId);
     this.pendingCmds.delete(tabId);
     forgetTab(tabId);
+    this.clearAway(tabId);
     void chrome.storage.session.remove(K.tab(tabId));
     if (!t) return;
     if (tabId === this.os.winnerTabId && t.mode === 'checkout' && this.os.stage !== 'ORDERED') this.onWinnerFailed(tabId, 'вкладка закрыта');
@@ -251,25 +257,81 @@ export class Orchestrator {
     assignRoles(this);
   }
 
-  /** Вкладка ушла с /ae/ (выбор страны увёл на другой регион) — вернуть (§7.5). */
-  onTabUpdated(tabId: number, url: string | undefined): void {
+  /**
+   * Вкладка ушла с /ae/ — выбор страны увёл в другой регион (§7.5) или закрытый магазин
+   * редиректит на заглушку вне /ae/, где content script не работает. Гонка: возвращаем на цель
+   * по фазам (как рефреш закрытого магазина), пока задача взведена. Prepare: 3 попытки.
+   */
+  onTabUpdated(tabId: number, url: string | undefined, complete = true): void {
     if (!url) return;
-    const t = this.tabs.get(tabId);
+    // вкладку, открытую Start, могло увести ещё до первого запуска content script
+    const mode = this.tabs.get(tabId)?.mode ?? (this.os.raceTabs.includes(tabId) ? 'race' : undefined);
     // только гонка и прогрев: в чекауте возможны 3-D Secure и действия человека — не вмешиваемся
-    if (!t || !['race', 'prep'].includes(t.mode)) return;
+    if (!mode || !['race', 'prep'].includes(mode)) return;
     let u: URL;
     try { u = new URL(url); } catch { return; }
     const ours = u.hostname.endsWith('apple.com') || url.startsWith(this.cfg.baseUrl);
-    if (!ours || u.pathname.toLowerCase().startsWith('/ae')) { this.awayCount.delete(tabId); return; }
+    if (!ours || u.pathname.toLowerCase().startsWith('/ae')) { this.clearAway(tabId); return; }
+    if (!complete) return; // решаем по окончании загрузки: одна загрузка = одно событие
     const n = (this.awayCount.get(tabId) ?? 0) + 1;
     this.awayCount.set(tabId, n);
-    this.log(tabId, 'COUNTRY', `вкладка ушла с /ae/: ${u.pathname} (${n})`, 'warn');
-    if (n > 3) {
-      void notify({ title: `Заказ ${this.order?.id}: регион`, message: 'Вкладку уводит с /ae/ — проверь VPN и гео профиля', tabId, sound: 'alert' });
+    if (n <= 3 || n % 20 === 0) this.log(tabId, 'AWAY', `вкладка ушла с /ae/: ${u.pathname} (${n})`, 'warn');
+    if (mode === 'prep') {
+      if (n > 3) void notify({ title: `Профиль ${this.cfg.profileId}: регион`, message: 'Вкладку уводит с /ae/ — проверь VPN и гео профиля', tabId, sound: 'alert' });
+      else void chrome.tabs.update(tabId, { url: `${this.cfg.baseUrl}/ae/` });
       return;
     }
-    const back = t.mode === 'race' && this.order ? partUrl(this.cfg.baseUrl, this.os.activeTarget ?? this.order.targets[0]) : `${this.cfg.baseUrl}/ae/`;
-    void chrome.tabs.update(tabId, { url: back });
+    if (!this.os.armed || !this.order) return;
+    if (n === 2) void this.onStore(tabId, true, `редирект вне /ae/: ${u.pathname}`);
+    if (n === 3) void notify({ id: `away-${tabId}`, title: `Заказ ${this.order.id}: вкладку уводит с /ae/`, message: 'Возвращаю на страницу товара по расписанию. Если это не закрытие магазина — проверь VPN/гео.', tabId });
+    this.scheduleBack(tabId, n === 1 ? 0 : closedReloadMs(this.cfg, this.os.openedAt));
+  }
+
+  private scheduleBack(tabId: number, ms: number): void {
+    clearTimeout(this.awayTimers.get(tabId));
+    this.awayTimers.set(tabId, setTimeout(() => {
+      this.awayTimers.delete(tabId);
+      if (!this.order || !this.os.armed) return;
+      const url = partUrl(this.cfg.baseUrl, this.os.activeTarget ?? this.order.targets[0]);
+      void chrome.tabs.update(tabId, { url }).catch(() => {});
+    }, ms));
+  }
+
+  private clearAway(tabId: number): void {
+    this.awayCount.delete(tabId);
+    clearTimeout(this.awayTimers.get(tabId));
+    this.awayTimers.delete(tabId);
+  }
+
+  /** Страховка на случай выгрузки SW: вкладки, оставшиеся вне /ae/ без таймера, вернуть. */
+  async checkAway(): Promise<void> {
+    for (const tabId of this.awayCount.keys()) {
+      if (this.awayTimers.has(tabId)) continue;
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      if (!tab?.url) { this.clearAway(tabId); continue; }
+      this.onTabUpdated(tabId, tab.url, tab.status === 'complete');
+    }
+  }
+
+  /** Магазин закрыт / открылся — по отчётам вкладок. */
+  private async onStore(tabId: number, closed: boolean, reason: string): Promise<void> {
+    const now = Date.now();
+    if (closed && !this.os.storeClosedSince) {
+      this.os.storeClosedSince = now;
+      this.log(tabId, 'CLOSED', `Apple Store закрыт (${reason}) — вкладки обновляются по фазам, пока не пустит`, 'warn');
+      if (now - this.storeNotifiedAt > 120_000) {
+        this.storeNotifiedAt = now;
+        void notify({ id: 'store', title: 'Apple Store закрыт', message: 'Расширение само обновляет страницы, пока магазин не откроется. Ничего делать не нужно.' });
+      }
+      await this.saveOs();
+    } else if (!closed && this.os.storeClosedSince) {
+      const mins = ((now - this.os.storeClosedSince) / 60000).toFixed(1);
+      this.os.storeClosedSince = undefined;
+      this.os.storeReopenedAt = now;
+      this.log(tabId, 'REOPEN', `Apple Store открылся (${reason}), был закрыт ${mins} мин`);
+      void notify({ id: 'store', title: 'Apple Store открылся', message: `Вкладки продолжают сами (${reason})`, sound: this.os.openedAt ? undefined : 'open' });
+      await this.saveOs();
+    }
   }
 
   // ---------- OPEN ----------
@@ -558,7 +620,7 @@ export class Orchestrator {
       for (const tab of win?.tabs ?? []) {
         if (tab.id === undefined) continue;
         this.os.raceTabs.push(tab.id);
-        await this.initTab(tab.id, newTabState('race', { target }));
+        await this.initTab(tab.id, newTabState('race', { target, lastTargetNavAt: Date.now() }));
       }
     }
     await this.saveOs(true);
