@@ -5,8 +5,8 @@ import { SEL } from '../../shared/selectors';
 import { storeName } from '../../shared/parts';
 import type { Ctl } from '../ctl';
 import { assistClick } from '../assist';
-import { clickEl, clickable, isChecked, pickRadio, setInput, sleep, textOf, waitForUrl, waitUntil } from '../dom';
-import { findEl, findField, waitEnabled } from '../find';
+import { clickEl, clickable, isChecked, pickRadio, resolveInput, setInput, sleep, textOf, waitForUrl, waitUntil } from '../dom';
+import { findEl, findField, waitEl, waitEnabled } from '../find';
 
 const REVIEW_URL = /_s=Review/i;
 
@@ -120,6 +120,7 @@ async function onTurn(c: Ctl): Promise<void> {
   }
   const btn = await waitEnabled('reviewButton', 4000, sig);
   if (!btn) { c.log('кнопка Review Your Order не активна — дальше человек', 'warn'); return; }
+  if (findEl('termsCheckbox')) await acceptTerms(c, 1000); // иногда условия уже на Billing
   c.setState('PAYING', 'Review Your Order');
   clickEl(btn);
   const went = await waitForUrl(REVIEW_URL, 15000, sig);
@@ -141,8 +142,15 @@ async function tryApplePay(c: Ctl): Promise<void> {
   void c.save();
   const btn = await waitUntil(() => findEl('applePayButton'), 5000, c.signal);
   if (!btn) { c.log('кнопка Apple Pay на Review не найдена — жми сам', 'warn'); showPayBanner(c); return; }
+  await acceptTerms(c, 2500); // обязательно до клика по оплате — иначе «Please read and accept the terms & conditions»
   clickEl(btn);
   await sleep(900, c.signal);
+  if (termsErrorShown()) {
+    c.log('Apple: «read and accept the terms» — ставлю галочку и жму Apple Pay ещё раз', 'warn');
+    await acceptTerms(c, 3000);
+    clickEl(btn);
+    await sleep(900, c.signal);
+  }
   // лист Apple Pay — окно браузера поверх страницы: страница теряет фокус
   if (!document.hasFocus()) {
     c.setState('PAYING', 'Apple Pay: лист открыт — сканируй код телефоном');
@@ -160,7 +168,37 @@ export function reviewStep(c: Ctl): void {
   c.setState('REVIEW', c.ts.payMethod === 'applepay' ? 'Apple Pay (человек)' : 'ждём Place Order (человек)');
   showPayBanner(c);
   watchForOrderNo(c);
-  if (c.ts.payTurn) void tryApplePay(c).catch(() => {});
+  // галочка Terms & Conditions — при любом способе оплаты, до того как человек/расширение нажмёт оплату
+  void (async () => { await acceptTerms(c, 4000); if (c.ts.payTurn) await tryApplePay(c); })().catch(() => {});
+}
+
+/**
+ * Review: «I have read, understand, and agree to the Terms & Conditions of Sale» — без галочки Apple не принимает
+ * заказ (18 Pro, live: «Please read and accept the terms & conditions of this order.»). Это не оплата, ставим сами.
+ */
+async function acceptTerms(c: Ctl, wait = 4000): Promise<boolean> {
+  const el = await waitEl('termsCheckbox', wait, c.signal);
+  if (!el) {
+    if (wait >= 2000) c.log('чекбокс Terms & Conditions не найден — если он на экране, поставь галочку сам', 'warn');
+    return false;
+  }
+  const input = resolveInput(el) ?? (el as HTMLInputElement);
+  if (input.checked) return true;
+  input.scrollIntoView({ block: 'center' });
+  input.click();
+  let ok = await waitUntil(() => (input.checked ? input : null), 1500, c.signal);
+  if (!ok) {
+    const label = input.labels?.[0] ?? input.closest('label');
+    if (label) { (label as HTMLElement).click(); ok = await waitUntil(() => (input.checked ? input : null), 1500, c.signal); }
+  }
+  if (ok) { c.log('условия продажи (Terms & Conditions) приняты'); return true; }
+  c.log('не удалось поставить галочку Terms & Conditions — поставь сам', 'warn');
+  c.overlay.banner(`${payLabel(c)} · поставь галочку Terms & Conditions`, 'Без неё Apple не примет заказ', 'warn');
+  return false;
+}
+
+function termsErrorShown(): boolean {
+  return SEL.txtTermsError.test(document.body?.innerText ?? '');
 }
 
 let orderObserver: MutationObserver | null = null;

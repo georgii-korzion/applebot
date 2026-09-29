@@ -208,6 +208,8 @@ scenarios.single = async () => {
     assert.equal(stRev.payActive, stRev.tabs[0].tabId, 'очередь оплаты не ушла дальше на Review');
     assert.equal(stRev.orders.length, 1, 'запись о заказе создана');
     assert.equal(stRev.orders[0].phone, '0501234567', 'запись о заказе без масок');
+    await waitFor(async () => (await pg.locator('#terms').isChecked()) || null, 6000, 'галочка Terms & Conditions поставлена расширением');
+    await waitFor(async () => (await mockState()).sessions.some((s) => s.checkout.termsAccepted) || null, 3000, 'мок увидел change на чекбоксе условий');
     await pg.click('#place');
     const done = await waitFor(async () => { const s = await p.status(); return s.os.orderNo ? s : null; }, 10000, 'ORDERED');
     say(`single: ORDERED ${done.os.orderNo} · карта заполнена расширением, Place Order — человек`);
@@ -435,6 +437,9 @@ scenarios['applepay-turn'] = async () => {
     say(`applepay-turn: способ ${sess.checkout.method}, кликов Apple Pay ${sess.checkout.applePayClicks}, состояние ${st.tabs[0].state}: ${st.tabs[0].detail}`);
     assert.equal(sess.checkout.method, 'APPLE_PAY');
     assert.equal(sess.checkout.applePayClicks, 1, 'кнопка Apple Pay нажата один раз');
+    assert.equal(sess.checkout.termsAccepted, true, 'галочка Terms & Conditions поставлена до клика по Apple Pay');
+    assert.ok(/условия продажи \(Terms & Conditions\) приняты/.test(log), 'галочка в логе');
+    assert.ok(!/read and accept the terms/.test(log), 'ошибки про условия не было — галочка стояла до клика');
     assert.ok(/Apple Pay/.test(log), 'Apple Pay в логе');
     assert.equal(ms.orders.length, 0, 'заказ не размещён расширением');
   } catch (e) { await dumpOnFail(profiles, 'applepay-turn'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }

@@ -434,14 +434,24 @@ function checkoutClient() {
   }
 
   function review() {
+    // как на живом Review 18 Pro: галочка условий (input спрятан), без неё любая оплата даёт ошибку; Apple Pay — «Continue with [логотип] Pay»
     var pay = st.method === 'APPLE_PAY'
-      ? '<button type="button" id="applepay" data-autom="apple-pay-button" aria-label="Pay with Apple Pay">Pay with Apple Pay</button><div id="applepay-sheet" hidden>[QR-код Apple Pay — сканируй iPhone]</div>'
+      ? '<button type="button" id="applepay" class="applepay-button" data-autom="apple-pay-button" aria-label="Continue with Apple Pay">Continue with <img alt="" width="14" height="14" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">Pay</button><div id="applepay-sheet" hidden>[QR-код Apple Pay — сканируй iPhone]</div>'
       : '<button type="button" id="place">Place Order</button>';
-    app.appendChild(el('<h1>Review your order.</h1><p>' + B.items.map(function (i) { return i.name + ' · ' + i.price; }).join('<br>') + '</p>' + pay));
+    var terms = '<div class="terms"><input class="vh" type="checkbox" id="terms" name="terms"><label for="terms">I have read, understand, and agree to the <a href="#">Terms and Conditions</a> of Sale, and the Privacy Policy.</label></div><div id="err" class="rs-error" role="alert"></div>';
+    app.appendChild(el('<h1>Review your order.</h1><p>' + B.items.map(function (i) { return i.name + ' · ' + i.price; }).join('<br>') + '</p>' + terms + pay));
+    var tb = document.getElementById('terms');
+    tb.onchange = function () { if (tb.checked) { document.getElementById('err').textContent = ''; post('/ae/shop/checkoutx?_a=termsAccepted', {}); } };
+    function termsOk() {
+      if (tb.checked) return true;
+      document.getElementById('err').textContent = 'Please read and accept the terms & conditions of this order.';
+      return false;
+    }
     var ap = document.getElementById('applepay');
-    if (ap) ap.onclick = function () { post('/ae/shop/checkoutx?_a=applePaySheet', { trusted: '1' }); document.getElementById('applepay-sheet').hidden = false; };
+    if (ap) ap.onclick = function () { if (!termsOk()) return; post('/ae/shop/checkoutx?_a=applePaySheet', { trusted: '1' }); document.getElementById('applepay-sheet').hidden = false; };
     var place = document.getElementById('place');
     if (place) place.onclick = function () {
+      if (!termsOk()) return;
       post('/ae/shop/checkoutx?_a=placeOrder&_m=checkout.review', {}).then(function (r) { location.assign('/ae/shop/checkout/thankyou?o=' + r.orderNo); });
     };
   }
@@ -591,6 +601,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (a === 'selectBillingOption') { s.checkout.method = body.method; return json(res, { ok: true }); }
       if (a === 'continueFromBillingToReview') { s.checkout.review = { method: body.method, cardEntered: !!body.cardEntered, cardLast4: body.cardLast4, exp: body.exp, cvvLen: Number(body.cvvLen), nameOnCard: body.nameOnCard }; return json(res, { ok: true }); }
+      if (a === 'termsAccepted') { s.checkout.termsAccepted = true; return json(res, { ok: true }); }
       if (a === 'applePaySheet') { s.checkout.applePayClicks = (s.checkout.applePayClicks ?? 0) + 1; return json(res, { ok: true }); }
       if (a === 'placeOrder') {
         const no = `W${String(100000000 + Math.floor(Math.random() * 899999999))}`;

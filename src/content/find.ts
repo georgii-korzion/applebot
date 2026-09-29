@@ -9,7 +9,7 @@ export interface Spec {
   alt?: string[];              // запасные селекторы
   text?: RegExp;               // подпись видимой кнопки / label
   attr?: RegExp;               // name / autocomplete / placeholder / aria-label / id поля
-  kind?: 'button' | 'radio' | 'field' | 'select' | 'any';
+  kind?: 'button' | 'radio' | 'field' | 'select' | 'checkbox' | 'any';
 }
 
 export const F = {
@@ -54,7 +54,10 @@ export const F = {
   cardCvv: { sel: '[data-autom="security-code-input"]', alt: ['input[autocomplete="cc-csc"]', 'input[name*="cvv" i]', 'input[name*="securityCode" i]', 'input[name*="cvc" i]'], attr: /cvv|cvc|security ?code/i, kind: 'field' },
   cardName: { sel: '[data-autom="form-field-nameOnCard"]', alt: ['input[autocomplete="cc-name"]', 'input[name*="nameOnCard" i]', 'input[name*="cardholder" i]'], attr: /name on card|cardholder/i, kind: 'field' },
   reviewButton: { sel: SEL.reviewButtonObserveOnly, alt: ['button[data-autom*="review" i]'], text: /^review your order/i, kind: 'button' },
-  applePayButton: { sel: '[data-autom="apple-pay-button"]', alt: ['apple-pay-button', 'button[data-autom*="apple-pay" i]', 'button[aria-label*="Apple Pay" i]', '[class*="apple-pay-button" i]'], text: /^(pay with )?apple ?pay$|buy with apple ?pay/i, kind: 'button' },
+  // Review (18 Pro, live): кнопка «Continue with Pay» (логотип Apple — картинка, в тексте его нет)
+  applePayButton: { sel: '[data-autom="apple-pay-button"]', alt: ['apple-pay-button', 'button[data-autom*="apple-pay" i]', 'button[aria-label*="Apple Pay" i]', '[class*="apple-pay-button" i]', 'button[class*="applepay" i]'], text: /^(pay with |continue with |buy with )?(apple ?|\uF8FF ?)?pay$/i, kind: 'button' },
+  // Review: «I have read, understand, and agree to the Terms & Conditions…» — без галочки Apple не пускает к оплате
+  termsCheckbox: { sel: '[data-autom*="terms" i] input[type="checkbox"], input[type="checkbox"][data-autom*="terms" i]', alt: ['input[type="checkbox"][name*="terms" i]', 'input[type="checkbox"][id*="terms" i]', 'input[type="checkbox"][name*="agree" i]', 'input[type="checkbox"][id*="agree" i]'], text: /terms|agree/i, kind: 'checkbox' },
 } satisfies Record<string, Spec>;
 
 export type Key = keyof typeof F;
@@ -86,8 +89,17 @@ export function findAll(key: Key, root: ParentNode = document): HTMLElement[] {
   }
   if (spec.text && (spec.kind === 'button' || spec.kind === 'any')) {
     els = qa<HTMLElement>('button, a, [role="button"], input[type="submit"], input[type="button"]', root)
-      .filter((b) => isVisible(b) && spec.text!.test(textOf(b) || (b as HTMLInputElement).value || b.getAttribute('aria-label') || ''));
+      .filter((b) => isVisible(b) && [textOf(b), (b as HTMLInputElement).value, b.getAttribute('aria-label')].some((t) => !!t && spec.text!.test(t)));
     if (els.length) { report(key, `текст ${spec.text}`); return els; }
+  }
+  if (spec.text && spec.kind === 'checkbox') {
+    // сам input Apple прячет (opacity:0) — ищем по подписи label / соседнему тексту / атрибутам, видимость не проверяем
+    els = qa<HTMLInputElement>('input[type="checkbox"]', root).filter((i) => {
+      const label = i.labels?.[0] ?? i.closest('label');
+      const near = i.parentElement?.parentElement ?? i.parentElement;
+      return spec.text!.test(textOf(label)) || spec.text!.test(textOf(near).slice(0, 400)) || spec.text!.test(attrText(i));
+    });
+    if (els.length) { report(key, `подпись чекбокса ${spec.text}`); return els; }
   }
   if (spec.text && spec.kind === 'radio') {
     els = qa<HTMLLabelElement>('label', root).filter((l) => isVisible(l) && spec.text!.test(textOf(l)));

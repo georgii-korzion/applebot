@@ -71,7 +71,9 @@ export const SEL = {
   txtSlotError: /(no longer available|not available for|Please select|Please choose)/i,
   txtContactError: /Please\s[^.\n]{3,120}/i,
   // ошибка валидации поля/выбора — повтор не поможет, нужен человек (в отличие от «Please try again»)
-  txtValidation: /(Please (select|choose|enter|provide|check|correct|complete|confirm|review|add)|is required|invalid|not valid|must be|can.t be blank)/i,
+  txtValidation: /(Please (select|choose|enter|provide|check|correct|complete|confirm|review|add|read|accept|agree)|is required|invalid|not valid|must be|can.t be blank)/i,
+  // Review без галочки (18 Pro, live): «Please read and accept the terms & conditions of this order.»
+  txtTermsError: /(read and accept|accept the terms|agree to the terms|terms\s*(&|and)\s*conditions of this order)/i,
   txtEmptyBag: /Your bag is empty/i,
   txtOrderNo: /\bW\d{9,11}\b/,
   txtThanks: /(thank you|your order number|order number)/i,
