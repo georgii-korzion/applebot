@@ -6,6 +6,8 @@ interface Status {
   profileId: string;
   mode: 'auto' | 'assist';
   openAt: string;
+  baseUrl: string;
+  mock: boolean;
   order: { id: string; targets: string[]; stores: string[]; payment: string; racers: number } | null;
   os: OrderState;
   tabs: TabRow[];
@@ -61,6 +63,7 @@ function render(st: Status): void {
   sum.textContent = '';
   const kv = (k: string, v: string, cls = '') => { sum.append(el('span', k, 'muted'), el('span', v, cls)); };
   const os = st.os;
+  kv('сайт', st.mock ? `${st.baseUrl} — МОК, не Apple! (Настройки → baseUrl)` : st.baseUrl, st.mock ? 'warn' : '');
   kv('старт', until(st.openAt));
   kv('статус', os.armed ? (os.openedAt ? `OPEN ${ago(os.openedAt)} (${os.openSource ?? ''})` : 'взведён, ждём OPEN') : 'не запущен', os.openedAt ? 'ok' : '');
   if (st.order) {

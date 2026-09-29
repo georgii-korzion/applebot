@@ -2,6 +2,14 @@
 import { PARTS, STORES, normPart } from './parts';
 
 declare const __DEFAULT_BASE_URL__: string;
+declare const __DEV__: boolean;
+
+export const IS_DEV_BUILD = typeof __DEV__ !== 'undefined' && __DEV__;
+export const LIVE_BASE = 'https://www.apple.com';
+
+export function isMockBase(baseUrl: string): boolean {
+  return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(baseUrl.replace(/\/$/, ''));
+}
 
 export type PaymentMode = 'manual' | 'applepay';
 
@@ -205,6 +213,8 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   if (cfg.timing.queueMaxWaitSec < 10) errors.push('timing.queueMaxWaitSec < 10 — страницу очереди Apple нельзя дёргать чаще');
   if (cfg.limits.maxTabsTotal > 12) warnings.push('maxTabsTotal > 12 — выше рекомендованного (§0)');
   if (!/^https?:\/\//.test(cfg.baseUrl)) errors.push('baseUrl должен начинаться с http(s)://');
+  else if (!IS_DEV_BUILD && cfg.baseUrl !== LIVE_BASE) errors.push(`baseUrl «${cfg.baseUrl}» — боевая сборка работает только с ${LIVE_BASE}; мок-сервер только с dev-сборкой (папка extension-dev) в отдельном профиле`);
+  else if (IS_DEV_BUILD && !isMockBase(cfg.baseUrl) && cfg.baseUrl !== LIVE_BASE) errors.push(`baseUrl «${cfg.baseUrl}»: либо ${LIVE_BASE}, либо адрес мока http://127.0.0.1:4777`);
   if (cfg.hubUrl && !/^wss?:\/\//.test(cfg.hubUrl)) errors.push('hubUrl должен начинаться с ws://');
   return { errors, warnings };
 }

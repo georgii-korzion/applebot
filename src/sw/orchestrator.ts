@@ -1,5 +1,5 @@
 // Оркестратор профиля (§5.1): конфиг, состояние заказа, лок Add to Bag, победитель, очередь оплаты, хаб.
-import { K, closedReloadMs, loadConfig, orderFor, validateConfig, type Config, type OrderCfg } from '../shared/config';
+import { K, closedReloadMs, isMockBase, loadConfig, orderFor, validateConfig, type Config, type OrderCfg } from '../shared/config';
 import { LogStore, fmtLine, scrub } from '../shared/log';
 import {
   newOrderState, newTabState,
@@ -664,6 +664,8 @@ export class Orchestrator {
       profileId: this.cfg.profileId,
       mode: this.cfg.mode,
       openAt: this.cfg.openAt,
+      baseUrl: this.cfg.baseUrl,
+      mock: isMockBase(this.cfg.baseUrl),
       order: this.order ? { id: this.order.id, targets: this.order.targets.map((p) => `${p} ${partLabel(p)}`), stores: this.order.stores, payment: this.order.payment, racers: this.order.racersPerProfile } : null,
       os: this.os,
       tabs: this.rows(),
@@ -683,6 +685,9 @@ export class Orchestrator {
     if (v.errors.length) return { ok: false, error: v.errors.join('\n') };
     const o = this.order;
     if (!o) return { ok: false, error: `профиль ${this.cfg.profileId} не назначен ни одному заказу` };
+    if (isMockBase(this.cfg.baseUrl) && !(await this.mockAlive())) {
+      return { ok: false, error: `Мок-сервер ${this.cfg.baseUrl} не запущен — вкладки открывать бессмысленно.\nСухой прогон: в Терминале ./run-mock.command (нужен Node.js).\nЖивой тест: Настройки → baseUrl = https://www.apple.com (и боевая сборка, не extension-dev).` };
+    }
     const target = o.targets[0];
     const keep = this.os.watchTargets;
     this.os = { ...newOrderState(), armed: true, startedAt: Date.now(), activeTarget: target, watchTargets: keep };
@@ -715,6 +720,15 @@ export class Orchestrator {
     if (this.hub.connected) this.register();
     assignRoles(this);
     return { ok: true, warnings: v.warnings };
+  }
+
+  private async mockAlive(): Promise<boolean> {
+    try {
+      const r = await fetch(`${this.cfg.baseUrl}/__state`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+      return r.ok;
+    } catch {
+      return false;
+    }
   }
 
   private async stop(): Promise<unknown> {
