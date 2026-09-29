@@ -39,8 +39,22 @@ export async function paymentStep(c: Ctl): Promise<void> {
   if (method === 'manual') {
     const card = findEl('payCard');
     if (card && !isChecked(card)) pickRadio(card);
-    await fillCard(c);
-    await fillBillingAddress(c);
+    const num = await waitCardFields(c, card);
+    if (num) {
+      await fillCard(c, num);
+      await fillBillingAddress(c);
+    } else {
+      const ap = o.cardFallback === 'applepay' ? findEl('payApplePay') : null;
+      if (ap) {
+        c.log(`поля карты не появились за ${c.t.cardWaitMs / 1000} с — переключаюсь на Apple Pay (cardFallback=applepay)`, 'warn');
+        pickRadio(ap);
+        method = 'applepay';
+        await sleep(300, sig);
+      } else {
+        c.log(`поля карты не появились за ${c.t.cardWaitMs / 1000} с — введи карту сам`, 'warn');
+        c.overlay.banner(`${payLabel(c)} · поля карты не загрузились`, 'Выбери способ оплаты и введи карту сам', 'warn');
+      }
+    }
   }
   c.ts.payMethod = method;
   c.ts.billingAt = Date.now();
@@ -49,11 +63,27 @@ export async function paymentStep(c: Ctl): Promise<void> {
   showPayBanner(c);
 }
 
+/**
+ * Блок карты у Apple появляется через несколько секунд после выбора «Credit or Debit Card» (live 30.09) —
+ * ждём до timing.cardWaitMs; если через 3 с полей нет и radio не выбран, кликаем его ещё раз.
+ */
+async function waitCardFields(c: Ctl, radio: HTMLElement | null): Promise<HTMLInputElement | null> {
+  const t0 = Date.now();
+  const total = Math.max(1000, c.t.cardWaitMs);
+  let num = await waitUntil(() => findField('cardNumber'), Math.min(3000, total), c.signal);
+  if (!num && radio && !isChecked(radio)) {
+    c.log('radio «Credit or Debit Card» не выбрался — повторный клик', 'warn');
+    pickRadio(radio);
+  }
+  if (!num) num = await waitUntil(() => findField('cardNumber'), Math.max(0, total - (Date.now() - t0)), c.signal);
+  const dt = Date.now() - t0;
+  if (num && dt > 1500) c.log(`поля карты появились через ${(dt / 1000).toFixed(1)} с`);
+  return num;
+}
+
 /** Карта из конфига: номер, срок, CVV, имя. Данные не логируются; в лог — только последние 4 цифры. */
-async function fillCard(c: Ctl): Promise<void> {
+async function fillCard(c: Ctl, num: HTMLInputElement): Promise<void> {
   const card = c.order?.card;
-  const num = await waitUntil(() => findField('cardNumber'), 5000, c.signal);
-  if (!num) { c.log('поле card-number-input не найдено', 'warn'); return; }
   num.scrollIntoView({ block: 'center' });
   if (!card?.number) { c.log('карта в конфиге не задана — вводит человек (курсор в поле карты)'); num.focus(); return; }
   const digits = card.number.replace(/\D/g, '');

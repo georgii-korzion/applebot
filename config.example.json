@@ -29,6 +29,7 @@
       },
       "payment": "applepay",
       "applePayFallback": "manual",
+      "cardFallback": "applepay",
       "contact": {
         "firstName": "",
         "lastName": "",
@@ -83,6 +84,7 @@
       },
       "payment": "manual",
       "applePayFallback": "manual",
+      "cardFallback": "applepay",
       "contact": {
         "firstName": "",
         "lastName": "",
@@ -129,7 +131,8 @@
     "closedReloadMs": 30000,
     "queueMaxWaitSec": 90,
     "hydrateWaitMs": 12000,
-    "checkoutErrorRetries": 2
+    "checkoutErrorRetries": 2,
+    "cardWaitMs": 10000
   },
   "retries": {
     "checkout": 4,

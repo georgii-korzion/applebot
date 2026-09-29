@@ -48,7 +48,8 @@ export const F = {
   shipCity: { sel: SEL.shipCity, alt: ['[autocomplete="address-level2"]', '[name*="city" i]'], attr: /city/i, kind: 'any' },
   // оплата
   payCard: { sel: SEL.payCard, alt: ['input[value="CREDIT"]', '[data-autom*="billingOptions-CREDIT" i]', 'input[name*="billing" i][value*="CARD" i]'], text: /credit|debit|card/i, kind: 'radio' },
-  payApplePay: { sel: SEL.payApplePay, alt: ['input[value="APPLE_PAY"]', '[data-autom*="billingOptions-APPLE" i]'], text: /apple ?pay/i, kind: 'radio' },
+  // подпись radio на живом Billing (18 Pro): логотип-картинка + «Pay» — в тексте только «Pay»
+  payApplePay: { sel: SEL.payApplePay, alt: ['input[value="APPLE_PAY"]', '[data-autom*="billingOptions-APPLE" i]'], text: /apple ?pay|^(\uF8FF ?)?pay$/i, kind: 'radio' },
   cardNumber: { sel: SEL.cardNumberFocusOnly, alt: ['input[autocomplete="cc-number"]', 'input[name*="cardNumber" i]', 'input[name*="card-number" i]'], attr: /card ?number/i, kind: 'field' },
   cardExpiry: { sel: '[data-autom="expiration-input"]', alt: ['input[autocomplete="cc-exp"]', 'input[name*="expir" i]'], attr: /expir|mm ?\/ ?yy/i, kind: 'field' },
   cardCvv: { sel: '[data-autom="security-code-input"]', alt: ['input[autocomplete="cc-csc"]', 'input[name*="cvv" i]', 'input[name*="securityCode" i]', 'input[name*="cvc" i]'], attr: /cvv|cvc|security ?code/i, kind: 'field' },

@@ -22,6 +22,7 @@ function orderToForm(o: OrderCfg): void {
   $('o_before').value = o.slot.before ?? '';
   $<HTMLSelectElement>('o_payment').value = o.payment;
   $<HTMLSelectElement>('o_apfb').value = o.applePayFallback ?? '';
+  $<HTMLSelectElement>('o_cardfb').value = o.cardFallback ?? '';
   $('o_first').value = o.contact.firstName;
   $('o_last').value = o.contact.lastName;
   $('o_email').value = o.contact.email;
@@ -55,6 +56,7 @@ function formToOrder(o: OrderCfg): void {
   o.slot = { day: $('o_day').value.trim() || null, after: $('o_after').value.trim() || null, before: $('o_before').value.trim() || null };
   o.payment = $<HTMLSelectElement>('o_payment').value === 'manual' ? 'manual' : 'applepay';
   o.applePayFallback = $<HTMLSelectElement>('o_apfb').value === 'manual' ? 'manual' : null;
+  o.cardFallback = $<HTMLSelectElement>('o_cardfb').value === 'applepay' ? 'applepay' : null;
   o.contact = { firstName: $('o_first').value.trim(), lastName: $('o_last').value.trim(), email: $('o_email').value.trim(), phone: $('o_phone').value.replace(/[\s-]/g, '') };
   o.card = { number: $('o_cardnum').value.replace(/[\s-]/g, ''), expiry: $('o_cardexp').value.trim(), cvv: $('o_cardcvv').value.trim(), name: $('o_cardname').value.trim() };
   o.billing = { title: $('o_btitle').value.trim(), firstName: $('o_bfirst').value.trim(), lastName: $('o_blast').value.trim(), street: $('o_bstreet').value.trim(), area: $('o_barea').value.trim(), town: $('o_btown').value.trim(), city: $<HTMLSelectElement>('o_bcity').value || 'Dubai' };

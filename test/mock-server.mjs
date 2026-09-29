@@ -13,6 +13,7 @@
 //   TAKEN_FIRST_SLOT=1     первое окно каждой даты «уже занято»
 //   HYDRATE_MS=250         задержка «гидратации» страницы конфигурации
 //   ATTACH_DELAY_MS=900    200 → beacon/atb → step=attach
+//   CARD_DELAY_MS=0        блок карты на Billing появляется через N мс после выбора «Credit or Debit Card» (Apple 30.09: несколько секунд)
 //   DEFAULT_CITY=Dubai     город в чекауте по умолчанию
 //   QUEUE_AFTER_OPEN=0     после открытия первые N заходов сессии на страницу товара — «очередь» с meta refresh (2 с),
 //                          страница сама ведёт дальше; ручные рефреши очереди считаются (queueReloads)
@@ -43,6 +44,7 @@ const S = {
   takenFirstSlot: env.TAKEN_FIRST_SLOT !== '0',
   hydrateMs: num(env.HYDRATE_MS, 250),
   attachDelayMs: num(env.ATTACH_DELAY_MS, 900),
+  cardDelayMs: num(env.CARD_DELAY_MS, 0),
   defaultCity: env.DEFAULT_CITY ?? 'Dubai',
   storeClosed: env.STORE_CLOSED ?? '',
   queueAfterOpen: num(env.QUEUE_AFTER_OPEN, 0),
@@ -253,7 +255,7 @@ function checkoutPage(s) {
   const boot = {
     stores: STORES.map((x, i) => ({ ...x, available: !S.unavailableStores.includes(x.id), dist: (2.1 + i * 7.3).toFixed(1) })),
     cities: CITIES, defaultCity: S.defaultCity, dates, slots: Object.fromEntries(dates.map((d, i) => [d.day, slotsFor(i, d.day)])),
-    items: bagJson(s).items,
+    items: bagJson(s).items, cardDelayMs: S.cardDelayMs,
   };
   return page(s, 'Checkout - Apple (AE)', `<div id="app"></div><script id="boot" type="application/json">${JSON.stringify(boot)}</script>`, { scripts: `<script>(${checkoutClient.toString()})();</script>` });
 }
@@ -413,6 +415,7 @@ function checkoutClient() {
 
   // --- Billing: граница автоматизации ---
   function billing() {
+    var mountSeq = 0;
     app.appendChild(el('<h1>How do you want to pay?</h1>'
       + '<input class="vh" type="radio" name="billingOptions" id="bo-c" value="CREDIT" data-autom="checkout-billingOptions-CREDIT"><label for="bo-c">Credit or Debit Card</label>'
       + '<input class="vh" type="radio" name="billingOptions" id="bo-a" value="APPLE_PAY" data-autom="checkout-billingOptions-APPLE_PAY"><label for="bo-a">Apple Pay</label>'
@@ -428,11 +431,12 @@ function checkoutClient() {
           + '<p><input name="firstName" data-autom="form-field-firstName" placeholder="First Name"> <input name="lastName" data-autom="form-field-lastName" placeholder="Last Name"></p>'
           + '<p><input name="street" data-autom="form-field-street" placeholder="Street Address"></p><p><input name="street2" data-autom="form-field-street2" placeholder="Area"></p><p><input name="street3" data-autom="form-field-street3" placeholder="Town (optional)"></p>'
           + '<p><select name="city" data-autom="form-field-city"><option value="">City</option><option>Abu Dhabi</option><option>Dubai</option><option>Sharjah</option></select></p></div>';
-        c.innerHTML = i.value === 'CREDIT' ? '<p><input name="cardNumber" data-autom="card-number-input" autocomplete="cc-number" placeholder="Card Number"></p><p><input name="exp" data-autom="expiration-input" autocomplete="cc-exp" placeholder="MM/YY"> <input name="cvv" data-autom="security-code-input" autocomplete="cc-csc" placeholder="CVV"></p>' + addr : '<p>You’ll confirm with Apple Pay after reviewing your order.</p>';
+        var html = i.value === 'CREDIT' ? '<p><input name="cardNumber" data-autom="card-number-input" autocomplete="cc-number" placeholder="Card Number"></p><p><input name="exp" data-autom="expiration-input" autocomplete="cc-exp" placeholder="MM/YY"> <input name="cvv" data-autom="security-code-input" autocomplete="cc-csc" placeholder="CVV"></p>' + addr : '<p>You’ll confirm with Apple Pay after reviewing your order.</p>';
         st.bill = {};
-        bindField(c, 'card', st.card);
-        var bl = c.querySelector('.bill');
-        if (bl) bindField(bl, 'bill', st.bill);
+        var seq = ++mountSeq;
+        var mount = function () { if (seq !== mountSeq) return; c.innerHTML = html; bindField(c, 'card', st.card); var bl = c.querySelector('.bill'); if (bl) bindField(bl, 'bill', st.bill); };
+        // CARD_DELAY_MS: блок карты подгружается с задержкой (Apple 30.09) — до этого только «Loading…»
+        if (i.value === 'CREDIT' && B.cardDelayMs > 0) { c.innerHTML = '<p class="loading">Loading payment form…</p>'; setTimeout(mount, B.cardDelayMs); } else mount();
       });
     });
     document.getElementById('cont').onclick = function () {

@@ -24,6 +24,9 @@ export interface OrderCfg {
   slot: { day: string | null; after: string | null; before: string | null };
   payment: PaymentMode;
   applePayFallback: 'manual' | null;
+  /** Оплата картой: если поля карты не появились за timing.cardWaitMs (блок карты у Apple подгружается с задержкой,
+   *  live 30.09) — переключиться на Apple Pay; null — ждать и вводить самому. */
+  cardFallback: 'applepay' | null;
   allowApplePayExpress: boolean;
   contact: { firstName: string; lastName: string; email: string; phone: string };
   /** Карта для автозаполнения (хранится в chrome.storage.local профиля открытым текстом; пусто — вводит человек). */
@@ -49,6 +52,8 @@ export interface Timing {
   hydrateWaitMs: number;
   /** Повторы одного и того же действия чекаута при ошибке общего вида («unexpected error»). */
   checkoutErrorRetries: number;
+  /** Ожидание полей карты на Billing после выбора «Credit or Debit Card» (блок подгружается с задержкой, live 30.09). */
+  cardWaitMs: number;
 }
 
 export interface Config {
@@ -67,7 +72,7 @@ export const DEFAULT_TIMING: Timing = {
   pollMs: 1200, preOpenReloadMs: 3000, postOpenReloadMs: 1500, minReloadMs: 1500,
   jitterPct: 30, graceSec: 20, atbTimeoutMs: 15000, atb404BackoffMs: 1500,
   atb404MaxInRow: 5, holdLoserBagSec: 90, manualPayTimeoutSec: 600, assistAfterFailures: 3,
-  closedReloadMs: 30000, queueMaxWaitSec: 90, hydrateWaitMs: 12000, checkoutErrorRetries: 2,
+  closedReloadMs: 30000, queueMaxWaitSec: 90, hydrateWaitMs: 12000, checkoutErrorRetries: 2, cardWaitMs: 10000,
 };
 
 export function defaultOrder(id = 'A'): OrderCfg {
@@ -82,6 +87,7 @@ export function defaultOrder(id = 'A'): OrderCfg {
     slot: { day: null, after: null, before: null },
     payment: 'applepay',
     applePayFallback: 'manual',
+    cardFallback: 'applepay',
     allowApplePayExpress: false,
     contact: { firstName: '', lastName: '', email: '', phone: '05XXXXXXXX' },
     card: { number: '', expiry: '', cvv: '', name: '' },
@@ -140,6 +146,7 @@ export function normalizeConfig(raw: unknown): Config {
         },
         payment: o?.payment === 'manual' ? 'manual' : 'applepay',
         applePayFallback: o?.applePayFallback === null ? null : 'manual',
+        cardFallback: o?.cardFallback === null ? null : 'applepay',
         allowApplePayExpress: !!o?.allowApplePayExpress,
         contact: {
           firstName: str(o?.contact?.firstName),
@@ -243,6 +250,7 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   if (cfg.timing.pollMs < 1000) errors.push('timing.pollMs < 1000 — наблюдатель не чаще раза в секунду (§7.1)');
   if (cfg.timing.closedReloadMs < 5000) errors.push('timing.closedReloadMs < 5000 — закрытый магазин до старта не чаще раза в 5 с');
   if (cfg.timing.queueMaxWaitSec < 10) errors.push('timing.queueMaxWaitSec < 10 — страницу очереди Apple нельзя дёргать чаще');
+  if (cfg.timing.cardWaitMs < 3000) errors.push('timing.cardWaitMs < 3000 — блок карты у Apple грузится несколько секунд');
   if (cfg.limits.maxTabsTotal > 12) warnings.push('maxTabsTotal > 12 — выше рекомендованного (§0)');
   if (!/^https?:\/\//.test(cfg.baseUrl)) errors.push('baseUrl должен начинаться с http(s)://');
   else if (!IS_DEV_BUILD && cfg.baseUrl !== LIVE_BASE) errors.push(`baseUrl «${cfg.baseUrl}» — боевая сборка работает только с ${LIVE_BASE}; мок-сервер только с dev-сборкой (папка extension-dev) в отдельном профиле`);

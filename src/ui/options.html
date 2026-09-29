@@ -67,6 +67,9 @@
         <select id="o_payment"><option value="applepay">applepay — Apple Pay (подтверждает человек)</option><option value="manual">manual — карту вводит человек</option></select>
         <label for="o_apfb">Фолбэк Apple Pay</label>
         <select id="o_apfb"><option value="manual">manual</option><option value="">нет</option></select>
+        <label for="o_cardfb">Фолбэк карты</label>
+        <select id="o_cardfb"><option value="applepay">applepay — поля карты не появились за 10 с → Apple Pay</option><option value="">нет — ждать и вводить карту самому</option></select>
+        <div class="hint">Блок карты у Apple подгружается с задержкой (30.09). Ожидание — <code>timing.cardWaitMs</code> в JSON справа (10 000 мс).</div>
         <label for="o_first">Имя</label><input id="o_first">
         <label for="o_last">Фамилия</label><input id="o_last">
         <label for="o_email">Email</label><input id="o_email" type="email">

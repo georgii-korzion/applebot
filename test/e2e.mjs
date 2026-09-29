@@ -500,7 +500,51 @@ scenarios['closed-offsite'] = closedScenario('offsite', 15);
 
 // ---------- запуск ----------
 const want = process.argv.slice(2);
-const list = want.length ? want : ['single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'acceptance'];
+/** Блок карты подгружается 4 с (Apple 30.09): ждём до cardWaitMs, карта и адрес заполнены, фолбэк не нужен. */
+scenarios['card-slow'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', CARD_DELAY_MS: '4000' });
+  const p = await launchProfile('cardslow');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD })], { openInSec: -5 }));
+    const r = await p.cmd({ cmd: 'start' });
+    assert.ok(r.ok, r.error);
+    await waitFor(async () => (await p.status()).os.billingReadyAt, 60000, 'Billing', 500);
+    const ms = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.checkout.review) ? m : null; }, 20000, 'Review');
+    const sess = ms.sessions.find((s) => s.bag.length);
+    const log = (await p.cmd({ cmd: 'exportLog' })).text;
+    say(`card-slow: способ ${sess.checkout.method}, карта ****${sess.checkout.review.cardLast4}`);
+    assert.equal(sess.checkout.method, 'CREDIT', 'карта дождалась полей — фолбэк не сработал');
+    assert.equal(sess.checkout.review.cardLast4, '1111', 'карта заполнена после задержки');
+    assert.equal(sess.checkout.review.billing.street, 'Sheikh Zayed Rd 1', 'адрес заполнен после задержки');
+    assert.ok(/поля карты появились через [3-9]\.\d с/.test(log), 'лог о задержке полей карты');
+    assert.ok(!/переключаюсь на Apple Pay/.test(log), 'без фолбэка');
+  } catch (e) { await dumpOnFail(profiles, 'card-slow'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+/** Блок карты не появился за cardWaitMs → Apple Pay (cardFallback=applepay) → Review → галочка → кнопка Apple Pay. */
+scenarios['card-fallback'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', CARD_DELAY_MS: '60000' });
+  const p = await launchProfile('cardfb');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD })], { openInSec: -5, timing: { cardWaitMs: 4000 } }));
+    const r = await p.cmd({ cmd: 'start' });
+    assert.ok(r.ok, r.error);
+    const ms = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.checkout.applePayClicks) ? m : null; }, 40000, 'клик Apple Pay на Review');
+    const sess = ms.sessions.find((s) => s.bag.length);
+    const st = await p.status();
+    const log = (await p.cmd({ cmd: 'exportLog' })).text;
+    say(`card-fallback: способ ${sess.checkout.method}, состояние ${st.tabs[0].state}: ${st.tabs[0].detail}`);
+    assert.equal(sess.checkout.method, 'APPLE_PAY', 'переключились на Apple Pay');
+    assert.ok(/поля карты не появились за 4 с — переключаюсь на Apple Pay/.test(log), 'лог о фолбэке');
+    assert.equal(sess.checkout.termsAccepted, true, 'галочка условий стоит');
+    assert.equal(sess.checkout.applePayClicks, 1, 'кнопка Apple Pay нажата один раз');
+    assert.equal(ms.orders.length, 0, 'заказ не размещён расширением');
+  } catch (e) { await dumpOnFail(profiles, 'card-fallback'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+const list = want.length ? want : ['single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-fallback', 'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'acceptance'];
 let failed = 0;
 for (const name of list) {
   const fn = scenarios[name];
