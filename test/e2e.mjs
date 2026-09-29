@@ -297,9 +297,11 @@ scenarios.hostile = async () => {
     assert.ok(/не принято/.test(log), 'занятый слот обработан');
     assert.ok(ms.sessions.reduce((a, s) => a + s.atb404, 0) >= 2, '404 на Add to Bag отработаны');
     assert.ok(/ATB_404/.test(log), 'диагностика ATB_404 в логе');
-    const pg = await billingPage(p);
-    assert.equal(await pg.locator('#bo-a').isChecked(), true, 'выбран Apple Pay');
+    // с autoReview вкладка уже на Review: Apple Pay выбран (по моку), Place Order нет и не нажат
+    const pg = p.appleTabs().find((x) => /_s=(Billing|Review)/.test(x.url()));
+    assert.ok(pg, 'вкладка на Billing/Review');
     assert.equal(await pg.locator('#place').count(), 0, 'Place Order не нажат');
+    assert.equal(ms.orders.length, 0, 'заказ не размещён расширением');
   } catch (e) { await dumpOnFail(profiles, 'hostile'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
