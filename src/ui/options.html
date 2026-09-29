@@ -77,6 +77,15 @@
         <label for="o_cardcvv">Карта: CVV</label><input id="o_cardcvv" inputmode="numeric" autocomplete="off" placeholder="пусто — вводит человек">
         <label for="o_cardname">Карта: имя</label><input id="o_cardname" placeholder="как на карте (если Apple спросит)" autocomplete="off">
         <div class="hint"><b>Хранится в этом профиле Chrome открытым текстом</b> (как автозаполнение, но без пароля Mac) и попадает в экспорт JSON. В логи не пишется. Расширение заполняет поля и нажимает «Review Your Order»; «Place Order» — только ты. После дропа очисти эти поля.</div>
+        <label for="o_bfirst">Плательщик: имя</label><input id="o_bfirst" placeholder="пусто — как у получателя" autocomplete="off">
+        <label for="o_blast">Плательщик: фамилия</label><input id="o_blast" placeholder="пусто — как у получателя" autocomplete="off">
+        <label for="o_bstreet">Плательщик: улица</label><input id="o_bstreet" placeholder="Street Address" autocomplete="off">
+        <label for="o_barea">Плательщик: Area</label><input id="o_barea" placeholder="район / Area" autocomplete="off">
+        <label for="o_btown">Плательщик: Town</label><input id="o_btown" placeholder="необязательно" autocomplete="off">
+        <label for="o_bcity">Плательщик: город</label>
+        <select id="o_bcity"><option>Dubai</option><option>Abu Dhabi</option><option>Sharjah</option><option>Ajman</option><option>Al Ain</option><option>Fujairah</option><option>Ras Al Khaimah</option><option>Umm Al Quwain</option></select>
+        <label for="o_btitle">Плательщик: Title</label><input id="o_btitle" placeholder="необязательно: Mr. / Ms." autocomplete="off">
+        <div class="hint">Billing Address на странице оплаты картой — Apple требует его (снято на живом 18 Pro 30.09). Имя/фамилия пустые — берутся из контакта получателя; улица/Area пустые — из адреса доставки ниже. Для Apple Pay не нужен.</div>
         <label for="o_autoreview">Нажимать Review самим</label><input id="o_autoreview" type="checkbox" style="justify-self:start">
         <div class="hint">Когда подошла очередь оплаты: заполненная карта → «Review Your Order» → тебе остаётся «Place Order». Для Apple Pay — переход на Review и попытка открыть лист с кодом.</div>
         <label for="o_delivery">Фолбэк доставки</label><input id="o_delivery" type="checkbox" style="justify-self:start">

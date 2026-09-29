@@ -5,8 +5,8 @@ import { SEL } from '../../shared/selectors';
 import { storeName } from '../../shared/parts';
 import type { Ctl } from '../ctl';
 import { assistClick } from '../assist';
-import { clickEl, clickable, isChecked, pickRadio, resolveInput, setInput, sleep, textOf, waitForUrl, waitUntil } from '../dom';
-import { findEl, findField, waitEl, waitEnabled } from '../find';
+import { clickEl, clickable, isChecked, pickRadio, resolveInput, setInput, setSelect, sleep, textOf, waitForUrl, waitUntil } from '../dom';
+import { billingRoot, findEl, findField, findSelect, waitEl, waitEnabled, type Key } from '../find';
 
 const REVIEW_URL = /_s=Review/i;
 
@@ -40,6 +40,7 @@ export async function paymentStep(c: Ctl): Promise<void> {
     const card = findEl('payCard');
     if (card && !isChecked(card)) pickRadio(card);
     await fillCard(c);
+    await fillBillingAddress(c);
   }
   c.ts.payMethod = method;
   c.ts.billingAt = Date.now();
@@ -54,7 +55,7 @@ async function fillCard(c: Ctl): Promise<void> {
   const num = await waitUntil(() => findField('cardNumber'), 5000, c.signal);
   if (!num) { c.log('поле card-number-input не найдено', 'warn'); return; }
   num.scrollIntoView({ block: 'center' });
-  if (!card?.number) { num.focus(); return; } // карта не задана — только фокус, вводит человек
+  if (!card?.number) { c.log('карта в конфиге не задана — вводит человек (курсор в поле карты)'); num.focus(); return; }
   const digits = card.number.replace(/\D/g, '');
   const fields: [HTMLInputElement | null, string, string][] = [
     [num, digits, 'номер'],
@@ -75,6 +76,56 @@ async function fillCard(c: Ctl): Promise<void> {
   c.ts.cardFilled = done.includes('номер');
   c.log(`карта ****${digits.slice(-4)}: заполнено ${done.join(', ') || '—'}${missed.length ? `; не удалось: ${missed.join(', ')}` : ''}`, missed.length ? 'warn' : 'info');
   if (missed.length) c.overlay.banner(`${payLabel(c)} · допиши ${missed.join(', ')}`, 'Остальное расширение заполнило', 'warn');
+}
+
+/**
+ * Billing Address при оплате картой (18 Pro, live 30.09): First/Last Name, Street Address, Area, City обязательны,
+ * Title и Town — нет. Без адреса «Review Your Order» отвечает «Please complete this mandatory field».
+ */
+async function fillBillingAddress(c: Ctl): Promise<void> {
+  const o = c.order!;
+  const b = o.billing;
+  const street = b.street || o.address.street;
+  const area = b.area || o.address.area;
+  const city = b.city || o.address.city;
+  const root = billingRoot();
+  const first = await waitUntil(() => findField('billFirstName', root) ?? findField('billStreet', root), 3000, c.signal);
+  if (!first) { c.log('Billing Address: полей адреса нет — Apple не спросил адрес плательщика'); return; }
+  if (!street || !area) {
+    c.log('Billing Address нужен для карты, но «Плательщик: улица / Area» в настройках пусты — заполни адрес сам', 'warn');
+    c.overlay.banner(`${payLabel(c)} · заполни Billing Address`, 'В настройках пусто: Плательщик: улица / Area', 'warn');
+    return;
+  }
+  const done: string[] = [];
+  const missed: string[] = [];
+  const fields: [Key, string, string][] = [
+    ['billFirstName', b.firstName || o.contact.firstName, 'имя'],
+    ['billLastName', b.lastName || o.contact.lastName, 'фамилия'],
+    ['billStreet', street, 'улица'],
+    ['billArea', area, 'Area'],
+    ['billTown', b.town, 'Town'],
+  ];
+  for (const [key, val, label] of fields) {
+    if (!val) continue;
+    const f = findField(key, root);
+    if (!f) { missed.push(label); continue; }
+    if (f.value !== val) setInput(f, val);
+    await sleep(60, c.signal);
+    (f.value === val ? done : missed).push(label);
+  }
+  const selects: [Key, string, string][] = [['billTitle', b.title, 'Title'], ['billCity', city, 'город']];
+  for (const [key, val, label] of selects) {
+    if (!val) continue;
+    const s = findSelect(key, root);
+    if (!s) { if (key === 'billCity') missed.push(label); continue; }
+    const opt = Array.from(s.options).find((x) => x.text.trim().toLowerCase() === val.toLowerCase() || x.value.toLowerCase() === val.toLowerCase());
+    if (!opt) { missed.push(`${label} (нет варианта «${val}»)`); continue; }
+    if (s.value !== opt.value) setSelect(s, opt.value);
+    await sleep(60, c.signal);
+    (s.value === opt.value ? done : missed).push(label);
+  }
+  c.log(`адрес плательщика: заполнено ${done.join(', ') || '—'}${missed.length ? `; не удалось: ${missed.join(', ')}` : ''}`, missed.length ? 'warn' : 'info');
+  if (missed.length) c.overlay.banner(`${payLabel(c)} · допиши в Billing Address: ${missed.join(', ')}`, 'Остальное расширение заполнило', 'warn');
 }
 
 export function payLabel(c: Ctl): string {

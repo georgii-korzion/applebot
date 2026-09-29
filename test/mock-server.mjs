@@ -262,7 +262,7 @@ function checkoutPage(s) {
 function checkoutClient() {
   var B = JSON.parse(document.getElementById('boot').textContent);
   var app = document.getElementById('app');
-  var st = { mode: 'delivery', city: B.defaultCity, store: null, day: null, slot: '', removed: {}, who: null, contact: {}, ship: {}, method: null, card: {} };
+  var st = { mode: 'delivery', city: B.defaultCity, store: null, day: null, slot: '', removed: {}, who: null, contact: {}, ship: {}, method: null, card: {}, bill: {} };
   function step() { return (new URLSearchParams(location.search).get('_s') || 'Fulfillment-init'); }
   function go(s) { history.pushState({}, '', '/ae/shop/checkout?_s=' + s); render(); }
   window.addEventListener('popstate', render);
@@ -274,6 +274,7 @@ function checkoutClient() {
   function setErr(t) { var e = document.getElementById('err'); if (e) e.textContent = t || ''; }
   function bindField(root, key, obj) {
     root.querySelectorAll('input[name]').forEach(function (i) { i.addEventListener('input', function () { obj[i.name] = i.value; }); });
+    root.querySelectorAll('select[name]').forEach(function (s) { s.addEventListener('change', function () { obj[s.name] = s.value; }); });
   }
 
   function render() {
@@ -422,14 +423,23 @@ function checkoutClient() {
         st.method = i.value;
         post('/ae/shop/checkoutx/billing?_a=selectBillingOption', { method: i.value });
         var c = document.getElementById('card');
-        c.innerHTML = i.value === 'CREDIT' ? '<p><input name="cardNumber" data-autom="card-number-input" autocomplete="cc-number" placeholder="Card Number"></p><p><input name="exp" data-autom="expiration-input" autocomplete="cc-exp" placeholder="MM/YY"> <input name="cvv" data-autom="security-code-input" autocomplete="cc-csc" placeholder="CVV"></p><p><input name="nameOnCard" data-autom="form-field-nameOnCard" autocomplete="cc-name" placeholder="Name on Card"></p>' : '<p>You’ll confirm with Apple Pay after reviewing your order.</p>';
+        // как на живом Billing 18 Pro (30.09): карта + Billing Address (Title, First/Last Name, Street, Area, Town (optional), City) — обязательны, кроме Title/Town
+        var addr = '<h3>Billing Address</h3><div class="bill"><p><select name="title" data-autom="form-field-title"><option value="">Title</option><option>Mr.</option><option>Ms.</option></select></p>'
+          + '<p><input name="firstName" data-autom="form-field-firstName" placeholder="First Name"> <input name="lastName" data-autom="form-field-lastName" placeholder="Last Name"></p>'
+          + '<p><input name="street" data-autom="form-field-street" placeholder="Street Address"></p><p><input name="street2" data-autom="form-field-street2" placeholder="Area"></p><p><input name="street3" data-autom="form-field-street3" placeholder="Town (optional)"></p>'
+          + '<p><select name="city" data-autom="form-field-city"><option value="">City</option><option>Abu Dhabi</option><option>Dubai</option><option>Sharjah</option></select></p></div>';
+        c.innerHTML = i.value === 'CREDIT' ? '<p><input name="cardNumber" data-autom="card-number-input" autocomplete="cc-number" placeholder="Card Number"></p><p><input name="exp" data-autom="expiration-input" autocomplete="cc-exp" placeholder="MM/YY"> <input name="cvv" data-autom="security-code-input" autocomplete="cc-csc" placeholder="CVV"></p>' + addr : '<p>You’ll confirm with Apple Pay after reviewing your order.</p>';
+        st.bill = {};
         bindField(c, 'card', st.card);
+        var bl = c.querySelector('.bill');
+        if (bl) bindField(bl, 'bill', st.bill);
       });
     });
     document.getElementById('cont').onclick = function () {
       if (!st.method) return setErr('Please select a payment method.');
       if (st.method === 'CREDIT' && !/^\d{12,19}$/.test((st.card.cardNumber || '').replace(/\s/g, ''))) return setErr('Please enter a valid card number.');
-      post('/ae/shop/checkoutx?_a=continueFromBillingToReview&_m=checkout.billing', { method: st.method, cardEntered: st.card.cardNumber ? '1' : '', cardLast4: (st.card.cardNumber || '').replace(/\D/g, '').slice(-4), exp: st.card.exp || '', cvvLen: String((st.card.cvv || '').length), nameOnCard: st.card.nameOnCard || '' }).then(function () { go('Review'); });
+      if (st.method === 'CREDIT' && !(st.bill.firstName && st.bill.lastName && st.bill.street && st.bill.street2 && st.bill.city)) return setErr('Please complete this mandatory field.');
+      post('/ae/shop/checkoutx?_a=continueFromBillingToReview&_m=checkout.billing', { method: st.method, cardEntered: st.card.cardNumber ? '1' : '', cardLast4: (st.card.cardNumber || '').replace(/\D/g, '').slice(-4), exp: st.card.exp || '', cvvLen: String((st.card.cvv || '').length), nameOnCard: st.card.nameOnCard || '', billFirst: st.bill.firstName || '', billLast: st.bill.lastName || '', billStreet: st.bill.street || '', billArea: st.bill.street2 || '', billTown: st.bill.street3 || '', billCity: st.bill.city || '', billTitle: st.bill.title || '' }).then(function () { go('Review'); });
     };
   }
 
@@ -600,7 +610,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, { ok: true });
       }
       if (a === 'selectBillingOption') { s.checkout.method = body.method; return json(res, { ok: true }); }
-      if (a === 'continueFromBillingToReview') { s.checkout.review = { method: body.method, cardEntered: !!body.cardEntered, cardLast4: body.cardLast4, exp: body.exp, cvvLen: Number(body.cvvLen), nameOnCard: body.nameOnCard }; return json(res, { ok: true }); }
+      if (a === 'continueFromBillingToReview') { s.checkout.review = { method: body.method, cardEntered: !!body.cardEntered, cardLast4: body.cardLast4, exp: body.exp, cvvLen: Number(body.cvvLen), nameOnCard: body.nameOnCard, billing: body.method === 'CREDIT' ? { first: body.billFirst, last: body.billLast, street: body.billStreet, area: body.billArea, town: body.billTown, city: body.billCity, title: body.billTitle } : null }; return json(res, { ok: true }); }
       if (a === 'termsAccepted') { s.checkout.termsAccepted = true; return json(res, { ok: true }); }
       if (a === 'applePaySheet') { s.checkout.applePayClicks = (s.checkout.applePayClicks ?? 0) + 1; return json(res, { ok: true }); }
       if (a === 'placeOrder') {

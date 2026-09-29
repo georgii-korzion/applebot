@@ -53,6 +53,14 @@ export const F = {
   cardExpiry: { sel: '[data-autom="expiration-input"]', alt: ['input[autocomplete="cc-exp"]', 'input[name*="expir" i]'], attr: /expir|mm ?\/ ?yy/i, kind: 'field' },
   cardCvv: { sel: '[data-autom="security-code-input"]', alt: ['input[autocomplete="cc-csc"]', 'input[name*="cvv" i]', 'input[name*="securityCode" i]', 'input[name*="cvc" i]'], attr: /cvv|cvc|security ?code/i, kind: 'field' },
   cardName: { sel: '[data-autom="form-field-nameOnCard"]', alt: ['input[autocomplete="cc-name"]', 'input[name*="nameOnCard" i]', 'input[name*="cardholder" i]'], attr: /name on card|cardholder/i, kind: 'field' },
+  // адрес плательщика (Billing Address при оплате картой; 18 Pro, live 30.09: Title, First/Last Name, Street Address, Area, Town (optional), City)
+  billTitle: { sel: '[data-autom="form-field-title"]', alt: ['select[name*="billing" i][name*="title" i]', 'select[name$="title" i]', 'select[name$=".title" i]'], attr: /\btitle\b/i, kind: 'select' },
+  billFirstName: { sel: SEL.firstName, alt: ['input[name*="billing" i][name*="firstName" i]', 'input[name*="firstName" i]', 'input[autocomplete="given-name"]'], attr: /first ?name/i, kind: 'field' },
+  billLastName: { sel: SEL.lastName, alt: ['input[name*="billing" i][name*="lastName" i]', 'input[name*="lastName" i]', 'input[autocomplete="family-name"]'], attr: /last ?name|surname/i, kind: 'field' },
+  billStreet: { sel: SEL.shipStreet, alt: ['input[name*="billing" i][name*="street" i]:not([name*="2"]):not([name*="3"])', 'input[autocomplete="address-line1"]', 'input[name*="street" i]:not([name*="2"]):not([name*="3"])'], attr: /^street|street address|address line 1/i, kind: 'field' },
+  billArea: { sel: SEL.shipStreet2, alt: ['input[name*="billing" i][name*="street2" i]', 'input[name*="area" i]', 'input[name*="street2" i]', 'input[name*="district" i]', 'input[autocomplete="address-line2"]'], attr: /\barea\b|address line 2/i, kind: 'field' },
+  billTown: { sel: '[data-autom="form-field-street3"]', alt: ['input[name*="billing" i][name*="street3" i]', 'input[name*="town" i]', 'input[name*="street3" i]', 'input[autocomplete="address-line3"]'], attr: /\btown\b/i, kind: 'field' },
+  billCity: { sel: SEL.shipCity, alt: ['select[name*="billing" i][name*="city" i]', 'select[name*="city" i]', 'select[autocomplete="address-level2"]', 'select[data-autom*="city" i]'], attr: /\bcity\b/i, kind: 'select' },
   reviewButton: { sel: SEL.reviewButtonObserveOnly, alt: ['button[data-autom*="review" i]'], text: /^review your order/i, kind: 'button' },
   // Review (18 Pro, live): кнопка «Continue with Pay» (логотип Apple — картинка, в тексте его нет)
   applePayButton: { sel: '[data-autom="apple-pay-button"]', alt: ['apple-pay-button', 'button[data-autom*="apple-pay" i]', 'button[aria-label*="Apple Pay" i]', '[class*="apple-pay-button" i]', 'button[class*="applepay" i]'], text: /^(pay with |continue with |buy with )?(apple ?|\uF8FF ?)?pay$/i, kind: 'button' },
@@ -111,6 +119,14 @@ export function findAll(key: Key, root: ParentNode = document): HTMLElement[] {
     if (els.length) { report(key, `атрибуты ${spec.attr}`); return els; }
   }
   return [];
+}
+
+/** Контейнер «Billing Address» на странице оплаты; если заголовка нет — вся страница. */
+export function billingRoot(): ParentNode {
+  const h = qa<HTMLElement>('h1, h2, h3, h4, h5, legend, [class*="heading" i], [class*="title" i]').find((e) => /^billing address/i.test(textOf(e)));
+  let node: HTMLElement | null = h?.parentElement ?? null;
+  while (node && node !== document.body && !node.querySelector('input:not([type="hidden"]), select')) node = node.parentElement;
+  return node ?? document;
 }
 
 export function waitEl(key: Key, timeout: number, signal?: AbortSignal, root: ParentNode = document): Promise<HTMLElement | null> {

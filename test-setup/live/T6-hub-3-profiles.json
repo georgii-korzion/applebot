@@ -50,6 +50,15 @@
         "cvv": "",
         "name": ""
       },
+      "billing": {
+        "title": "",
+        "firstName": "",
+        "lastName": "",
+        "street": "",
+        "area": "",
+        "town": "",
+        "city": "Dubai"
+      },
       "autoReview": true
     }
   ],

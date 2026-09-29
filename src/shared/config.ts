@@ -28,6 +28,9 @@ export interface OrderCfg {
   contact: { firstName: string; lastName: string; email: string; phone: string };
   /** Карта для автозаполнения (хранится в chrome.storage.local профиля открытым текстом; пусто — вводит человек). */
   card: { number: string; expiry: string; cvv: string; name: string };
+  /** Адрес плательщика (Billing Address) — Apple требует его при оплате картой (18 Pro, live 30.09).
+   *  Имя/фамилия пустые → из contact; street/area пустые → из address (доставка). */
+  billing: { title: string; firstName: string; lastName: string; street: string; area: string; town: string; city: string };
   /** Нажимать «Review Your Order» самим, когда подошла очередь оплаты. Place Order — всегда человек. */
   autoReview: boolean;
   deliveryFallback: boolean;
@@ -82,6 +85,7 @@ export function defaultOrder(id = 'A'): OrderCfg {
     allowApplePayExpress: false,
     contact: { firstName: '', lastName: '', email: '', phone: '05XXXXXXXX' },
     card: { number: '', expiry: '', cvv: '', name: '' },
+    billing: { title: '', firstName: '', lastName: '', street: '', area: '', town: '', city: 'Dubai' },
     autoReview: true,
     deliveryFallback: false,
     address: { street: '', area: '', city: 'Dubai' },
@@ -149,6 +153,15 @@ export function normalizeConfig(raw: unknown): Config {
           cvv: str(o?.card?.cvv),
           name: str(o?.card?.name),
         },
+        billing: {
+          title: str(o?.billing?.title),
+          firstName: str(o?.billing?.firstName),
+          lastName: str(o?.billing?.lastName),
+          street: str(o?.billing?.street),
+          area: str(o?.billing?.area),
+          town: str(o?.billing?.town),
+          city: str(o?.billing?.city, 'Dubai'),
+        },
         autoReview: o?.autoReview === undefined ? true : !!o.autoReview,
         deliveryFallback: !!o?.deliveryFallback,
         address: {
@@ -213,6 +226,7 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
     if (o.card.expiry && !/^(0[1-9]|1[0-2])\s?\/\s?(\d{2}|\d{4})$/.test(o.card.expiry)) errors.push(`${p} card.expiry — MM/YY`);
     if (o.card.cvv && !/^\d{3,4}$/.test(o.card.cvv)) errors.push(`${p} card.cvv — 3–4 цифры`);
     if (o.card.number && o.payment === 'manual') warnings.push(`${p} карта задана — хранится в этом профиле Chrome открытым текстом; после дропа удали её из настроек`);
+    if (o.payment === 'manual' && !(o.billing.street || o.address.street) && !(o.billing.area || o.address.area)) warnings.push(`${p} оплата картой: Apple требует Billing Address (улица, Area, город) — заполни «Плательщик» в настройках, иначе Review не откроется`);
     if (o.racersPerProfile > 6) warnings.push(`${p} racersPerProfile=${o.racersPerProfile} — много вкладок в одном профиле`);
     for (const pr of o.profiles) profileUse.set(pr, [...(profileUse.get(pr) ?? []), o.id]);
     tabs += Math.max(1, o.profiles.length) * o.racersPerProfile;

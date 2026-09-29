@@ -120,6 +120,7 @@ const CARD = { number: '4111111111111111', expiry: '12/29', cvv: '123', name: 'A
 function makeOrder(id, i, profiles, extra = {}) {
   return {
     id, priority: i + 1, profiles, racersPerProfile: 2, card: { number: '', expiry: '', cvv: '', name: '' }, autoReview: true,
+    billing: { title: 'Mr.', firstName: '', lastName: '', street: 'Sheikh Zayed Rd 1', area: 'Downtown', town: '', city: 'Dubai' },
     targets: ['MK254AH/A', 'MK244AH/A'], stores: ['R597', 'R596', 'R706'], city: 'Dubai',
     slot: { day: null, after: null, before: null },
     payment: i % 2 ? 'applepay' : 'manual', applePayFallback: 'manual',
@@ -202,7 +203,8 @@ scenarios.single = async () => {
     assert.equal(sess.checkout.fulfillment.store, 'R596', 'R597 без наличия → R596');
     assert.ok(!/-16:15-16:30$/.test(sess.checkout.fulfillment.slot), 'первое (занятое) окно пропущено');
     assert.equal(sess.checkout.method, 'CREDIT');
-    assert.deepEqual([sess.checkout.review.cardLast4, sess.checkout.review.exp, sess.checkout.review.cvvLen, sess.checkout.review.nameOnCard], ['1111', '12/29', 3, 'AHMED TEST'], 'карта заполнена из конфига');
+    assert.deepEqual([sess.checkout.review.cardLast4, sess.checkout.review.exp, sess.checkout.review.cvvLen], ['1111', '12/29', 3], 'карта заполнена из конфига');
+    assert.deepEqual(sess.checkout.review.billing, { first: 'Ahmed', last: CONTACTS[0].lastName, street: 'Sheikh Zayed Rd 1', area: 'Downtown', town: '', city: 'Dubai', title: 'Mr.' }, 'Billing Address заполнен: имя из контакта, адрес из billing');
     assert.equal(await pg.locator('#place').count(), 1, 'Place Order на экране и не нажат');
     const stRev = await p.status();
     assert.equal(stRev.payActive, stRev.tabs[0].tabId, 'очередь оплаты не ушла дальше на Review');
@@ -220,7 +222,9 @@ scenarios.single = async () => {
     assert.ok(!log.includes('ahmed.test@example.com') && !log.includes('0501234567'), 'в логе нет полных контактов');
     assert.ok(!/atbtoken=[0-9a-f]{5,}/.test(log), 'в логе нет atbtoken');
     assert.ok(!log.includes('4111111111111111') && !log.includes('4111 1111'), 'в логе нет номера карты');
-    assert.ok(/карта \*\*\*\*1111: заполнено номер, срок, CVV, имя/.test(log), 'лог о заполнении карты');
+    assert.ok(/карта \*\*\*\*1111: заполнено номер, срок, CVV/.test(log), 'лог о заполнении карты');
+    assert.ok(/адрес плательщика: заполнено имя, фамилия, улица, Area, Title, город$/m.test(log), 'лог о заполнении Billing Address');
+    assert.ok(!log.includes('Sheikh Zayed'), 'адрес в лог не пишется');
   } catch (e) { await dumpOnFail(profiles, 'single'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
