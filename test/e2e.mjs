@@ -428,7 +428,8 @@ scenarios['checkout-errors'] = async () => {
     assert.equal(sess.atbAttempts, 2, 'после пустой корзины Add to Bag повторён');
     assert.ok(/корзина пуста после Add to Bag \(1\)/.test(log), 'пустая корзина замечена');
     assert.equal(sess.bag.length, 1);
-    assert.equal(sess.checkout.fulfillment.slot, '28-16:30-16:45', 'ошибка общего вида не заставила отдать первое свободное окно');
+    // день в значении окна — сегодняшний (мок берёт текущую дату)
+    assert.match(sess.checkout.fulfillment.slot, /^\d{1,2}-16:30-16:45$/, 'ошибка общего вида не заставила отдать первое свободное окно');
     assert.ok(/повтор того же окна/.test(log), 'повтор Continue на Fulfillment');
     assert.ok(/Continue to Payment: .* — повтор/.test(log), 'повтор Continue to Payment');
   } catch (e) { await dumpOnFail(profiles, 'checkout-errors'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
