@@ -16,8 +16,17 @@ const S = {
   orders: new Map(),   // orderId → { winner, standby: [], failed: Set, stage, billingAt, orderNo }
   queue: [],           // [{ orderId, profile, priority, readyAt, store, slotLabel }]
   active: null,        // { orderId, profile, since }
+  records: new Map(),  // key → OrderRecord (все профили)
   log: [],
 };
+function keepRecord(rec) { if (rec?.key) S.records.set(rec.key, rec); }
+function recordsCsv() {
+  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const fmt = (t) => (t ? new Date(t).toLocaleString('ru-RU') : '');
+  const head = ['профиль', 'заказ', 'статус', 'номер заказа', 'товар', 'парт', 'магазин', 'окно самовывоза', 'имя', 'фамилия', 'email', 'телефон', 'оплата', 'сумма', 'OPEN', 'на оплате с', 'оформлен'];
+  const rows = [...S.records.values()].map((r) => [r.profileId, r.orderId, r.status, r.orderNo, r.partLabel, r.part, r.storeName, r.slotLabel, r.firstName, r.lastName, r.email, r.phone, r.payment, r.price, fmt(r.openedAt), fmt(r.billingAt), fmt(r.orderedAt)].map(esc).join(';'));
+  return '\uFEFF' + [head.map(esc).join(';'), ...rows].join('\n');
+}
 
 const ts = () => new Date().toISOString().slice(11, 23);
 function log(msg) {
@@ -137,6 +146,7 @@ function onMsg(ws, m) {
       S.queue.sort((a, b) => a.priority - b.priority || a.readyAt - b.readyAt);
       const t = S.openedAt ? ` (+${((Date.now() - S.openedAt) / 1000).toFixed(1)} с от OPEN)` : '';
       log(`заказ ${m.orderId}: BILLING_READY у ${m.profile} · ${m.store} · ${m.slotLabel}${t}`);
+      keepRecord(m.record);
       for (const sp of o.standby) toProfile(sp, { t: 'CLEAN', orderId: m.orderId });
       activate();
       break;
@@ -152,6 +162,7 @@ function onMsg(ws, m) {
       o.orderNo = m.orderNo;
       o.stage = 'ORDERED';
       log(`заказ ${m.orderId}: ORDERED ${m.orderNo} (${m.profile})`);
+      keepRecord(m.record);
       if (S.active && S.active.orderId === m.orderId) nextPay('ORDERED');
       break;
     }
@@ -194,6 +205,7 @@ function snapshot() {
     orders: [...S.orders.entries()].map(([id, o]) => ({ id, winner: o.winner, standby: o.standby, failed: [...o.failed], stage: o.stage, billingAt: o.billingAt, orderNo: o.orderNo })),
     queue: S.queue,
     active: S.active,
+    records: [...S.records.values()],
     log: S.log.slice(-300),
   };
 }
@@ -211,6 +223,10 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify(snapshot()));
   }
   if (req.method === 'POST' && url.pathname === '/api/next') { nextPay('дашборд'); res.writeHead(200); return res.end('ok'); }
+  if (req.method === 'GET' && url.pathname === '/api/orders.csv') {
+    res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="apple-drop-orders.csv"' });
+    return res.end(recordsCsv());
+  }
   if (req.method === 'POST' && url.pathname === '/api/reset') { reset(); res.writeHead(200); return res.end('ok'); }
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -250,6 +266,8 @@ pre { font:11px/1.35 ui-monospace, Menlo, monospace; background:var(--card); pad
 <button id="next">Следующий на оплату</button></div>
 <h2>Заказы</h2><div id="orders" class="orders"></div>
 <h2>Очередь оплаты</h2><div id="queue" class="card">—</div>
+<h2>Заказы всех профилей <a href="/api/orders.csv" style="font-weight:400;text-transform:none">скачать CSV</a></h2>
+<table><thead><tr><th>профиль</th><th>заказ</th><th>статус</th><th>номер</th><th>товар</th><th>магазин · окно</th><th>получатель</th><th>сумма</th><th>на оплате с</th></tr></thead><tbody id="records"></tbody></table>
 <h2>Заказ × профиль × вкладка</h2>
 <table><thead><tr><th>заказ</th><th>профиль</th><th>вкладка</th><th>роль</th><th>состояние</th><th>деталь</th><th>исход</th><th>обновлено (от OPEN)</th></tr></thead><tbody id="rows"></tbody></table>
 <h2>Лог</h2><pre id="log"></pre>
@@ -282,6 +300,7 @@ async function tick() {
     }
   }
   $('rows').innerHTML = rows.join('') || '<tr><td colspan="8" class="muted">нет профилей</td></tr>';
+  $('records').innerHTML = (s.records ?? []).map((r) => '<tr><td>' + esc(r.profileId) + '</td><td>' + esc(r.orderId) + '</td><td class="' + (r.status === 'ORDERED' ? 'ok' : 'warn') + '">' + esc(r.status) + '</td><td class="big">' + esc(r.orderNo ?? '') + '</td><td>' + esc(r.partLabel) + '</td><td>' + esc((r.storeName || '').replace(/^Apple /, '') + ' · ' + r.slotLabel) + '</td><td>' + esc(r.firstName + ' ' + r.lastName + ' · ' + r.phone + ' · ' + r.email) + '</td><td>' + esc(r.price ?? '') + '</td><td>' + rel(r.billingAt, s.openedAt) + '</td></tr>').join('') || '<tr><td colspan="9" class="muted">пока нет</td></tr>';
   const lg = s.log.join('\\n');
   if (lg !== lastLog) { const el = $('log'); const bottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20; el.textContent = lg; lastLog = lg; if (bottom) el.scrollTop = el.scrollHeight; }
 }

@@ -3,6 +3,7 @@ import { SEL } from '../../shared/selectors';
 import type { Ctl } from '../ctl';
 import type { PageInfo } from '../classify';
 import { bodyText, q, waitUntil } from '../dom';
+import { findEl } from '../find';
 import { removeAll, readBag } from './bag';
 
 /** Прогрев: /ae/ → страна → корзина пустая → конфигурация цели (/ae/, AED, без баннера). */
@@ -27,7 +28,7 @@ export async function prepStep(c: Ctl, page: PageInfo): Promise<void> {
   if (phase === 'check') {
     if (page.kind !== 'product') { await c.navigate(c.targetUrl(), 'Prepare: конфигурация цели'); return; }
     c.setState('PREP', 'проверка конфигурации');
-    const loaded = await waitUntil(() => (q(SEL.addToBag) || q(SEL.continueDisabled) || q(SEL.productName) ? true : null), 8000, c.signal);
+    const loaded = await waitUntil(() => (findEl('addToBag') || findEl('continueDisabled') || q(SEL.productName) ? true : null), 8000, c.signal);
     if (!loaded) {
       const detail = 'страна ✓ · корзина ✓ · страница товара пустая/закрыта — Apple Store, похоже, закрыт перед дропом; Start можно нажимать, вкладки будут обновляться';
       c.send({ t: 'PREPARED', ok: false, detail });
@@ -42,7 +43,7 @@ export async function prepStep(c: Ctl, page: PageInfo): Promise<void> {
     const banner = !!page.country;
     const ok = onAe && !banner;
     const detail = [`/ae/ ${onAe ? '✓' : '✗'}`, `AED ${aed ? '✓' : '? (цены не видно)'}`, `баннер страны ${banner ? '✗ есть' : '✓ нет'}`,
-      q(SEL.continueDisabled) ? 'до старта (Continue)' : q(SEL.addToBag) ? 'Add to Bag активна' : ''].filter(Boolean).join(' · ');
+      findEl('continueDisabled') ? 'до старта (Continue)' : findEl('addToBag') ? 'Add to Bag активна' : ''].filter(Boolean).join(' · ');
     c.send({ t: 'PREPARED', ok, detail });
     c.ts.prepPhase = 'done';
     c.setMode('idle');

@@ -10,7 +10,7 @@
 - заполняет контакты получателя, выбирает способ оплаты;
 - выводит окно человеку по очереди — со звуком и уведомлением.
 
-**Чего расширение не делает (и в код не добавлять):** не вводит карту/срок/CVV, не нажимает Review / Place Order / Pay, не обходит защиту Apple (без подмены отпечатков/UA, прокси, капчи, подделки `atbtoken`/`x-aos-stk`/Shield, без `chrome.debugger`), не генерирует личности. Если Apple не принимает программный клик — включается **режим ассистента**: кнопку жмёт человек, остальное делает расширение.
+**Граница автоматизации (изменена владельцем 29.09 относительно ТЗ v3):** расширение заполняет карту из конфига (если она задана) и нажимает «Review Your Order»; для Apple Pay пробует открыть лист с кодом. **«Place Order» и подтверждение Apple Pay — только человек.** Расширение не обходит защиту Apple (без подмены отпечатков/UA, прокси, капчи, подделки `atbtoken`/`x-aos-stk`/Shield, без `chrome.debugger`), не генерирует личности. Если Apple не принимает программный клик — включается **режим ассистента**: кнопку жмёт человек, остальное делает расширение.
 
 ---
 
@@ -94,6 +94,17 @@ Apple часто закрывает магазин за несколько ча�
 
 Окна профилей лучше не сворачивать и не перекрывать полностью, но и это уже не критично.
 
+### Оплата: карта, Review, Apple Pay
+
+- **Карта** (`order.card`: номер, срок, CVV, имя) заполняется на шаге Billing сразу, до нашей очереди. Хранится в `chrome.storage.local` профиля открытым текстом (как автозаполнение Chrome, но без пароля Mac) и попадает в экспорт JSON — после дропа стереть. В логах — только `****последние 4`; `scrub` маскирует любые 13–19-значные числа.
+- **Review**: когда подошла очередь (`autoReview: true`), расширение нажимает «Review Your Order». Дальше `Place Order` — человек. Очередь оплаты продвигается только после номера заказа или кнопки «Следующий».
+- **Apple Pay**: лист с кодом для iPhone открывает браузер, и Chrome требует настоящий клик — программный отвергает (правило браузера, не защита Apple). Расширение на Review пробует один раз; если страница не потеряла фокус (лист не открылся) — подсвечивает кнопку, один клик человека, дальше он сканирует код и подтверждает на телефоне.
+- **Записи о заказах**: ФИО, контакты, товар, магазин, окно, сумма, времена и номер — popup → «Заказы» и «Экспорт заказов (CSV)»; на дашборде хаба — общая таблица и `/api/orders.csv`.
+
+### Устойчивость к смене селекторов
+
+`src/content/find.ts`: каждый элемент ищется по селектору из ТЗ, затем по запасным селекторам, затем по тексту («Add to Bag», «Continue as Guest», «Review Your Order»…) или атрибутам поля (`autocomplete`, `name`, `placeholder`, подпись). Каждое срабатывание запасного пути — строка в логе «селектор … не найден — нашёл по …», чтобы после дропа обновить `selectors.ts`. Сценарий `renamed-selectors` прогоняет весь путь на моке, где все `data-autom` переименованы.
+
 ### Режим ассистента (§7.8)
 
 Включается кнопкой в popup (или `"mode": "assist"`) либо сам для шага после `assistAfterFailures` неудач (Add to Bag — подряд 404; Check Out / Guest — URL не сменился). Кнопка обводится зелёной рамкой, окно выходит вперёд со звуком, расширение ждёт **настоящий** клик (`event.isTrusted`) и продолжает само. То же для `select` города/окна, если приложение не приняло значение.
@@ -113,16 +124,18 @@ Playwright в e2e — только тестовый стенд, чтобы за�
 
 | Сценарий | Что проверяет | Результат на моке |
 |---|---|---|
-| `single` | 1 профиль, 1 вкладка: OPEN → заглушка → Add to Bag → чекаут → Billing; R597 без наличия → R596; занятое окно → следующее; фокус в поле карты, поле пустое; «человек» платит → номер `W…` пойман; в логе нет токена и контактов | Billing через ~6 с после OPEN |
+| `single` | 1 профиль, 1 вкладка: OPEN → заглушка → Add to Bag → чекаут → Billing; R597 без наличия → R596; занятое окно → следующее; карта заполнена из конфига, Review открыт сам, Place Order — «человек» → номер `W…` пойман; запись о заказе и CSV; в логе нет токена, контактов и номера карты | Billing через ~6 с после OPEN |
 | `hostile` | 2 вкладки, выбор страны, 404 на Add to Bag (+ случайные), заглушка, смена города Abu Dhabi → Dubai через `setSelect`, Apple Pay; в корзине 1 шт., Place Order не нажат | Billing через ~6–9 с |
 | `assist` | `REQUIRE_TRUSTED=1`: 3×404 → ассистент, кнопка подсвечена, настоящий клик → дальше само до Billing | ✓ |
 | `prepare` | Prepare (страна → корзина → конфигурация) и Clean bag | ✓ |
 | `queue` | после открытия три страницы очереди с meta refresh: расширение их не рефрешит (мок считает ручные рефреши = 0), очередь сама ведёт к товару → Billing | Billing через ~11 с (6 с из них — очередь) |
 | `checkout-errors` | первый Add to Bag «призрачный» (корзина пуста) → повтор; ошибка общего вида на Continue (Fulfillment и Contact) → повтор того же окна, слот не отдан | Billing через ~11 с |
+| `renamed-selectors` | все `data-autom` переименованы (`RENAME_AUTOM=1`): путь до Review по тексту и атрибутам, карта заполнена | ✓ |
+| `applepay-turn` | Apple Pay: на нашем ходу Review и одна попытка кнопки Apple Pay, заказ не размещён | ✓ |
 | `closed-blank` / `closed-backsoon` / `closed-redirect` / `closed-offsite` | магазин закрыт до старта: пустая страница, «We’ll be back», редирект в `/ae/` и вне `/ae/`; вкладки обновляются по фазам (проверяются интервалы), после открытия — до Billing | Billing через 4,5–4,9 с после открытия |
 | `acceptance` | 3 заказа × 2 профиля × 2 вкладки + хаб: все 3 заказа на Billing, без дублей, корзины проигравших очищены, очередь оплаты по одному, «Следующий» | Billing через 4,8–5,1 с после OPEN |
 
-Мок вручную: `npm run build:dev` → загрузить `dist-dev/` → в настройках `baseUrl = http://127.0.0.1:4777` → `OPEN_AFTER=60 npm run mock`. Параметры мока — в шапке [test/mock-server.mjs](test/mock-server.mjs) (`STORE_CLOSED`, `QUEUE_AFTER_OPEN`, `CHECKOUT_ERR_FIRST`, `EMPTY_BAG_FIRST`, `ATB_404_RATE`, `ATB_404_FIRST`, `ACPART_DELAY_MS`, `COUNTRY_PICKER`, `REQUIRE_TRUSTED`, `UNAVAILABLE_STORES`, `TAKEN_FIRST_SLOT`, `DEFAULT_CITY`, …).
+Мок вручную: `npm run build:dev` → загрузить `dist-dev/` → в настройках `baseUrl = http://127.0.0.1:4777` → `OPEN_AFTER=60 npm run mock`. Параметры мока — в шапке [test/mock-server.mjs](test/mock-server.mjs) (`RENAME_AUTOM`, `STORE_CLOSED`, `QUEUE_AFTER_OPEN`, `CHECKOUT_ERR_FIRST`, `EMPTY_BAG_FIRST`, `ATB_404_RATE`, `ATB_404_FIRST`, `ACPART_DELAY_MS`, `COUNTRY_PICKER`, `REQUIRE_TRUSTED`, `UNAVAILABLE_STORES`, `TAKEN_FIRST_SLOT`, `DEFAULT_CITY`, …).
 
 ### Живые тесты до 16.10 (§11.2, на iPhone 18 Pro 256 Black — `MJR54AH/A`)
 
@@ -156,7 +169,7 @@ src/manifest.json      база манифеста; build.mjs кладёт ит�
 build.mjs              esbuild → dist/ (prod) | dist-dev/ (+ http://127.0.0.1:4777) | dist-test/
 src/shared/            config.ts (схема+валидация) · parts.ts · selectors.ts · messages.ts · log.ts · watch.ts (разбор fulfillment-messages)
 src/sw/                index · orchestrator · watcher (роли) · hubClient · notify · windows · diag (webRequest)
-src/content/           index (диспетчер) · ctl · classify · router (SPA) · dom · overlay · assist · slots
+src/content/           index (диспетчер) · ctl · classify · router (SPA) · dom · find (устойчивый поиск) · overlay · assist · slots
 src/content/steps/     preopen · addToBag · bag · guest · fulfillment · contact · payment · country · closed · prepare · submit · common
 src/ui/                popup · options · offscreen (звук)
 hub/server.mjs         хаб + дашборд (Node 20+, ws)

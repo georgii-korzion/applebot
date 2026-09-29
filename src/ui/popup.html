@@ -35,6 +35,7 @@
     <button id="export">Экспорт лога</button>
     <button id="options">Настройки</button>
     <button id="clearlog">Очистить лог</button>
+    <button id="exportOrders">Экспорт заказов (CSV)</button>
   </div>
   <div id="result" class="msg" style="margin-top:6px"></div>
 
@@ -42,6 +43,12 @@
   <table>
     <thead><tr><th>tab</th><th>роль</th><th>состояние</th><th>деталь</th><th>исход</th></tr></thead>
     <tbody id="tabs"></tbody>
+  </table>
+
+  <h2>Заказы</h2>
+  <table>
+    <thead><tr><th>заказ</th><th>статус</th><th>товар · магазин · окно</th><th>получатель</th><th>сумма</th></tr></thead>
+    <tbody id="orders"></tbody>
   </table>
 
   <h2>Лог</h2>

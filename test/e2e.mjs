@@ -116,9 +116,10 @@ const CONTACTS = [
   { firstName: 'Maria', lastName: 'Test', email: 'maria.test@example.com', phone: '0529876543' },
   { firstName: 'Omar', lastName: 'Test', email: 'omar.test@example.com', phone: '0551112233' },
 ];
+const CARD = { number: '4111111111111111', expiry: '12/29', cvv: '123', name: 'AHMED TEST' };
 function makeOrder(id, i, profiles, extra = {}) {
   return {
-    id, priority: i + 1, profiles, racersPerProfile: 2,
+    id, priority: i + 1, profiles, racersPerProfile: 2, card: { number: '', expiry: '', cvv: '', name: '' }, autoReview: true,
     targets: ['MK254AH/A', 'MK244AH/A'], stores: ['R597', 'R596', 'R706'], city: 'Dubai',
     slot: { day: null, after: null, before: null },
     payment: i % 2 ? 'applepay' : 'manual', applePayFallback: 'manual',
@@ -181,22 +182,19 @@ scenarios.single = async () => {
   const p = await launchProfile('single');
   const profiles = [p];
   try {
-    const order = makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1 });
+    const order = makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD });
     await p.setConfig(makeConfig('drop-1', [order], { openInSec: 8 }));
     const r = await p.cmd({ cmd: 'start' });
     assert.ok(r.ok, `start: ${r.error}`);
     say('single: Start', r.warnings ?? '');
-    const st = await waitFor(async () => { const s = await p.status(); return s.os.stage === 'PAY_QUEUE' || s.os.billingReadyAt ? s : null; }, 60000, 'Billing');
+    const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, 60000, 'Billing');
     const took = (st.os.billingReadyAt - st.os.openedAt) / 1000;
     say(`single: Billing через ${took.toFixed(1)} с после OPEN, слот ${st.os.store} ${st.os.slotLabel}`);
-    const pg = await billingPage(p);
-    assert.ok(pg, 'вкладка на Billing');
-    const card = pg.locator('[data-autom="card-number-input"]');
-    await card.waitFor({ timeout: 5000 });
-    assert.equal(await card.inputValue(), '', 'поле карты пустое');
-    assert.equal(await pg.evaluate(() => document.activeElement?.getAttribute('data-autom')), 'card-number-input', 'фокус в поле карты');
-    assert.equal(await pg.locator('#bo-c').isChecked(), true, 'выбран CREDIT');
-    const ms = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.checkout.method) ? m : null; }, 3000, 'способ оплаты записан');
+    // очередь без хаба: сразу наш ход → карта заполнена → autoReview → Review; Place Order — «человек»
+    await waitFor(async () => (await p.status()).tabs.some((t) => t.state === 'REVIEW'), 15000, 'REVIEW (autoReview)');
+    const pg = p.appleTabs().find((x) => /_s=Review/.test(x.url()));
+    assert.ok(pg, 'вкладка на Review');
+    const ms = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.checkout.review) ? m : null; }, 3000, 'Review записан');
     const sess = ms.sessions.find((s) => s.bag.length);
     assert.equal(sess.bag.length, 1);
     assert.equal(sess.bag[0].qty, 1);
@@ -204,17 +202,23 @@ scenarios.single = async () => {
     assert.equal(sess.checkout.fulfillment.store, 'R596', 'R597 без наличия → R596');
     assert.ok(!/-16:15-16:30$/.test(sess.checkout.fulfillment.slot), 'первое (занятое) окно пропущено');
     assert.equal(sess.checkout.method, 'CREDIT');
-    // «человек» платит: карта → Review → Place Order; расширение фиксирует номер
-    await card.fill('4111111111111111');
-    await pg.click('[data-autom="continue-button-review"]');
-    await pg.waitForURL(/_s=Review/);
-    await waitFor(async () => (await p.status()).tabs.some((t) => t.state === 'REVIEW'), 5000, 'REVIEW');
+    assert.deepEqual([sess.checkout.review.cardLast4, sess.checkout.review.exp, sess.checkout.review.cvvLen, sess.checkout.review.nameOnCard], ['1111', '12/29', 3, 'AHMED TEST'], 'карта заполнена из конфига');
+    assert.equal(await pg.locator('#place').count(), 1, 'Place Order на экране и не нажат');
+    const stRev = await p.status();
+    assert.equal(stRev.payActive, stRev.tabs[0].tabId, 'очередь оплаты не ушла дальше на Review');
+    assert.equal(stRev.orders.length, 1, 'запись о заказе создана');
+    assert.equal(stRev.orders[0].phone, '0501234567', 'запись о заказе без масок');
     await pg.click('#place');
     const done = await waitFor(async () => { const s = await p.status(); return s.os.orderNo ? s : null; }, 10000, 'ORDERED');
-    say(`single: ORDERED ${done.os.orderNo}`);
+    say(`single: ORDERED ${done.os.orderNo} · карта заполнена расширением, Place Order — человек`);
+    assert.equal(done.orders[0].orderNo, done.os.orderNo, 'номер заказа в записи');
+    const csv = (await p.cmd({ cmd: 'exportOrders' })).text;
+    assert.ok(csv.includes(done.os.orderNo) && csv.includes('Ahmed') && csv.includes('0501234567'), 'CSV заказов с полными данными');
     const log = (await p.cmd({ cmd: 'exportLog' })).text;
     assert.ok(!log.includes('ahmed.test@example.com') && !log.includes('0501234567'), 'в логе нет полных контактов');
     assert.ok(!/atbtoken=[0-9a-f]{5,}/.test(log), 'в логе нет atbtoken');
+    assert.ok(!log.includes('4111111111111111') && !log.includes('4111 1111'), 'в логе нет номера карты');
+    assert.ok(/карта \*\*\*\*1111: заполнено номер, срок, CVV, имя/.test(log), 'лог о заполнении карты');
   } catch (e) { await dumpOnFail(profiles, 'single'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
@@ -389,6 +393,51 @@ function closedScenario(style, openIn) {
 }
 scenarios['closed-blank'] = closedScenario('blank', 75);
 
+/** Apple сменила все data-autom: элементы находятся по тексту и атрибутам, путь до Review тот же. */
+scenarios['renamed-selectors'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', RENAME_AUTOM: '1' });
+  const p = await launchProfile('renamed');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD })], { openInSec: -5 }));
+    const r = await p.cmd({ cmd: 'start' });
+    assert.ok(r.ok, r.error);
+    const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, 60000, 'Billing без data-autom', 500);
+    await waitFor(async () => (await p.status()).tabs.some((t) => t.state === 'REVIEW'), 15000, 'REVIEW');
+    const ms = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.checkout.review) ? m : null; }, 3000, 'Review записан');
+    const sess = ms.sessions.find((s) => s.bag.length);
+    const log = (await p.cmd({ cmd: 'exportLog' })).text;
+    const fallbacks = [...log.matchAll(/селектор «(\w+)» не найден — нашёл по: ([^.]+)/g)].map((m) => `${m[1]}←${m[2].trim()}`);
+    say(`renamed-selectors: Billing через ${((st.os.billingReadyAt - st.os.openedAt) / 1000).toFixed(1)} с · запасные пути: ${fallbacks.length} (${fallbacks.slice(0, 4).join(', ')}…)`);
+    assert.ok(fallbacks.some((f) => f.startsWith('addToBag←')), 'Add to Bag найден по запасному пути');
+    assert.ok(fallbacks.some((f) => f.startsWith('guest←')), 'Continue as Guest найден по тексту');
+    assert.equal(sess.bag.length, 1);
+    assert.equal(sess.checkout.review.cardLast4, '1111', 'карта заполнена и без data-autom');
+  } catch (e) { await dumpOnFail(profiles, 'renamed-selectors'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+/** Apple Pay: на нашем ходу расширение идёт на Review и жмёт кнопку Apple Pay; лист/подтверждение — человек. */
+scenarios['applepay-turn'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0' });
+  const p = await launchProfile('applepay');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, payment: 'applepay' })], { openInSec: -5 }));
+    const r = await p.cmd({ cmd: 'start' });
+    assert.ok(r.ok, r.error);
+    await waitFor(async () => (await p.status()).os.billingReadyAt, 60000, 'Billing', 500);
+    const ms = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.checkout.applePayClicks) ? m : null; }, 15000, 'клик по Apple Pay на Review');
+    const sess = ms.sessions.find((s) => s.bag.length);
+    const st = await p.status();
+    const log = (await p.cmd({ cmd: 'exportLog' })).text;
+    say(`applepay-turn: способ ${sess.checkout.method}, кликов Apple Pay ${sess.checkout.applePayClicks}, состояние ${st.tabs[0].state}: ${st.tabs[0].detail}`);
+    assert.equal(sess.checkout.method, 'APPLE_PAY');
+    assert.equal(sess.checkout.applePayClicks, 1, 'кнопка Apple Pay нажата один раз');
+    assert.ok(/Apple Pay/.test(log), 'Apple Pay в логе');
+    assert.equal(ms.orders.length, 0, 'заказ не размещён расширением');
+  } catch (e) { await dumpOnFail(profiles, 'applepay-turn'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
 /** Очередь Apple после открытия: страница с meta refresh сама ведёт дальше — расширение её не рефрешит. */
 scenarios.queue = async () => {
   await startServers({ OPEN_AFTER: '6', QUEUE_AFTER_OPEN: '3', BUSY_FIRST: '0' });
@@ -440,7 +489,7 @@ scenarios['closed-offsite'] = closedScenario('offsite', 15);
 
 // ---------- запуск ----------
 const want = process.argv.slice(2);
-const list = want.length ? want : ['single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'acceptance'];
+const list = want.length ? want : ['single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'acceptance'];
 let failed = 0;
 for (const name of list) {
   const fn = scenarios[name];

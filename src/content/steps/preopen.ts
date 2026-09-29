@@ -5,7 +5,8 @@ import { normPart, partUrl } from '../../shared/parts';
 import { pollFm } from '../../shared/watch';
 import type { Ctl } from '../ctl';
 import type { PageInfo } from '../classify';
-import { Aborted, q, sleep, waitUntil, yieldTask } from '../dom';
+import { Aborted, sleep, waitUntil, yieldTask } from '../dom';
+import { findEl } from '../find';
 import { atbFlow } from './addToBag';
 import { closedStep, reportStore } from './closed';
 import { hasProductBootstrap, isBlankPage } from '../classify';
@@ -26,7 +27,7 @@ export async function productStep(c: Ctl, page: PageInfo): Promise<void> {
   // совсем пустая страница (магазин закрыт) — ждём недолго, чтобы не растягивать цикл рефреша.
   const wait = isBlankPage() ? 1000 : hasProductBootstrap() ? c.t.hydrateWaitMs : c.os.openedAt ? 6000 : 3000;
   const what = await waitUntil(
-    () => (q(SEL.addToBag) ? 'atb' : q(SEL.continueDisabled) || page.preorder ? 'pre' : null),
+    () => (findEl('addToBag') ? 'atb' : findEl('continueDisabled') || page.preorder ? 'pre' : null),
     wait, c.signal,
   );
   if (what === 'atb') { reportStore(c, false, 'Add to Bag'); return atbFlow(c); }

@@ -40,7 +40,14 @@
         "street": "",
         "area": "",
         "city": "Dubai"
-      }
+      },
+      "card": {
+        "number": "",
+        "expiry": "",
+        "cvv": "",
+        "name": ""
+      },
+      "autoReview": true
     }
   ],
   "timing": {

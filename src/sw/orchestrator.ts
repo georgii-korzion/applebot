@@ -3,7 +3,7 @@ import { K, closedReloadMs, isMockBase, loadConfig, orderFor, validateConfig, ty
 import { LogStore, fmtLine, scrub } from '../shared/log';
 import {
   newOrderState, newTabState,
-  type C2S, type Cmd, type Hub2S, type Mode, type OrderState, type Role, type S2C, type TabRow, type TabState,
+  type C2S, type Cmd, type Hub2S, type Mode, type OrderRecord, type OrderState, type Role, type S2C, type TabRow, type TabState,
 } from '../shared/messages';
 import { partLabel, partUrl, storeName } from '../shared/parts';
 import { pollFm } from '../shared/watch';
@@ -170,7 +170,8 @@ export class Orchestrator {
           void this.saveOs();
         }
         if (m.state === 'STUCK' && tabId === this.os.winnerTabId && m.mode === 'checkout') this.onWinnerFailed(tabId, m.detail ?? 'STUCK');
-        if ((m.state === 'REVIEW' || m.state === 'ORDERED') && tabId === this.payActive) void this.advancePay(m.state);
+        // следующий на оплату — только после номера заказа или кнопки «Следующий»: Review теперь открывает само расширение
+        if (m.state === 'ORDERED' && tabId === this.payActive) void this.advancePay(m.state);
         this.hubStatusSoon();
         break;
       }
@@ -215,18 +216,20 @@ export class Orchestrator {
         }
         break;
       case 'BILLING_READY':
-        await this.onBillingReady(tabId, m.store, m.slotLabel, m.method);
+        await this.onBillingReady(tabId, m.store, m.slotLabel, m.method, m.price, m.cardFilled);
         break;
-      case 'ORDERED':
+      case 'ORDERED': {
         this.os.orderNo = m.orderNo;
         this.os.stage = 'ORDERED';
         this.os.timestamps.ordered = Date.now();
         await this.saveOs();
         this.log(tabId, 'ORDERED', `номер заказа ${m.orderNo}`);
         void notify({ id: `ordered-${tabId}`, title: `Заказ ${this.order?.id}: оформлен ✅`, message: m.orderNo, tabId, sound: 'done', sticky: true });
-        if (this.order) this.hub.send({ t: 'ORDERED', orderId: this.order.id, profile: this.cfg.profileId, orderNo: m.orderNo });
+        const rec = await this.recordOrder({ orderNo: m.orderNo, orderedAt: Date.now(), status: 'ORDERED' });
+        if (this.order) this.hub.send({ t: 'ORDERED', orderId: this.order.id, profile: this.cfg.profileId, orderNo: m.orderNo, record: rec });
         if (tabId === this.payActive) await this.advancePay('ORDERED');
         break;
+      }
       case 'ASSIST':
         this.log(tabId, 'ASSIST', `${m.step}: ${m.msg}`, 'warn');
         await focusTab(tabId);
@@ -490,16 +493,51 @@ export class Orchestrator {
     void notify({ title: `Заказ ${this.order?.id}: чекаут остановился`, message: reason, tabId, sound: 'alert' });
   }
 
+  // ---------- записи о заказах (chrome.storage.local `orders`) ----------
+  private recordKey(): string {
+    return `${this.cfg.profileId}:${this.order?.id ?? '?'}:${this.os.startedAt ?? 0}`;
+  }
+
+  async recordOrder(patch: Partial<OrderRecord>): Promise<OrderRecord | undefined> {
+    const o = this.order;
+    if (!o) return undefined;
+    const s = await chrome.storage.local.get('orders');
+    const list: OrderRecord[] = Array.isArray(s.orders) ? s.orders : [];
+    const key = this.recordKey();
+    const part = this.os.activeTarget ?? o.targets[0];
+    const base: OrderRecord = list.find((r) => r.key === key) ?? {
+      key, profileId: this.cfg.profileId, orderId: o.id, part, partLabel: partLabel(part),
+      store: this.os.store ?? '', storeName: storeName(this.os.store), slotLabel: this.os.slotLabel ?? '',
+      firstName: o.contact.firstName, lastName: o.contact.lastName, email: o.contact.email, phone: o.contact.phone,
+      payment: o.payment, openedAt: this.os.openedAt, billingAt: this.os.billingReadyAt ?? Date.now(), status: 'BILLING_READY',
+    };
+    const rec: OrderRecord = { ...base, ...patch, store: this.os.store ?? base.store, storeName: storeName(this.os.store ?? base.store), slotLabel: this.os.slotLabel ?? base.slotLabel };
+    const next = [...list.filter((r) => r.key !== key), rec].slice(-200);
+    await chrome.storage.local.set({ orders: next });
+    return rec;
+  }
+
+  async ordersCsv(): Promise<string> {
+    const s = await chrome.storage.local.get('orders');
+    const list: OrderRecord[] = Array.isArray(s.orders) ? s.orders : [];
+    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const fmt = (t?: number) => (t ? new Date(t).toLocaleString('ru-RU') : '');
+    const head = ['профиль', 'заказ', 'статус', 'номер заказа', 'товар', 'парт', 'магазин', 'окно самовывоза', 'имя', 'фамилия', 'email', 'телефон', 'оплата', 'сумма', 'OPEN', 'на оплате с', 'оформлен'];
+    const rows = list.map((r) => [r.profileId, r.orderId, r.status, r.orderNo, r.partLabel, r.part, r.storeName, r.slotLabel, r.firstName, r.lastName, r.email, r.phone, r.payment, r.price, fmt(r.openedAt), fmt(r.billingAt), fmt(r.orderedAt)].map(esc).join(';'));
+    return '\uFEFF' + [head.map(esc).join(';'), ...rows].join('\n');
+  }
+
   // ---------- очередь оплаты (§7.7) ----------
-  private async onBillingReady(tabId: number, store: string, slotLabel: string, method: string): Promise<void> {
+  private async onBillingReady(tabId: number, store: string, slotLabel: string, method: string, price?: string, cardFilled?: boolean): Promise<void> {
     Object.assign(this.os, { stage: 'BILLING_READY', store, slotLabel, billingReadyAt: Date.now() });
     this.os.timestamps.billing = Date.now();
     await this.saveOs();
     const took = this.os.openedAt ? ` (${((Date.now() - this.os.openedAt) / 1000).toFixed(1)} с от OPEN)` : '';
-    this.log(tabId, 'BILLING_READY', `${storeName(store)} · ${slotLabel} · ${method}${took}`);
+    this.log(tabId, 'BILLING_READY', `${storeName(store)} · ${slotLabel} · ${method}${price ? ` · ${price}` : ''}${cardFilled ? ' · карта заполнена' : ''}${took}`);
+    const rec = await this.recordOrder({ price, billingAt: Date.now(), status: 'BILLING_READY' });
     const item: PayItem = { tabId, orderId: this.order?.id ?? '?', priority: this.order?.priority ?? 99, readyAt: Date.now(), store, slotLabel };
     if (this.hub.connected && this.order) {
-      this.hub.send({ t: 'PAY_READY', orderId: item.orderId, profile: this.cfg.profileId, priority: item.priority, store, slotLabel, readyAt: item.readyAt });
+      this.hub.send({ t: 'PAY_READY', orderId: item.orderId, profile: this.cfg.profileId, priority: item.priority, store, slotLabel, readyAt: item.readyAt, record: rec });
       return;
     }
     this.payQueue = [...this.payQueue.filter((p) => p.tabId !== tabId), item].sort((a, b) => a.priority - b.priority || a.readyAt - b.readyAt);
@@ -650,6 +688,7 @@ export class Orchestrator {
         return { ok: true, mode };
       }
       case 'exportLog': await this.logs.flush(); return { ok: true, text: this.logs.all().join('\n') };
+      case 'exportOrders': return { ok: true, text: await this.ordersCsv() };
       case 'clearLog': await this.logs.clear(); return { ok: true };
       case 'focusTab': return { ok: await focusTab(c.tabId) };
       case 'reloadConfig': await this.reloadConfig(); return { ok: true };
@@ -658,7 +697,7 @@ export class Orchestrator {
   }
 
   private async status(): Promise<unknown> {
-    const s = await chrome.storage.local.get(K.prepared);
+    const s = await chrome.storage.local.get([K.prepared, 'orders']);
     return {
       ok: true,
       profileId: this.cfg.profileId,
@@ -673,6 +712,7 @@ export class Orchestrator {
       payQueue: this.payQueue,
       payActive: this.payActive,
       prepared: s[K.prepared] ?? null,
+      orders: Array.isArray(s.orders) ? (s.orders as OrderRecord[]).slice(-10) : [],
       validation: validateConfig(this.cfg),
       log: this.logs.tail(60),
     };

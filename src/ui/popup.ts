@@ -1,5 +1,5 @@
 // Popup (§7.9): статус профиля, вкладки, Start/Stop/Prepare/Clean bag/Следующий/Ассистент/Экспорт лога.
-import type { Cmd, OrderState, TabRow } from '../shared/messages';
+import type { Cmd, OrderRecord, OrderState, TabRow } from '../shared/messages';
 
 interface Status {
   ok: boolean;
@@ -15,6 +15,7 @@ interface Status {
   payQueue: { tabId: number; orderId: string }[];
   payActive: number | null;
   prepared: { ok: boolean; detail: string; at: number } | null;
+  orders: OrderRecord[];
   validation: { errors: string[]; warnings: string[] };
   log: string[];
 }
@@ -112,6 +113,27 @@ function render(st: Status): void {
     tb.append(tr);
   }
 
+  const ob = $('orders');
+  ob.textContent = '';
+  for (const r of [...st.orders].reverse()) {
+    const tr = el('tr');
+    tr.append(
+      el('td', `${r.orderId}${r.profileId !== st.profileId ? ` (${r.profileId})` : ''}`),
+      el('td', r.status === 'ORDERED' ? `✅ ${r.orderNo ?? ''}` : 'на оплате', r.status === 'ORDERED' ? 'ok' : 'warn'),
+      el('td', `${r.partLabel} · ${r.storeName.replace(/^Apple /, '')} · ${r.slotLabel}`),
+      el('td', `${r.firstName} ${r.lastName} · ${r.phone} · ${r.email}`),
+      el('td', `${r.price ?? ''} ${r.payment}`),
+    );
+    ob.append(tr);
+  }
+  if (!st.orders.length) {
+    const tr = el('tr');
+    const td = el('td', 'пока нет заказов на оплате', 'muted');
+    (td as HTMLTableCellElement).colSpan = 5;
+    tr.append(td);
+    ob.append(tr);
+  }
+
   const log = st.log.join('\n');
   if (log !== lastLog) {
     const pre = $('log');
@@ -146,15 +168,24 @@ $('next').onclick = async () => result(await send({ cmd: 'nextPay' }), 'След
 $('assist').onclick = async () => result(await send({ cmd: 'toggleAssist' }), 'Режим переключён');
 $('clearlog').onclick = async () => result(await send({ cmd: 'clearLog' }), 'Лог очищен');
 $('options').onclick = () => void chrome.runtime.openOptionsPage();
+function download(text: string, name: string, type: string): void {
+  const blob = new Blob([text], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
 $('export').onclick = async () => {
   const r = await send<{ ok: boolean; text: string }>({ cmd: 'exportLog' });
   if (!r?.ok) return result(r, '');
-  const blob = new Blob([r.text], { type: 'text/plain;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `apple-drop-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  download(r.text, `apple-drop-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`, 'text/plain;charset=utf-8');
+};
+$('exportOrders').onclick = async () => {
+  const r = await send<{ ok: boolean; text: string }>({ cmd: 'exportOrders' });
+  if (!r?.ok) return result(r, '');
+  download(r.text, `apple-drop-orders-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8');
+  result(r, 'Заказы выгружены в CSV (открывается в Numbers/Excel)');
 };
 
 void refresh();

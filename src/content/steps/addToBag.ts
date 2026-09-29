@@ -6,7 +6,8 @@ import type { AtbDiag, AtbOutcome } from '../../shared/messages';
 import type { Ctl } from '../ctl';
 import { navStatus, type PageInfo } from '../classify';
 import { assistClick } from '../assist';
-import { cookieNames, isChecked, isEnabled, pickRadio, q, waitFor, waitForResource, waitUntil } from '../dom';
+import { cookieNames, isChecked, isEnabled, pickRadio, q, waitForResource } from '../dom';
+import { findEl, waitEl, waitEnabled } from '../find';
 import { scheduleByPhase } from './preopen';
 import { becomeStopped, busyMs } from './common';
 
@@ -15,9 +16,9 @@ export async function atbFlow(c: Ctl): Promise<void> {
   const target = c.target();
   c.setState('ATB_PREP', `опции ${partLabel(target)}`);
   // 1. гидратация: кнопка обязана быть (мы здесь из-за неё); trade-in появляется вместе с ней — ждём недолго
-  let btn = await waitFor<HTMLButtonElement>(SEL.addToBag, 8000, sig);
+  let btn = await waitEl('addToBag', 8000, sig);
   if (!btn) { c.log('add-to-cart пропала', 'warn'); scheduleByPhase(c); return; }
-  const trade = q(SEL.noTradeIn) ?? await waitFor(SEL.noTradeIn, 1500, sig);
+  const trade = findEl('noTradeIn') ?? await waitEl('noTradeIn', 1500, sig);
   // 2. нужный ли товар в форме
   const form = btn.closest('form');
   const prod = (form?.querySelector<HTMLInputElement>(SEL.atbProductField) ?? q<HTMLInputElement>(SEL.atbProductField))?.value;
@@ -34,7 +35,7 @@ export async function atbFlow(c: Ctl): Promise<void> {
   } else if (!trade) c.log('нет choose-noTradeIn — пропускаю', 'warn');
   // 4. No AppleCare → updateSummary с acpart=none
   let sawAcpart = false;
-  const ac = await waitFor(SEL.noAppleCare, 5000, sig);
+  const ac = await waitEl('noAppleCare', 5000, sig);
   if (ac && !isChecked(ac)) {
     const t1 = performance.now(), e1 = Date.now();
     pickRadio(ac);
@@ -43,7 +44,7 @@ export async function atbFlow(c: Ctl): Promise<void> {
   } else if (ac) sawAcpart = true;
   else c.log('нет noapplecare — пропускаю', 'warn');
   // 5. кнопка активируется сама (disabled руками не снимаем)
-  btn = await waitUntil(() => { const b = q<HTMLButtonElement>(SEL.addToBag); return b && isEnabled(b) ? b : null; }, 12000, sig);
+  btn = await waitEnabled('addToBag', 12000, sig);
   if (!btn) {
     c.setState('FAST_RELOAD', 'Add to Bag не активировалась за 12 с');
     c.scheduleReload(c.jit(c.t.postOpenReloadMs), 'atb-disabled');
@@ -54,7 +55,7 @@ export async function atbFlow(c: Ctl): Promise<void> {
   c.setState('ATB_WAIT_LOCK', 'запрос лока');
   const got = await c.acquireLock(assist ? 120_000 : c.t.atbTimeoutMs);
   if (!got) { becomeStopped(c, 'товар уже в корзине другой вкладки'); return; }
-  btn = q<HTMLButtonElement>(SEL.addToBag);
+  btn = findEl('addToBag');
   if (!btn || !isEnabled(btn)) { c.send({ t: 'ATB_RESULT', ok: false, outcome: 'ATB_RELOAD' }); c.rerun('atb-button-gone'); return; }
   // 7. записать pending ДО клика — результат увидит следующая загрузка страницы
   Object.assign(c.ts, { atbPendingSince: Date.now(), atbPart: target, sawAcpartNone: sawAcpart, atbAssist: assist });

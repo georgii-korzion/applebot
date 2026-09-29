@@ -53,6 +53,7 @@ export function scrub(msg: string): string {
   return maskUrl(msg)
     .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, (m) => maskEmail(m))
     .replace(/\b0?5\d{8}\b/g, (m) => maskPhone(m))
+    .replace(/\b(?:\d[ -]?){12,18}\d\b/g, (m) => `****${m.replace(/\D/g, '').slice(-4)}`)
     .replace(/\b[0-9a-f]{24,}\b/gi, (m) => `${m.slice(0, 4)}…`);
 }
 

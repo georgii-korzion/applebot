@@ -1,24 +1,29 @@
 // Оплата (§3.8, §7.7) — граница автоматизации.
-// Расширение ТОЛЬКО выбирает способ оплаты и ставит фокус в поле карты.
-// Карту/CVV не вводит, Review / Place Order / Pay не нажимает.
+// Расширение: выбирает способ, заполняет карту из конфига (если задана), нажимает «Review Your Order»
+// (autoReview), для Apple Pay пробует открыть лист с кодом. Place Order / подтверждение Apple Pay — только человек.
 import { SEL } from '../../shared/selectors';
 import { storeName } from '../../shared/parts';
 import type { Ctl } from '../ctl';
-import { findField, isChecked, pickRadio, q, textOf, waitUntil } from '../dom';
+import { assistClick } from '../assist';
+import { clickEl, clickable, isChecked, pickRadio, setInput, sleep, textOf, waitForUrl, waitUntil } from '../dom';
+import { findEl, findField, waitEnabled } from '../find';
+
+const REVIEW_URL = /_s=Review/i;
 
 export async function paymentStep(c: Ctl): Promise<void> {
   const sig = c.signal;
   const o = c.order!;
-  if (c.ts.state === 'PAY_QUEUE' || c.ts.state === 'PAYING' || c.ts.state === 'REVIEW') {
+  if (['PAY_QUEUE', 'PAYING', 'REVIEW', 'ORDERED', 'NEED_HUMAN'].includes(c.ts.state)) {
     // вернулись на Billing (например, из Review) — ничего не трогаем, человек в процессе
-    showPayBanner(c);
+    if (c.ts.state === 'PAYING' && c.ts.payTurn) await onTurn(c);
+    else showPayBanner(c);
     return;
   }
   c.setState('BILLING', 'выбор способа оплаты');
-  await waitUntil(() => q(SEL.payCard) || q(SEL.payApplePay), 12000, sig);
+  await waitUntil(() => findEl('payCard') || findEl('payApplePay'), 12000, sig);
   let method = o.payment;
   if (method === 'applepay') {
-    const ap = q(SEL.payApplePay);
+    const ap = findEl('payApplePay');
     if (!ap) {
       if (o.applePayFallback === 'manual') {
         c.log('Apple Pay недоступен — фолбэк на карту (applePayFallback=manual)', 'warn');
@@ -32,23 +37,44 @@ export async function paymentStep(c: Ctl): Promise<void> {
     } else if (!isChecked(ap)) pickRadio(ap);
   }
   if (method === 'manual') {
-    const card = q(SEL.payCard);
+    const card = findEl('payCard');
     if (card && !isChecked(card)) pickRadio(card);
-    await focusCard(c);
+    await fillCard(c);
   }
   c.ts.payMethod = method;
   c.ts.billingAt = Date.now();
   c.setState('PAY_QUEUE', 'в очереди на оплату');
-  c.send({ t: 'BILLING_READY', store: c.ts.store ?? '', slot: c.ts.slot ?? '', slotLabel: c.ts.slotLabel ?? '', method });
+  c.send({ t: 'BILLING_READY', store: c.ts.store ?? '', slot: c.ts.slot ?? '', slotLabel: c.ts.slotLabel ?? '', method, price: c.ts.price, cardFilled: !!c.ts.cardFilled });
   showPayBanner(c);
 }
 
-async function focusCard(c: Ctl): Promise<void> {
-  const f = await waitUntil(() => findField(SEL.cardNumberFocusOnly), 5000, c.signal);
-  if (f) {
-    f.scrollIntoView({ block: 'center' });
-    f.focus(); // только фокус, без ввода
-  } else c.log('поле card-number-input не найдено', 'warn');
+/** Карта из конфига: номер, срок, CVV, имя. Данные не логируются; в лог — только последние 4 цифры. */
+async function fillCard(c: Ctl): Promise<void> {
+  const card = c.order?.card;
+  const num = await waitUntil(() => findField('cardNumber'), 5000, c.signal);
+  if (!num) { c.log('поле card-number-input не найдено', 'warn'); return; }
+  num.scrollIntoView({ block: 'center' });
+  if (!card?.number) { num.focus(); return; } // карта не задана — только фокус, вводит человек
+  const digits = card.number.replace(/\D/g, '');
+  const fields: [HTMLInputElement | null, string, string][] = [
+    [num, digits, 'номер'],
+    [findField('cardExpiry'), card.expiry, 'срок'],
+    [findField('cardCvv'), card.cvv, 'CVV'],
+    [findField('cardName'), card.name, 'имя'],
+  ];
+  const done: string[] = [];
+  const missed: string[] = [];
+  for (const [f, val, label] of fields) {
+    if (!val) continue;
+    if (!f) { missed.push(label); continue; }
+    setInput(f, val);
+    await sleep(80, c.signal);
+    const ok = f.value.replace(/\D/g, '') === val.replace(/\D/g, '') || f.value === val;
+    (ok ? done : missed).push(label);
+  }
+  c.ts.cardFilled = done.includes('номер');
+  c.log(`карта ****${digits.slice(-4)}: заполнено ${done.join(', ') || '—'}${missed.length ? `; не удалось: ${missed.join(', ')}` : ''}`, missed.length ? 'warn' : 'info');
+  if (missed.length) c.overlay.banner(`${payLabel(c)} · допиши ${missed.join(', ')}`, 'Остальное расширение заполнило', 'warn');
 }
 
 export function payLabel(c: Ctl): string {
@@ -60,15 +86,16 @@ export function payLabel(c: Ctl): string {
 
 export function showPayBanner(c: Ctl): void {
   const label = payLabel(c);
+  const dup = 'Если после Place Order ошибка — не жми снова: проверь почту и номер заказа, заказ мог пройти (12.09 у людей вышли дубли).';
   if (c.ts.state === 'PAY_QUEUE') {
     c.overlay.banner(`${label} · в очереди на оплату`, 'Окно выйдет вперёд со звуком, когда подойдёт очередь', 'info');
   } else if (c.ts.state === 'PAYING') {
     const what = c.ts.payMethod === 'applepay'
-      ? 'подтверди Apple Pay (кнопка оплаты + Touch ID / iPhone)'
-      : 'введи карту и нажми Review → Place Order';
-    c.overlay.banner(`${label} · ${what}`, 'Финальное действие — за тобой. Если после Place Order ошибка — не жми снова: проверь почту и номер заказа, заказ мог пройти (так было 12.09, у людей вышли дубли).', 'warn');
+      ? 'Apple Pay: сканируй код телефоном и подтверди'
+      : c.ts.cardFilled ? 'карта заполнена — проверь и нажми Review → Place Order' : 'введи карту и нажми Review → Place Order';
+    c.overlay.banner(`${label} · ${what}`, `Финальное действие — за тобой. ${dup}`, 'warn');
   } else if (c.ts.state === 'REVIEW') {
-    c.overlay.banner(`${label} · нажми Place Order`, 'Расширение только наблюдает. Ошибка после Place Order → сначала проверь почту/номер заказа, потом повторяй.', 'warn');
+    c.overlay.banner(`${label} · ${c.ts.payMethod === 'applepay' ? 'Apple Pay: код телефоном → подтверди' : 'нажми Place Order'}`, `Расширение только наблюдает. ${dup}`, 'warn');
   }
   c.renderOverlay({ timerSince: c.ts.slotAt, timerLabel: 'слот выбран' });
 }
@@ -77,16 +104,63 @@ export function showPayBanner(c: Ctl): void {
 export function onFocusForPay(c: Ctl): void {
   if (c.ts.state === 'ORDERED') return;
   c.ts.payStartedAt ??= Date.now();
-  if (c.ts.state !== 'REVIEW') c.setState('PAYING', c.ts.payMethod === 'applepay' ? 'подтверди Apple Pay' : 'введи карту → Review → Place Order');
+  c.ts.payTurn = true;
+  if (c.ts.state !== 'REVIEW') c.setState('PAYING', c.ts.payMethod === 'applepay' ? 'Apple Pay' : 'карта → Review → Place Order');
   showPayBanner(c);
-  if (c.ts.payMethod === 'manual' && c.ts.state === 'PAYING') void focusCard(c).catch(() => {});
+  void onTurn(c).catch(() => {});
+}
+
+/** Наш ход: с Billing — на Review (autoReview), на Review для Apple Pay — открыть лист с кодом. */
+async function onTurn(c: Ctl): Promise<void> {
+  const sig = c.signal;
+  if (REVIEW_URL.test(location.href)) { await tryApplePay(c); return; }
+  if (!c.order?.autoReview) {
+    if (c.ts.payMethod === 'manual') { const f = findField('cardNumber'); if (f && !c.ts.cardFilled) f.focus(); }
+    return;
+  }
+  const btn = await waitEnabled('reviewButton', 4000, sig);
+  if (!btn) { c.log('кнопка Review Your Order не активна — дальше человек', 'warn'); return; }
+  c.setState('PAYING', 'Review Your Order');
+  clickEl(btn);
+  const went = await waitForUrl(REVIEW_URL, 15000, sig);
+  if (!went) {
+    const err = /Please\s[^.\n]{3,120}|unexpected error|something went wrong/i.exec(document.body?.innerText ?? '')?.[0];
+    c.setState('PAYING', `Review не открылся${err ? `: ${err}` : ''} — проверь форму и нажми Review сам`);
+    c.overlay.banner(`${payLabel(c)} · проверь форму оплаты и нажми Review Your Order`, err ?? 'Расширение дальше не жмёт', 'warn');
+  }
+}
+
+/**
+ * Apple Pay в Chrome: лист с кодом для iPhone открывает браузер, и ему нужен настоящий клик пользователя —
+ * программный клик Chrome отвергает (правило браузера, не защита Apple). Пробуем один раз; если лист не
+ * открылся — подсвечиваем кнопку, один клик человека, дальше он сканирует код телефоном.
+ */
+async function tryApplePay(c: Ctl): Promise<void> {
+  if (c.ts.payMethod !== 'applepay' || c.ts.applePayTried) return;
+  c.ts.applePayTried = true;
+  void c.save();
+  const btn = await waitUntil(() => findEl('applePayButton'), 5000, c.signal);
+  if (!btn) { c.log('кнопка Apple Pay на Review не найдена — жми сам', 'warn'); showPayBanner(c); return; }
+  clickEl(btn);
+  await sleep(900, c.signal);
+  // лист Apple Pay — окно браузера поверх страницы: страница теряет фокус
+  if (!document.hasFocus()) {
+    c.setState('PAYING', 'Apple Pay: лист открыт — сканируй код телефоном');
+    c.overlay.banner(`${payLabel(c)} · сканируй код телефоном и подтверди`, 'Расширение ничего не подтверждает', 'warn');
+    return;
+  }
+  c.log('программный клик Apple Pay лист не открыл (нужен клик человека)', 'warn');
+  await assistClick(c, clickable(btn), 'Apple Pay', 'Нажми Apple Pay — откроется код для iPhone');
+  c.setState('PAYING', 'Apple Pay: сканируй код телефоном');
+  showPayBanner(c);
 }
 
 export function reviewStep(c: Ctl): void {
   if (c.ts.state === 'ORDERED') return;
-  c.setState('REVIEW', 'ждём Place Order (человек)');
+  c.setState('REVIEW', c.ts.payMethod === 'applepay' ? 'Apple Pay (человек)' : 'ждём Place Order (человек)');
   showPayBanner(c);
   watchForOrderNo(c);
+  if (c.ts.payTurn) void tryApplePay(c).catch(() => {});
 }
 
 let orderObserver: MutationObserver | null = null;

@@ -18,6 +18,7 @@
 //                          страница сама ведёт дальше; ручные рефреши очереди считаются (queueReloads)
 //   CHECKOUT_ERR_FIRST=0   первый Continue на Fulfillment и первый Continue to Payment — ошибка общего вида
 //   EMPTY_BAG_FIRST=0      первый Add to Bag сессии проходит (step=attach), но корзина остаётся пустой
+//   RENAME_AUTOM=1         все data-autom переименованы (Apple сменила селекторы) — расширение ищет по тексту/атрибутам
 //   STORE_CLOSED=          магазин закрыт до открытия продаж (все /ae/shop/*):
 //                            blank    — пустая страница (200), JSON — 503
 //                            backsoon — «We’ll be back.» (503) по тому же адресу
@@ -47,6 +48,7 @@ const S = {
   queueAfterOpen: num(env.QUEUE_AFTER_OPEN, 0),
   checkoutErrFirst: env.CHECKOUT_ERR_FIRST === '1',
   emptyBagFirst: env.EMPTY_BAG_FIRST === '1',
+  renameAutom: env.RENAME_AUTOM === '1',
 };
 let openAt = Date.now() + S.openAfter * 1000;
 
@@ -420,20 +422,26 @@ function checkoutClient() {
         st.method = i.value;
         post('/ae/shop/checkoutx/billing?_a=selectBillingOption', { method: i.value });
         var c = document.getElementById('card');
-        c.innerHTML = i.value === 'CREDIT' ? '<p><input name="cardNumber" data-autom="card-number-input" autocomplete="cc-number" placeholder="Card Number"></p><p><input name="exp" data-autom="expiration-input" placeholder="MM/YY"> <input name="cvv" data-autom="security-code-input" placeholder="CVV"></p>' : '<p>You’ll confirm with Apple Pay after reviewing your order.</p>';
+        c.innerHTML = i.value === 'CREDIT' ? '<p><input name="cardNumber" data-autom="card-number-input" autocomplete="cc-number" placeholder="Card Number"></p><p><input name="exp" data-autom="expiration-input" autocomplete="cc-exp" placeholder="MM/YY"> <input name="cvv" data-autom="security-code-input" autocomplete="cc-csc" placeholder="CVV"></p><p><input name="nameOnCard" data-autom="form-field-nameOnCard" autocomplete="cc-name" placeholder="Name on Card"></p>' : '<p>You’ll confirm with Apple Pay after reviewing your order.</p>';
         bindField(c, 'card', st.card);
       });
     });
     document.getElementById('cont').onclick = function () {
       if (!st.method) return setErr('Please select a payment method.');
       if (st.method === 'CREDIT' && !/^\d{12,19}$/.test((st.card.cardNumber || '').replace(/\s/g, ''))) return setErr('Please enter a valid card number.');
-      post('/ae/shop/checkoutx?_a=continueFromBillingToReview&_m=checkout.billing', { method: st.method, cardEntered: st.card.cardNumber ? '1' : '' }).then(function () { go('Review'); });
+      post('/ae/shop/checkoutx?_a=continueFromBillingToReview&_m=checkout.billing', { method: st.method, cardEntered: st.card.cardNumber ? '1' : '', cardLast4: (st.card.cardNumber || '').replace(/\D/g, '').slice(-4), exp: st.card.exp || '', cvvLen: String((st.card.cvv || '').length), nameOnCard: st.card.nameOnCard || '' }).then(function () { go('Review'); });
     };
   }
 
   function review() {
-    app.appendChild(el('<h1>Review your order.</h1><p>' + B.items.map(function (i) { return i.name + ' · ' + i.price; }).join('<br>') + '</p><button type="button" id="place">Place Order</button>'));
-    document.getElementById('place').onclick = function () {
+    var pay = st.method === 'APPLE_PAY'
+      ? '<button type="button" id="applepay" data-autom="apple-pay-button" aria-label="Pay with Apple Pay">Pay with Apple Pay</button><div id="applepay-sheet" hidden>[QR-код Apple Pay — сканируй iPhone]</div>'
+      : '<button type="button" id="place">Place Order</button>';
+    app.appendChild(el('<h1>Review your order.</h1><p>' + B.items.map(function (i) { return i.name + ' · ' + i.price; }).join('<br>') + '</p>' + pay));
+    var ap = document.getElementById('applepay');
+    if (ap) ap.onclick = function () { post('/ae/shop/checkoutx?_a=applePaySheet', { trusted: '1' }); document.getElementById('applepay-sheet').hidden = false; };
+    var place = document.getElementById('place');
+    if (place) place.onclick = function () {
       post('/ae/shop/checkoutx?_a=placeOrder&_m=checkout.review', {}).then(function (r) { location.assign('/ae/shop/checkout/thankyou?o=' + r.orderNo); });
     };
   }
@@ -470,7 +478,8 @@ function fulfillmentMessages(q) {
 // ---------- роутер ----------
 function send(res, r) {
   res.writeHead(r.status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-  res.end(r.html);
+  // и разметка, и клиентские скрипты мока переименовываются согласованно — ломается только расширение
+  res.end(S.renameAutom ? r.html.replace(/data-autom/g, 'data-qa') : r.html);
 }
 function json(res, obj, status = 200) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -581,7 +590,8 @@ const server = http.createServer(async (req, res) => {
         return json(res, { ok: true });
       }
       if (a === 'selectBillingOption') { s.checkout.method = body.method; return json(res, { ok: true }); }
-      if (a === 'continueFromBillingToReview') { s.checkout.review = { method: body.method, cardEntered: !!body.cardEntered }; return json(res, { ok: true }); }
+      if (a === 'continueFromBillingToReview') { s.checkout.review = { method: body.method, cardEntered: !!body.cardEntered, cardLast4: body.cardLast4, exp: body.exp, cvvLen: Number(body.cvvLen), nameOnCard: body.nameOnCard }; return json(res, { ok: true }); }
+      if (a === 'applePaySheet') { s.checkout.applePayClicks = (s.checkout.applePayClicks ?? 0) + 1; return json(res, { ok: true }); }
       if (a === 'placeOrder') {
         const no = `W${String(100000000 + Math.floor(Math.random() * 899999999))}`;
         orders.push({ orderNo: no, sid: s.sid, items: s.bag.map((i) => ({ part: i.part, qty: i.qty })), checkout: s.checkout, at: Date.now() });

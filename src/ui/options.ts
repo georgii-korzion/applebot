@@ -26,6 +26,11 @@ function orderToForm(o: OrderCfg): void {
   $('o_last').value = o.contact.lastName;
   $('o_email').value = o.contact.email;
   $('o_phone').value = o.contact.phone;
+  $('o_cardnum').value = o.card.number;
+  $('o_cardexp').value = o.card.expiry;
+  $('o_cardcvv').value = o.card.cvv;
+  $('o_cardname').value = o.card.name;
+  $('o_autoreview').checked = o.autoReview;
   $('o_delivery').checked = o.deliveryFallback;
   $('o_street').value = o.address.street;
   $('o_area').value = o.address.area;
@@ -44,6 +49,8 @@ function formToOrder(o: OrderCfg): void {
   o.payment = $<HTMLSelectElement>('o_payment').value === 'manual' ? 'manual' : 'applepay';
   o.applePayFallback = $<HTMLSelectElement>('o_apfb').value === 'manual' ? 'manual' : null;
   o.contact = { firstName: $('o_first').value.trim(), lastName: $('o_last').value.trim(), email: $('o_email').value.trim(), phone: $('o_phone').value.replace(/[\s-]/g, '') };
+  o.card = { number: $('o_cardnum').value.replace(/[\s-]/g, ''), expiry: $('o_cardexp').value.trim(), cvv: $('o_cardcvv').value.trim(), name: $('o_cardname').value.trim() };
+  o.autoReview = $('o_autoreview').checked;
   o.deliveryFallback = $('o_delivery').checked;
   o.address = { street: $('o_street').value.trim(), area: $('o_area').value.trim(), city: $('o_acity').value.trim() || 'Dubai' };
 }

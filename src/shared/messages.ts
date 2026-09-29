@@ -41,6 +41,10 @@ export interface TabState {
   queueSince?: number;
   applePayExpress?: boolean;
   countryTried?: boolean;
+  price?: string;
+  cardFilled?: boolean;
+  payTurn?: boolean;
+  applePayTried?: boolean;
   updatedAt: number;
 }
 
@@ -109,7 +113,7 @@ export type C2S =
   | { t: 'ATB_LOCK_REQ'; ttl: number }
   | { t: 'ATB_RESULT'; ok: boolean; outcome: AtbOutcome; diag?: AtbDiag }
   | { t: 'BAG'; ok: boolean; detail?: string }
-  | { t: 'BILLING_READY'; store: string; slot: string; slotLabel: string; method: string }
+  | { t: 'BILLING_READY'; store: string; slot: string; slotLabel: string; method: string; price?: string; cardFilled?: boolean }
   | { t: 'ORDERED'; orderNo: string }
   | { t: 'ASSIST'; step: string; msg: string }
   | { t: 'ALERT'; title: string; msg: string; sound?: SoundKind }
@@ -153,10 +157,10 @@ export type S2Hub =
   | { t: 'OPEN'; profile: string; buyable: string[]; source: string }
   | { t: 'WIN_REQ'; orderId: string; profile: string }
   | { t: 'FAILED'; orderId: string; profile: string; reason: string }
-  | { t: 'PAY_READY'; orderId: string; profile: string; priority: number; store: string; slotLabel: string; readyAt: number }
+  | { t: 'PAY_READY'; orderId: string; profile: string; priority: number; store: string; slotLabel: string; readyAt: number; record?: OrderRecord }
   | { t: 'PAY_DONE'; orderId: string; profile: string; stage: string }
   | { t: 'NEXT' }
-  | { t: 'ORDERED'; orderId: string; profile: string; orderNo: string }
+  | { t: 'ORDERED'; orderId: string; profile: string; orderNo: string; record?: OrderRecord }
   | { t: 'STATUS'; profile: string; orderId: string | null; stage?: string; tabs: TabRow[]; openedAt?: number }
   | { t: 'LOG'; line: string }
   | { t: 'PING' };
@@ -176,6 +180,29 @@ export interface TabRow {
 
 export type SoundKind = 'open' | 'pay' | 'assist' | 'alert' | 'done';
 
+/** Запись о заказе (chrome.storage.local `orders`) — без масок: это данные владельца на его машине. */
+export interface OrderRecord {
+  key: string;
+  profileId: string;
+  orderId: string;
+  part: string;
+  partLabel: string;
+  store: string;
+  storeName: string;
+  slotLabel: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  payment: string;
+  price?: string;
+  openedAt?: number;
+  billingAt: number;
+  orderedAt?: number;
+  orderNo?: string;
+  status: 'BILLING_READY' | 'ORDERED';
+}
+
 // popup/options → SW
 export type Cmd =
   | { cmd: 'status' }
@@ -186,6 +213,7 @@ export type Cmd =
   | { cmd: 'nextPay' }
   | { cmd: 'toggleAssist' }
   | { cmd: 'exportLog' }
+  | { cmd: 'exportOrders' }
   | { cmd: 'clearLog' }
   | { cmd: 'focusTab'; tabId: number }
   | { cmd: 'reloadConfig' };

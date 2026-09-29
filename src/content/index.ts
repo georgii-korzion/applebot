@@ -6,8 +6,8 @@ import { watchRoute } from './router';
 import { Overlay } from './overlay';
 import { becomeStopped, busyBackoff, queueStep } from './steps/common';
 import { assistClick } from './assist';
-import { clickable, q } from './dom';
-import { SEL } from '../shared/selectors';
+import { clickable } from './dom';
+import { findEl, setFallbackReporter } from './find';
 import { closedStep, reportStore } from './steps/closed';
 import { handleCountry } from './steps/country';
 import { ensureWatcher, onOpen, productStep } from './steps/preopen';
@@ -144,6 +144,7 @@ async function bagAfterAtb(c: Ctl): Promise<void> {
     return;
   }
   c.ts.emptyBagInRow = 0;
+  c.ts.price = r.total || c.ts.price;
   c.send({ t: 'BAG', ok: true, detail: r.detail });
   c.setState('IN_BAG', `${r.detail} — ждём решения`);
   if (!applyDecision(c)) c.timer(6000, () => c.rerun('bag-decision-timeout'));
@@ -212,7 +213,7 @@ async function checkoutStep(c: Ctl, page: PageInfo): Promise<void> {
 
 /** Самовывоза нет, allowApplePayExpress: Apple Pay из корзины — кнопку жмёт человек (лист Apple Pay), расширение только подсвечивает. */
 async function applePayExpress(c: Ctl): Promise<void> {
-  const btn = q(SEL.bagApplePay);
+  const btn = findEl('bagApplePay');
   if (!btn) { c.setState('STUCK', 'нет кнопки Apple Pay в корзине'); return; }
   c.ts.payMethod = 'applepay';
   c.ts.payStartedAt ??= Date.now();
@@ -304,6 +305,7 @@ async function main(): Promise<void> {
   const c = new Ctl();
   c.dispatch = dispatch;
   c.onMessage = (m) => onSwMessage(c, m);
+  setFallbackReporter((key, how) => c.log(`селектор «${key}» не найден — нашёл по: ${how}. После дропа обновить selectors.ts`, 'warn'));
   await c.connect();
   c.overlay = new Overlay(c.ts.hidden ?? c.ts.mode === 'idle');
   c.overlay.onPause = (paused) => {

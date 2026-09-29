@@ -2,24 +2,25 @@
 import { SEL } from '../../shared/selectors';
 import { maskEmail, maskPhone } from '../../shared/log';
 import type { Ctl } from '../ctl';
-import { findField, isChecked, isEnabled, pickRadio, setInput, sleep, waitFor, waitForUrl, waitUntil } from '../dom';
+import { isChecked, isEnabled, pickRadio, setInput, sleep, waitForUrl, waitUntil } from '../dom';
+import { findField, waitEl, type Key } from '../find';
 import { submitAndWait } from './submit';
 
 export async function contactStep(c: Ctl): Promise<void> {
   const sig = c.signal;
   const o = c.order!;
   c.setState('CONTACT', 'контакты получателя');
-  const self = await waitFor(SEL.selfPickup, 10000, sig);
+  const self = await waitEl('selfPickup', 10000, sig);
   if (self && !isChecked(self)) {
     pickRadio(self);
     await sleep(250, sig);
   }
-  await waitUntil(() => findField(SEL.firstName), 8000, sig);
-  const fields: [string, string, string][] = [
-    [SEL.firstName, o.contact.firstName, 'firstName'],
-    [SEL.lastName, o.contact.lastName, 'lastName'],
-    [SEL.email, o.contact.email, 'email'],
-    [SEL.phone, o.contact.phone, 'phone'],
+  await waitUntil(() => findField('firstName'), 8000, sig);
+  const fields: [Key, string, string][] = [
+    ['firstName', o.contact.firstName, 'firstName'],
+    ['lastName', o.contact.lastName, 'lastName'],
+    ['email', o.contact.email, 'email'],
+    ['phone', o.contact.phone, 'phone'],
   ];
   for (const [sel, val, name] of fields) {
     const f = findField(sel);
@@ -29,7 +30,7 @@ export async function contactStep(c: Ctl): Promise<void> {
     if (f.value !== val || f.getAttribute('aria-invalid') === 'true') c.log(`поле ${name} не принято (aria-invalid/значение)`, 'warn');
   }
   c.log(`контакт: ${o.contact.firstName[0] ?? ''}. ${o.contact.lastName[0] ?? ''}. ${maskEmail(o.contact.email)} ${maskPhone(o.contact.phone)}`);
-  const label = await waitFor(SEL.contactContinue, 5000, sig);
+  const label = await waitEl('contactContinue', 5000, sig);
   const btn = label ? (label.closest('button') as HTMLElement | null) ?? label : null;
   if (!btn || !isEnabled(btn)) { c.setState('STUCK', 'нет активной Continue to Payment'); return; }
   const ANY = new RegExp(`${SEL.txtContactError.source}|${SEL.txtGenericError.source}`, 'i');

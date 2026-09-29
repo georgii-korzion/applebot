@@ -1,13 +1,13 @@
 // Вход: Continue as Guest (§3.5). Apple Shield / init_data не трогаем.
-import { SEL } from '../../shared/selectors';
 import type { Ctl } from '../ctl';
 import { assistClick } from '../assist';
-import { clickEl, clickable, isEnabled, q, waitFor, waitForUrlChange, waitUntil } from '../dom';
+import { clickEl, clickable, waitForUrlChange } from '../dom';
+import { waitEl, waitEnabled } from '../find';
 
 export async function guestStep(c: Ctl): Promise<void> {
   const sig = c.signal;
   c.setState('GUEST', 'Continue as Guest');
-  const first = await waitFor(SEL.guest, 12000, sig);
+  const first = await waitEl('guest', 12000, sig);
   if (!first) {
     const n = ++c.ts.checkoutRetries;
     if (n > c.cfg.retries.checkout) {
@@ -19,7 +19,7 @@ export async function guestStep(c: Ctl): Promise<void> {
     return;
   }
   for (let attempt = 1; ; attempt++) {
-    const btn = await waitUntil(() => { const b = q(SEL.guest); return b && isEnabled(b) ? b : null; }, 5000, sig);
+    const btn = await waitEnabled('guest', 5000, sig);
     if (!btn) break;
     const from = location.href;
     if (c.assistFor('guest')) await assistClick(c, clickable(btn), 'Guest', 'Нажми Continue as Guest');

@@ -26,6 +26,10 @@ export interface OrderCfg {
   applePayFallback: 'manual' | null;
   allowApplePayExpress: boolean;
   contact: { firstName: string; lastName: string; email: string; phone: string };
+  /** Карта для автозаполнения (хранится в chrome.storage.local профиля открытым текстом; пусто — вводит человек). */
+  card: { number: string; expiry: string; cvv: string; name: string };
+  /** Нажимать «Review Your Order» самим, когда подошла очередь оплаты. Place Order — всегда человек. */
+  autoReview: boolean;
   deliveryFallback: boolean;
   address: { street: string; area: string; city: string };
 }
@@ -77,6 +81,8 @@ export function defaultOrder(id = 'A'): OrderCfg {
     applePayFallback: 'manual',
     allowApplePayExpress: false,
     contact: { firstName: '', lastName: '', email: '', phone: '05XXXXXXXX' },
+    card: { number: '', expiry: '', cvv: '', name: '' },
+    autoReview: true,
     deliveryFallback: false,
     address: { street: '', area: '', city: 'Dubai' },
   };
@@ -137,6 +143,13 @@ export function normalizeConfig(raw: unknown): Config {
           email: str(o?.contact?.email),
           phone: str(o?.contact?.phone).replace(/[\s-]/g, ''),
         },
+        card: {
+          number: str(o?.card?.number).replace(/[\s-]/g, ''),
+          expiry: str(o?.card?.expiry),
+          cvv: str(o?.card?.cvv),
+          name: str(o?.card?.name),
+        },
+        autoReview: o?.autoReview === undefined ? true : !!o.autoReview,
         deliveryFallback: !!o?.deliveryFallback,
         address: {
           street: str(o?.address?.street),
@@ -195,6 +208,11 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
     if (o.slot.before && !HHMM.test(o.slot.before)) errors.push(`${p} slot.before должен быть HH:MM`);
     if (o.slot.day && !/^\d{1,2}$/.test(o.slot.day)) errors.push(`${p} slot.day — число месяца`);
     if (o.deliveryFallback && (!o.address.street || !o.address.area)) errors.push(`${p} deliveryFallback требует address.street и address.area`);
+    if (o.card.number && !/^\d{13,19}$/.test(o.card.number)) errors.push(`${p} card.number — 13–19 цифр`);
+    if (o.card.number && !luhn(o.card.number)) errors.push(`${p} card.number не проходит проверку контрольной цифры — опечатка?`);
+    if (o.card.expiry && !/^(0[1-9]|1[0-2])\s?\/\s?(\d{2}|\d{4})$/.test(o.card.expiry)) errors.push(`${p} card.expiry — MM/YY`);
+    if (o.card.cvv && !/^\d{3,4}$/.test(o.card.cvv)) errors.push(`${p} card.cvv — 3–4 цифры`);
+    if (o.card.number && o.payment === 'manual') warnings.push(`${p} карта задана — хранится в этом профиле Chrome открытым текстом; после дропа удали её из настроек`);
     if (o.racersPerProfile > 6) warnings.push(`${p} racersPerProfile=${o.racersPerProfile} — много вкладок в одном профиле`);
     for (const pr of o.profiles) profileUse.set(pr, [...(profileUse.get(pr) ?? []), o.id]);
     tabs += Math.max(1, o.profiles.length) * o.racersPerProfile;
@@ -217,6 +235,18 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   else if (IS_DEV_BUILD && !isMockBase(cfg.baseUrl) && cfg.baseUrl !== LIVE_BASE) errors.push(`baseUrl «${cfg.baseUrl}»: либо ${LIVE_BASE}, либо адрес мока http://127.0.0.1:4777`);
   if (cfg.hubUrl && !/^wss?:\/\//.test(cfg.hubUrl)) errors.push('hubUrl должен начинаться с ws://');
   return { errors, warnings };
+}
+
+function luhn(num: string): boolean {
+  let sum = 0;
+  let dbl = false;
+  for (let i = num.length - 1; i >= 0; i--) {
+    let d = Number(num[i]);
+    if (dbl) { d *= 2; if (d > 9) d -= 9; }
+    sum += d;
+    dbl = !dbl;
+  }
+  return sum % 10 === 0;
 }
 
 /** Заказ, который ведёт этот профиль. */

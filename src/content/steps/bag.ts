@@ -3,7 +3,8 @@ import { SEL } from '../../shared/selectors';
 import { matchBagName, partLabel } from '../../shared/parts';
 import type { Ctl } from '../ctl';
 import { assistClick } from '../assist';
-import { bodyText, clickEl, clickable, findSelect, isEnabled, q, qa, setSelect, sleep, textOf, waitForUrlChange, waitUntil } from '../dom';
+import { bodyText, clickEl, clickable, setSelect, sleep, textOf, waitForUrlChange, waitUntil } from '../dom';
+import { findAll, findEl, findSelect, waitEnabled } from '../find';
 
 interface BagItem { nameEl: HTMLElement; name: string; root: HTMLElement }
 
@@ -11,35 +12,35 @@ interface BagItem { nameEl: HTMLElement; name: string; root: HTMLElement }
 function itemRoot(nameEl: HTMLElement): HTMLElement {
   let el = nameEl;
   for (let i = 0; i < 12 && el.parentElement && el.parentElement !== document.body; i++) {
-    if (el.parentElement.querySelectorAll(SEL.bagItemName).length > 1) break;
+    if (findAll('bagItemName', el.parentElement).length > 1) break;
     el = el.parentElement;
   }
   return el;
 }
 
 function items(): BagItem[] {
-  return qa<HTMLElement>(SEL.bagItemName).map((nameEl) => ({ nameEl, name: textOf(nameEl), root: itemRoot(nameEl) }));
+  return findAll('bagItemName').map((nameEl) => ({ nameEl, name: textOf(nameEl), root: itemRoot(nameEl) }));
 }
 
 /** Ждём отрисовку корзины: позиции или «Your bag is empty». */
 export async function readBag(c: Ctl, timeout = 10000): Promise<{ list: BagItem[]; empty: boolean } | null> {
-  const ok = await waitUntil(() => (qa(SEL.bagItemName).length || SEL.txtEmptyBag.test(bodyText()) ? true : null), timeout, c.signal);
+  const ok = await waitUntil(() => (findAll('bagItemName').length || SEL.txtEmptyBag.test(bodyText()) ? true : null), timeout, c.signal);
   if (!ok) return null;
   let list = items();
   // «Your bag is empty» может мелькнуть до того, как позиции догрузятся — даём им 2 с
   if (!list.length) {
-    await waitUntil(() => (qa(SEL.bagItemName).length ? true : null), 2000, c.signal);
+    await waitUntil(() => (findAll('bagItemName').length ? true : null), 2000, c.signal);
     list = items();
   }
   return { list, empty: list.length === 0 };
 }
 
 async function removeItem(c: Ctl, it: BagItem): Promise<boolean> {
-  const before = qa(SEL.bagItemName).length;
-  const rm = it.root.querySelector<HTMLElement>(SEL.bagItemRemove);
+  const before = findAll('bagItemName').length;
+  const rm = findEl('bagItemRemove', it.root);
   if (!rm) { c.log(`нет кнопки удаления у «${it.name}»`, 'warn'); return false; }
   clickEl(rm);
-  const done = await waitUntil(() => (qa(SEL.bagItemName).length < before ? true : null), 8000, c.signal);
+  const done = await waitUntil(() => (findAll('bagItemName').length < before ? true : null), 8000, c.signal);
   return !!done;
 }
 
@@ -47,7 +48,7 @@ async function removeItem(c: Ctl, it: BagItem): Promise<boolean> {
  * В корзине должна остаться одна позиция нужной модели, количество 1.
  * ok=false + empty — корзина пуста; ok=false без empty — нужной модели нет.
  */
-export async function fixBag(c: Ctl, target: string): Promise<{ ok: boolean; empty?: boolean; detail: string }> {
+export async function fixBag(c: Ctl, target: string): Promise<{ ok: boolean; empty?: boolean; detail: string; total?: string }> {
   const bag = await readBag(c);
   if (!bag) return { ok: false, detail: 'корзина не отрисовалась за 10 с' };
   if (bag.empty) return { ok: false, empty: true, detail: 'Your bag is empty' };
@@ -62,16 +63,16 @@ export async function fixBag(c: Ctl, target: string): Promise<{ ok: boolean; emp
   }
   // количество 1
   const cur = items().find((i) => i.name === keep.name);
-  const qty = cur ? findSelect(SEL.bagItemQty, cur.root) : null;
+  const qty = cur ? findSelect('bagItemQty', cur.root) : null;
   if (qty && qty.value !== '1') {
     c.log(`количество ${qty.value} → 1`);
     setSelect(qty, '1');
-    await waitUntil(() => { const s = findSelect(SEL.bagItemQty); return s && s.value === '1' ? true : null; }, 5000, c.signal);
+    await waitUntil(() => { const s = findSelect('bagItemQty'); return s && s.value === '1' ? true : null; }, 5000, c.signal);
     await sleep(500, c.signal);
   }
   if (SEL.txtMaxQty.test(bodyText())) c.log(`Apple: ${SEL.txtMaxQty.exec(bodyText())?.[0]}`, 'warn');
-  const total = textOf(q(SEL.bagTotal));
-  return { ok: true, detail: `${keep.name}${total ? ` · ${total}` : ''}` };
+  const total = textOf(findEl('bagTotal'));
+  return { ok: true, detail: `${keep.name}${total ? ` · ${total}` : ''}`, total };
 }
 
 /** Очистка корзины (Clean bag, проигравшие профили, Prepare). */
@@ -92,7 +93,7 @@ export async function removeAll(c: Ctl): Promise<number> {
 export async function checkoutClick(c: Ctl): Promise<void> {
   const sig = c.signal;
   for (let attempt = 1; ; attempt++) {
-    const btn = await waitUntil(() => { const b = q(SEL.bagCheckout); return b && isEnabled(b) ? b : null; }, 8000, sig);
+    const btn = await waitEnabled('bagCheckout', 8000, sig);
     if (!btn) {
       c.setState('CHECKOUT', 'кнопка Check Out не активна — обновляю корзину');
       c.scheduleReload(2000, 'no-checkout-btn');
