@@ -5,7 +5,7 @@ import { SEL } from '../../shared/selectors';
 import { storeName } from '../../shared/parts';
 import type { Ctl } from '../ctl';
 import { assistClick } from '../assist';
-import { clickEl, clickable, isChecked, pickRadio, resolveInput, setInput, setSelect, sleep, textOf, waitForUrl, waitUntil } from '../dom';
+import { clickEl, clickable, isChecked, pickRadio, qa, resolveInput, setInput, setSelect, sleep, textOf, waitForUrl, waitUntil } from '../dom';
 import { billingRoot, findEl, findField, findSelect, waitEl, waitEnabled, type Key } from '../find';
 
 const REVIEW_URL = /_s=Review/i;
@@ -176,7 +176,11 @@ export function showPayBanner(c: Ctl): void {
       : c.ts.cardFilled ? 'карта заполнена — проверь и нажми Review → Place Order' : 'введи карту и нажми Review → Place Order';
     c.overlay.banner(`${label} · ${what}`, `Финальное действие — за тобой. ${dup}`, 'warn');
   } else if (c.ts.state === 'REVIEW') {
-    c.overlay.banner(`${label} · ${c.ts.payMethod === 'applepay' ? 'Apple Pay: код телефоном → подтверди' : 'нажми Place Order'}`, `Расширение только наблюдает. ${dup}`, 'warn');
+    const what = c.ts.payMethod === 'applepay' ? 'Apple Pay: код телефоном → подтверди'
+      : c.ts.placeOrderTried ? 'Place Order нажат — подтверди оплату в приложении банка'
+      : c.order?.autoPlaceOrder ? 'Place Order нажмёт расширение → подтверди в приложении банка'
+      : 'нажми Place Order';
+    c.overlay.banner(`${label} · ${what}`, `${c.ts.placeOrderTried ? 'Расширение больше ничего не нажимает. ' : ''}${dup}`, 'warn');
   }
   c.renderOverlay({ timerSince: c.ts.slotAt, timerLabel: 'слот выбран' });
 }
@@ -194,7 +198,7 @@ export function onFocusForPay(c: Ctl): void {
 /** Наш ход: с Billing — на Review (autoReview), на Review для Apple Pay — открыть лист с кодом. */
 async function onTurn(c: Ctl): Promise<void> {
   const sig = c.signal;
-  if (REVIEW_URL.test(location.href)) { await tryApplePay(c); return; }
+  if (REVIEW_URL.test(location.href)) { await onReviewTurn(c); return; }
   if (!c.order?.autoReview) {
     if (c.ts.payMethod === 'manual') { const f = findField('cardNumber'); if (f && !c.ts.cardFilled) f.focus(); }
     return;
@@ -205,7 +209,8 @@ async function onTurn(c: Ctl): Promise<void> {
   c.setState('PAYING', 'Review Your Order');
   clickEl(btn);
   const went = await waitForUrl(REVIEW_URL, 15000, sig);
-  if (!went) {
+  if (went) { await onReviewTurn(c); return; }
+  {
     const err = /Please\s[^.\n]{3,120}|unexpected error|something went wrong/i.exec(document.body?.innerText ?? '')?.[0];
     c.setState('PAYING', `Review не открылся${err ? `: ${err}` : ''} — проверь форму и нажми Review сам`);
     c.overlay.banner(`${payLabel(c)} · проверь форму оплаты и нажми Review Your Order`, err ?? 'Расширение дальше не жмёт', 'warn');
@@ -250,7 +255,45 @@ export function reviewStep(c: Ctl): void {
   showPayBanner(c);
   watchForOrderNo(c);
   // галочка Terms & Conditions — при любом способе оплаты, до того как человек/расширение нажмёт оплату
-  void (async () => { await acceptTerms(c, 4000); if (c.ts.payTurn) await tryApplePay(c); })().catch(() => {});
+  void (async () => { await acceptTerms(c, 4000); if (c.ts.payTurn) await onReviewTurn(c); })().catch(() => {});
+}
+
+/** Наш ход на Review: Apple Pay — открыть лист; карта с autoPlaceOrder — нажать Place Order (один раз). */
+async function onReviewTurn(c: Ctl): Promise<void> {
+  if (c.ts.payMethod === 'applepay') await tryApplePay(c);
+  else if (c.order?.autoPlaceOrder) await tryPlaceOrder(c);
+}
+
+/**
+ * Place Order при оплате картой (владелец, 30.09): банк требует подтверждение в приложении (3-D Secure) — его делает
+ * человек. Один клик за всё время жизни вкладки (флаг хранится в состоянии вкладки и переживает перезагрузку):
+ * ошибка после Place Order → заказ мог пройти (12.09 дубли), повторно не жмём, человек проверяет почту/номер.
+ * Исключение — ошибка про галочку условий: заказ не отправлялся, ставим галочку и жмём ещё раз.
+ */
+async function tryPlaceOrder(c: Ctl): Promise<void> {
+  if (c.ts.payMethod !== 'manual' || !c.order?.autoPlaceOrder || c.ts.placeOrderTried) return;
+  c.ts.placeOrderTried = true; // синхронно, до первого await — второй вызов не должен нажать ещё раз
+  c.ts.placeOrderAt = Date.now();
+  void c.save();
+  const btn = await waitEnabled('placeOrderButton', 8000, c.signal);
+  if (!btn) { c.log('кнопка Place Order не найдена или не активна — нажми сам', 'warn'); c.ts.placeOrderTried = false; showPayBanner(c); return; }
+  const terms = await acceptTerms(c, 3000);
+  if (!terms && findEl('termsCheckbox')) { c.log('Place Order не нажимаю: галочка условий не стоит — поставь и нажми сам', 'warn'); c.ts.placeOrderTried = false; showPayBanner(c); return; }
+  c.log('Place Order нажат (autoPlaceOrder) — подтверждение банка (3-D Secure) за тобой');
+  clickEl(btn);
+  c.setState('REVIEW', 'Place Order нажат — подтверди оплату в приложении банка');
+  c.alert(`Заказ ${c.order.id}: подтверди оплату`, 'Place Order нажат — подтверждение в приложении банка');
+  showPayBanner(c);
+  await sleep(1500, c.signal);
+  if (termsErrorShown()) {
+    c.log('Apple: «read and accept the terms» после Place Order — заказ не отправлялся; ставлю галочку и жму ещё раз', 'warn');
+    if (await acceptTerms(c, 3000)) { clickEl(btn); await sleep(1500, c.signal); }
+  }
+  const err = qa<HTMLElement>('[role="alert"], [class*="error" i]').map(textOf).filter((t) => t && !SEL.txtTermsError.test(t)).join(' | ').slice(0, 200);
+  if (err) {
+    c.log(`после Place Order: ${err} — повторно не нажимаю; проверь почту и номер заказа, потом решай`, 'warn');
+    c.overlay.banner(`${payLabel(c)} · после Place Order: ${err.slice(0, 80)}`, 'Расширение повторно не жмёт: сначала почта и номер заказа, заказ мог пройти', 'warn');
+  }
 }
 
 /**

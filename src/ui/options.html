@@ -90,7 +90,9 @@
         <label for="o_btitle">Плательщик: Title</label><input id="o_btitle" placeholder="необязательно: Mr. / Ms." autocomplete="off">
         <div class="hint">Billing Address на странице оплаты картой — Apple требует его (снято на живом 18 Pro 30.09). Имя/фамилия пустые — берутся из контакта получателя; улица/Area пустые — из адреса доставки ниже. Для Apple Pay не нужен.</div>
         <label for="o_autoreview">Нажимать Review самим</label><input id="o_autoreview" type="checkbox" style="justify-self:start">
-        <div class="hint">Когда подошла очередь оплаты: заполненная карта → «Review Your Order» → тебе остаётся «Place Order». Для Apple Pay — переход на Review и попытка открыть лист с кодом.</div>
+        <div class="hint">Когда подошла очередь оплаты: заполненная карта → «Review Your Order». Для Apple Pay — переход на Review и попытка открыть лист с кодом.</div>
+        <label for="o_autoplace">Нажимать Place Order самим</label><input id="o_autoplace" type="checkbox" style="justify-self:start">
+        <div class="hint">Только при оплате картой. Расширение ставит галочку условий и нажимает «Place Order» <b>один раз</b>; подтверждение в приложении банка (3-D Secure) — за тобой. <b>Если банк подтверждения не запросит, заказ оформится сразу.</b> После ошибки повторно не жмёт: сначала почта и номер заказа (дубли 12.09).</div>
         <label for="o_delivery">Фолбэк доставки</label><input id="o_delivery" type="checkbox" style="justify-self:start">
         <label for="o_street">Адрес: улица</label><input id="o_street">
         <label for="o_area">Адрес: Area</label><input id="o_area">

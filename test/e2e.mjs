@@ -544,7 +544,30 @@ scenarios['card-fallback'] = async () => {
   } catch (e) { await dumpOnFail(profiles, 'card-fallback'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
-const list = want.length ? want : ['single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-fallback', 'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'acceptance'];
+/** Карта + autoPlaceOrder: галочка условий, Place Order один раз, «3-D Secure» 2,5 с (THREEDS_MS) — ждём, номер заказа пойман. */
+scenarios['auto-place'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', THREEDS_MS: '2500' });
+  const p = await launchProfile('autoplace');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD, autoPlaceOrder: true })], { openInSec: -5 }));
+    const r = await p.cmd({ cmd: 'start' });
+    assert.ok(r.ok, r.error);
+    assert.ok((r.warnings ?? []).some((w) => /autoPlaceOrder/.test(w)), 'предупреждение об autoPlaceOrder при старте');
+    const done = await waitFor(async () => { const s = await p.status(); return s.os.orderNo ? s : null; }, 60000, 'ORDERED без клика человека', 500);
+    const ms = await mockState();
+    const log = (await p.cmd({ cmd: 'exportLog' })).text;
+    say(`auto-place: ORDERED ${done.os.orderNo}, заказов на моке ${ms.orders.length}, кликов Place Order ${ms.orders[0]?.checkout.placeOrderClicks}`);
+    assert.equal(ms.orders.length, 1, 'ровно один заказ');
+    assert.equal(ms.orders[0].orderNo, done.os.orderNo, 'номер заказа совпадает');
+    assert.equal(ms.orders[0].checkout.placeOrderClicks, 1, 'Place Order нажат один раз');
+    assert.equal(ms.orders[0].checkout.termsAccepted, true, 'галочка условий стояла до Place Order');
+    assert.ok(/Place Order нажат \(autoPlaceOrder\)/.test(log), 'лог о Place Order');
+    assert.equal(done.orders[0].orderNo, done.os.orderNo, 'номер заказа в записи');
+  } catch (e) { await dumpOnFail(profiles, 'auto-place'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+const list = want.length ? want : ['single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-fallback', 'auto-place', 'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'acceptance'];
 let failed = 0;
 for (const name of list) {
   const fn = scenarios[name];

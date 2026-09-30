@@ -13,6 +13,7 @@
 //   TAKEN_FIRST_SLOT=1     первое окно каждой даты «уже занято»
 //   HYDRATE_MS=250         задержка «гидратации» страницы конфигурации
 //   ATTACH_DELAY_MS=900    200 → beacon/atb → step=attach
+//   THREEDS_MS=0           после Place Order — «подтверди в приложении банка» N мс, потом thank-you (3-D Secure)
 //   CARD_DELAY_MS=0        блок карты на Billing появляется через N мс после выбора «Credit or Debit Card» (Apple 30.09: несколько секунд)
 //   DEFAULT_CITY=Dubai     город в чекауте по умолчанию
 //   QUEUE_AFTER_OPEN=0     после открытия первые N заходов сессии на страницу товара — «очередь» с meta refresh (2 с),
@@ -45,6 +46,7 @@ const S = {
   hydrateMs: num(env.HYDRATE_MS, 250),
   attachDelayMs: num(env.ATTACH_DELAY_MS, 900),
   cardDelayMs: num(env.CARD_DELAY_MS, 0),
+  threeDsMs: num(env.THREEDS_MS, 0),
   defaultCity: env.DEFAULT_CITY ?? 'Dubai',
   storeClosed: env.STORE_CLOSED ?? '',
   queueAfterOpen: num(env.QUEUE_AFTER_OPEN, 0),
@@ -255,7 +257,7 @@ function checkoutPage(s) {
   const boot = {
     stores: STORES.map((x, i) => ({ ...x, available: !S.unavailableStores.includes(x.id), dist: (2.1 + i * 7.3).toFixed(1) })),
     cities: CITIES, defaultCity: S.defaultCity, dates, slots: Object.fromEntries(dates.map((d, i) => [d.day, slotsFor(i, d.day)])),
-    items: bagJson(s).items, cardDelayMs: S.cardDelayMs,
+    items: bagJson(s).items, cardDelayMs: S.cardDelayMs, threeDsMs: S.threeDsMs,
   };
   return page(s, 'Checkout - Apple (AE)', `<div id="app"></div><script id="boot" type="application/json">${JSON.stringify(boot)}</script>`, { scripts: `<script>(${checkoutClient.toString()})();</script>` });
 }
@@ -451,7 +453,7 @@ function checkoutClient() {
     // как на живом Review 18 Pro: галочка условий (input спрятан), без неё любая оплата даёт ошибку; Apple Pay — «Continue with [логотип] Pay»
     var pay = st.method === 'APPLE_PAY'
       ? '<button type="button" id="applepay" class="applepay-button" data-autom="apple-pay-button" aria-label="Continue with Apple Pay">Continue with <img alt="" width="14" height="14" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">Pay</button><div id="applepay-sheet" hidden>[QR-код Apple Pay — сканируй iPhone]</div>'
-      : '<button type="button" id="place">Place Order</button>';
+      : '<button type="button" id="place" data-autom="continue-button-placeorder">Place Order</button>';
     var terms = '<div class="terms"><input class="vh" type="checkbox" id="terms" name="terms"><label for="terms">I have read, understand, and agree to the <a href="#">Terms and Conditions</a> of Sale, and the Privacy Policy.</label></div><div id="err" class="rs-error" role="alert"></div>';
     app.appendChild(el('<h1>Review your order.</h1><p>' + B.items.map(function (i) { return i.name + ' · ' + i.price; }).join('<br>') + '</p>' + terms + pay));
     var tb = document.getElementById('terms');
@@ -466,7 +468,12 @@ function checkoutClient() {
     var place = document.getElementById('place');
     if (place) place.onclick = function () {
       if (!termsOk()) return;
-      post('/ae/shop/checkoutx?_a=placeOrder&_m=checkout.review', {}).then(function (r) { location.assign('/ae/shop/checkout/thankyou?o=' + r.orderNo); });
+      place.disabled = true;
+      post('/ae/shop/checkoutx?_a=placeOrder&_m=checkout.review', {}).then(function (r) {
+        var go = function () { location.assign('/ae/shop/checkout/thankyou?o=' + r.orderNo); };
+        // THREEDS_MS: «подтверди в приложении банка» — как 3-D Secure у банка (в жизни — iframe/редирект банка)
+        if (B.threeDsMs > 0) { app.appendChild(el('<div id="threeds" role="dialog"><h2>Confirm the payment in your bank app</h2><p>Waiting for your bank…</p></div>')); setTimeout(go, B.threeDsMs); } else go();
+      });
     };
   }
 
@@ -618,6 +625,7 @@ const server = http.createServer(async (req, res) => {
       if (a === 'termsAccepted') { s.checkout.termsAccepted = true; return json(res, { ok: true }); }
       if (a === 'applePaySheet') { s.checkout.applePayClicks = (s.checkout.applePayClicks ?? 0) + 1; return json(res, { ok: true }); }
       if (a === 'placeOrder') {
+        s.checkout.placeOrderClicks = (s.checkout.placeOrderClicks ?? 0) + 1;
         const no = `W${String(100000000 + Math.floor(Math.random() * 899999999))}`;
         orders.push({ orderNo: no, sid: s.sid, items: s.bag.map((i) => ({ part: i.part, qty: i.qty })), checkout: s.checkout, at: Date.now() });
         s.bag = [];

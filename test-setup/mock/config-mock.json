@@ -48,7 +48,8 @@
         "cvv": "",
         "name": ""
       },
-      "autoReview": true
+      "autoReview": true,
+      "autoPlaceOrder": false
     }
   ],
   "timing": {

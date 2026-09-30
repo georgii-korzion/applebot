@@ -45,6 +45,9 @@ export interface TabState {
   cardFilled?: boolean;
   payTurn?: boolean;
   applePayTried?: boolean;
+  /** Place Order нажат расширением (autoPlaceOrder) — повторно не нажимать, даже после перезагрузки страницы. */
+  placeOrderTried?: boolean;
+  placeOrderAt?: number;
   updatedAt: number;
 }
 

@@ -58,7 +58,8 @@
         "town": "",
         "city": "Dubai"
       },
-      "autoReview": true
+      "autoReview": true,
+      "autoPlaceOrder": false
     }
   ],
   "timing": {

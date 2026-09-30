@@ -62,6 +62,8 @@ export const F = {
   billArea: { sel: SEL.shipStreet2, alt: ['input[name*="billing" i][name*="street2" i]', 'input[name*="area" i]', 'input[name*="street2" i]', 'input[name*="district" i]', 'input[autocomplete="address-line2"]'], attr: /\barea\b|address line 2/i, kind: 'field' },
   billTown: { sel: '[data-autom="form-field-street3"]', alt: ['input[name*="billing" i][name*="street3" i]', 'input[name*="town" i]', 'input[name*="street3" i]', 'input[autocomplete="address-line3"]'], attr: /\btown\b/i, kind: 'field' },
   billCity: { sel: SEL.shipCity, alt: ['select[name*="billing" i][name*="city" i]', 'select[name*="city" i]', 'select[autocomplete="address-level2"]', 'select[data-autom*="city" i]'], attr: /\bcity\b/i, kind: 'select' },
+  // Review: «Place Order» (нажимаем только при autoPlaceOrder, один раз)
+  placeOrderButton: { sel: '[data-autom="continue-button-placeorder"]', alt: ['[data-autom*="placeorder" i]', '[data-autom*="place-order" i]', 'button[data-autom*="continue-button" i][data-autom*="order" i]'], text: /^place (your )?order$/i, kind: 'button' },
   reviewButton: { sel: SEL.reviewButtonObserveOnly, alt: ['button[data-autom*="review" i]'], text: /^review your order/i, kind: 'button' },
   // Review (18 Pro, live): кнопка «Continue with Pay» (логотип Apple — картинка, в тексте его нет)
   applePayButton: { sel: '[data-autom="apple-pay-button"]', alt: ['apple-pay-button', 'button[data-autom*="apple-pay" i]', 'button[aria-label*="Apple Pay" i]', '[class*="apple-pay-button" i]', 'button[class*="applepay" i]'], text: /^(pay with |continue with |buy with )?(apple ?|\uF8FF ?)?pay$/i, kind: 'button' },

@@ -57,7 +57,8 @@
         "town": "",
         "city": "Dubai"
       },
-      "autoReview": true
+      "autoReview": true,
+      "autoPlaceOrder": false
     },
     {
       "id": "B",
@@ -112,7 +113,8 @@
         "town": "",
         "city": "Dubai"
       },
-      "autoReview": true
+      "autoReview": true,
+      "autoPlaceOrder": false
     }
   ],
   "timing": {

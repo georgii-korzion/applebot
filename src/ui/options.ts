@@ -39,6 +39,7 @@ function orderToForm(o: OrderCfg): void {
   $<HTMLSelectElement>('o_bcity').value = o.billing.city || 'Dubai';
   $('o_btitle').value = o.billing.title;
   $('o_autoreview').checked = o.autoReview;
+  $('o_autoplace').checked = o.autoPlaceOrder;
   $('o_delivery').checked = o.deliveryFallback;
   $('o_street').value = o.address.street;
   $('o_area').value = o.address.area;
@@ -61,6 +62,7 @@ function formToOrder(o: OrderCfg): void {
   o.card = { number: $('o_cardnum').value.replace(/[\s-]/g, ''), expiry: $('o_cardexp').value.trim(), cvv: $('o_cardcvv').value.trim(), name: $('o_cardname').value.trim() };
   o.billing = { title: $('o_btitle').value.trim(), firstName: $('o_bfirst').value.trim(), lastName: $('o_blast').value.trim(), street: $('o_bstreet').value.trim(), area: $('o_barea').value.trim(), town: $('o_btown').value.trim(), city: $<HTMLSelectElement>('o_bcity').value || 'Dubai' };
   o.autoReview = $('o_autoreview').checked;
+  o.autoPlaceOrder = $('o_autoplace').checked;
   o.deliveryFallback = $('o_delivery').checked;
   o.address = { street: $('o_street').value.trim(), area: $('o_area').value.trim(), city: $('o_acity').value.trim() || 'Dubai' };
 }
