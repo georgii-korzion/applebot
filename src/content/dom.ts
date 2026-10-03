@@ -1,4 +1,5 @@
 // DOM-ожидания и React-совместимые действия (§8.1, §8.2).
+import { track } from './perf';
 
 export class Aborted extends Error {
   constructor(msg = 'aborted') { super(msg); this.name = 'Aborted'; }
@@ -9,12 +10,12 @@ export function checkAbort(signal?: AbortSignal): void {
 }
 
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
+  return track('pause', () => new Promise<void>((resolve, reject) => {
     if (signal?.aborted) return reject(new Aborted());
     const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, Math.max(0, ms));
     const onAbort = () => { clearTimeout(t); reject(new Aborted()); };
     signal?.addEventListener('abort', onAbort, { once: true });
-  });
+  }));
 }
 
 /**
@@ -38,7 +39,7 @@ export const qa = <T extends Element = HTMLElement>(sel: string, root: ParentNod
  * Возвращает значение или null по таймауту. На abort — Aborted.
  */
 export function waitUntil<T>(pred: () => T | null | undefined | false, timeout: number, signal?: AbortSignal): Promise<T | null> {
-  return new Promise((resolve, reject) => {
+  return track('wait', () => new Promise<T | null>((resolve, reject) => {
     if (signal?.aborted) return reject(new Aborted());
     let done = false;
     const check = () => {
@@ -63,7 +64,7 @@ export function waitUntil<T>(pred: () => T | null | undefined | false, timeout: 
     const to = setTimeout(() => finish(null), timeout);
     signal?.addEventListener('abort', onAbort, { once: true });
     check();
-  });
+  }));
 }
 
 export function waitFor<T extends Element = HTMLElement>(sel: string, timeout: number, signal?: AbortSignal, root: ParentNode = document): Promise<T | null> {
@@ -79,24 +80,24 @@ export function waitForText(re: RegExp, root: HTMLElement | null, timeout: numbe
 
 /** Смена URL в SPA ловится опросом (pushState не даёт событий, §8.3). */
 export function waitForUrl(re: RegExp, timeout: number, signal?: AbortSignal): Promise<string | null> {
-  return new Promise((resolve, reject) => {
-    if (re.test(location.href)) return resolve(location.href);
-    const iv = setInterval(() => { if (re.test(location.href)) end(location.href); }, 100);
+  if (re.test(location.href)) return Promise.resolve(location.href);
+  return track('wait', () => new Promise<string | null>((resolve, reject) => {
+    const iv = setInterval(() => { if (re.test(location.href)) end(location.href); }, 50);
     const to = setTimeout(() => end(null), timeout);
     const onAbort = () => { clearInterval(iv); clearTimeout(to); reject(new Aborted()); };
     const end = (v: string | null) => { clearInterval(iv); clearTimeout(to); signal?.removeEventListener('abort', onAbort); resolve(v); };
     signal?.addEventListener('abort', onAbort, { once: true });
-  });
+  }));
 }
 
 export function waitForUrlChange(from: string, timeout: number, signal?: AbortSignal): Promise<string | null> {
-  return new Promise((resolve, reject) => {
-    const iv = setInterval(() => { if (location.href !== from) end(location.href); }, 100);
+  return track('wait', () => new Promise<string | null>((resolve, reject) => {
+    const iv = setInterval(() => { if (location.href !== from) end(location.href); }, 50);
     const to = setTimeout(() => end(null), timeout);
     const onAbort = () => { clearInterval(iv); clearTimeout(to); reject(new Aborted()); };
     const end = (v: string | null) => { clearInterval(iv); clearTimeout(to); signal?.removeEventListener('abort', onAbort); resolve(v); };
     signal?.addEventListener('abort', onAbort, { once: true });
-  });
+  }));
 }
 
 /** Первое из нескольких условий: [метка, промис]. null-результаты не считаются победой. */
@@ -243,7 +244,7 @@ export function errorContext(re: RegExp): string {
  * Вариант 1 из §8.5; SW-вариант 2 — через onNet().
  */
 export function waitForResource(re: RegExp, t0: number, timeout: number, signal?: AbortSignal, netFallback?: (cb: (acpartNone: boolean, at: number) => void) => () => void, needAcpart = false, t0Epoch = Date.now()): Promise<boolean> {
-  return new Promise((resolve, reject) => {
+  return track('net', () => new Promise<boolean>((resolve, reject) => {
     if (signal?.aborted) return reject(new Aborted());
     let done = false;
     const finish = (v: boolean, err?: Error) => {
@@ -269,7 +270,7 @@ export function waitForResource(re: RegExp, t0: number, timeout: number, signal?
     signal?.addEventListener('abort', onAbort, { once: true });
     const to = setTimeout(() => finish(false), timeout);
     if (existing) finish(true);
-  });
+  }));
 }
 
 export function cookieNames(): Record<string, string> {

@@ -6,6 +6,7 @@ import { closedReloadMs, phaseOf } from '../../shared/config';
 import type { Ctl } from '../ctl';
 import type { PageInfo } from '../classify';
 import { ensureWatcher } from './preopen';
+import { holdStep, holdUntil, isStub } from './bot';
 
 const PHASE_LABEL = { armed: 'до старта', pre: 'последняя минута', post: 'после старта' } as const;
 
@@ -28,6 +29,8 @@ function onTargetPage(c: Ctl): boolean {
 export function closedStep(c: Ctl, page: PageInfo, reason: string): void {
   reportStore(c, true, reason);
   ensureWatcher(c);
+  const hold = c.ts.mode === 'race' && isStub(page.kind) ? holdUntil(c) : null;
+  if (hold) { holdStep(c, page, reason, hold); return; }
   const now = Date.now();
   const openAt = Date.parse(c.cfg.openAt);
   const phase = phaseOf(c.cfg, c.os.openedAt, now);

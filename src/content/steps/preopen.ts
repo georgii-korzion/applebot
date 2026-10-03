@@ -10,6 +10,7 @@ import { findEl } from '../find';
 import { atbFlow } from './addToBag';
 import { closedStep, reportStore } from './closed';
 import { hasProductBootstrap, isBlankPage } from '../classify';
+import { admittedStep, holdUntil } from './bot';
 
 const PRE_WINDOW_MS = 60_000;
 
@@ -30,7 +31,12 @@ export async function productStep(c: Ctl, page: PageInfo): Promise<void> {
     () => (findEl('addToBag') ? 'atb' : findEl('continueDisabled') || page.preorder ? 'pre' : null),
     wait, c.signal,
   );
-  if (what === 'atb') { reportStore(c, false, 'Add to Bag'); return atbFlow(c); }
+  if (what === 'atb') {
+    reportStore(c, false, 'Add to Bag');
+    // режим бота: пустили к покупке, но заказа ещё нет — сообщить хабу и ждать ASSIGN, в корзину не класть (§6)
+    if (c.lobby || c.os.spare) { admittedStep(c, page); return; }
+    return atbFlow(c);
+  }
   if (what === 'pre') { reportStore(c, false, 'страница товара до старта'); scheduleByPhase(c); return; }
   // ни формы покупки, ни «Continue»: магазин закрыт / пустая страница / заглушка без текста
   closedStep(c, page, isBlankPage() ? 'пустая страница' : 'нет формы покупки');
@@ -44,9 +50,18 @@ export function scheduleByPhase(c: Ctl): void {
   const grace = openAt + c.t.graceSec * 1000;
   const min = c.t.minReloadMs;
   if (!open && Number.isFinite(openAt) && now < openAt - PRE_WINDOW_MS) {
+    // бот: прогрев за warmupSec до старта (§20.7) — корзина и обратно: cookie, кэш скриптов и соединения уже готовы
+    const warmAt = c.bot && c.b?.warmupSec ? openAt - c.b.warmupSec * 1000 : 0;
+    if (warmAt && !c.ts.warmedUp && c.role !== 'watcher' && now >= warmAt) {
+      c.ts.warmedUp = true;
+      c.setState('WARMUP', 'прогрев: корзина → назад к товару');
+      void c.navigate(c.bagUrl(), 'прогрев перед стартом');
+      return;
+    }
     c.setState('ARMED', `рефреш с ${new Date(openAt - PRE_WINDOW_MS).toLocaleTimeString()}`);
     c.renderOverlay({ countdownTo: openAt, timerSince: undefined });
-    c.timer(Math.min(openAt - PRE_WINDOW_MS - now, 3_600_000), () => c.rerun('phase:pre'));
+    const next = warmAt && !c.ts.warmedUp && now < warmAt ? warmAt : openAt - PRE_WINDOW_MS;
+    c.timer(Math.min(next - now, 3_600_000), () => c.rerun(next === warmAt ? 'phase:warmup' : 'phase:pre'));
     return;
   }
   if (!open && Number.isFinite(openAt) && now < grace) {
@@ -68,7 +83,9 @@ export function scheduleByPhase(c: Ctl): void {
 /** Сигнал OPEN от SW: первый рефреш со случайной задержкой 0–500 мс (§7.2). */
 export function onOpen(c: Ctl): void {
   if (c.ts.mode !== 'race') return;
-  if (!['ARMED', 'PRE_RELOAD', 'WATCHING', 'FAST_RELOAD', 'INIT', 'CLOSED', 'BUSY'].includes(c.ts.state)) return;
+  if (!['ARMED', 'PRE_RELOAD', 'WATCHING', 'FAST_RELOAD', 'INIT', 'CLOSED', 'BUSY', 'WARMUP'].includes(c.ts.state)) return;
+  // hold (§7): перед заглушкой сигнал OPEN перезагрузку не вызывает — страница пустит сама
+  if (holdUntil(c) && ['CLOSED', 'BUSY'].includes(c.ts.state)) { c.log('OPEN — hold: заглушку не трогаю'); c.rerun('open-hold'); return; }
   const want = partUrl(c.base, c.target());
   const samePage = new URL(want).pathname.toLowerCase() === location.pathname.replace(/\/$/, '').toLowerCase();
   // страница загрузилась уже после OPEN (сообщение пришло с задержкой, после реконнекта) — не тратить рефреш
@@ -76,7 +93,8 @@ export function onOpen(c: Ctl): void {
     c.rerun('open-fresh-page');
     return;
   }
-  const delay = Math.random() * 500;
+  // бот: задержку 0–500 мс оставляем половине флота, остальные — сразу (§20.5)
+  const delay = c.bot && c.b && !c.b.openJitter ? 0 : Math.random() * 500;
   c.stopAll();
   c.setState('FAST_RELOAD', 'OPEN!');
   setTimeout(() => {

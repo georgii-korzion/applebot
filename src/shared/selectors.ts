@@ -73,7 +73,8 @@ export const SEL = {
   // ошибка валидации поля/выбора — повтор не поможет, нужен человек (в отличие от «Please try again»)
   txtValidation: /(Please (select|choose|enter|provide|check|correct|complete|confirm|review|add|read|accept|agree)|is required|invalid|not valid|must be|can.t be blank)/i,
   // Review без галочки (18 Pro, live): «Please read and accept the terms & conditions of this order.»
-  txtTermsError: /(read and accept|accept the terms|agree to the terms|terms\s*(&|and)\s*conditions of this order)/i,
+  // только текст ОШИБКИ: подпись самой галочки («…and agree to the Terms & Conditions of Sale») сюда попадать не должна
+  txtTermsError: /(please (read and )?accept the terms|read and accept the terms|accept the terms\s*(&|and)\s*conditions|terms\s*(&|and)\s*conditions of this order)/i,
   txtEmptyBag: /Your bag is empty/i,
   txtOrderNo: /\bW\d{9,11}\b/,
   txtThanks: /(thank you|your order number|order number)/i,
@@ -81,4 +82,11 @@ export const SEL = {
   txtDelivered: /deliver/i,
   txtUnavailable: /(unavailable|Not available)/i,
   txtMaxQty: /maximum of \d+/i,
+  // BOT-SPEC §8: блокировка по IP (Akamai/Apple) и проверка «я не робот»
+  txtBlocked: /(Access Denied|You don.t have permission to access|Request blocked|Too Many Requests|has been blocked)/i,
+  txtCaptcha: /(verify (that )?you.?(a)?re (a )?human|I.?m not a robot|are you a robot|press (and|&) hold|complete the (security )?challenge|prove you.?re human)/i,
+  captchaEls: 'iframe[src*="captcha" i], iframe[title*="captcha" i], iframe[src*="challenge" i], [id*="captcha" i], [class*="captcha" i], [data-autom*="captcha" i]',
+  // QR Apple Pay в странице (Apple Pay JS для не-Safari рисует модальное окно с кодом) [не снято, T10]
+  applePaySheet: '[id*="apple-pay" i][role="dialog"], [id*="applepay" i][role="dialog"], [class*="apple-pay" i][class*="modal" i], [class*="apple-pay" i][class*="sheet" i], [class*="applepay" i][class*="modal" i], iframe[src*="apple.com" i][src*="pay" i], iframe[title*="Apple Pay" i]',
+  txtApplePayQr: /(scan (the|this) (code|QR)|QR code|scan with your (iPhone|phone)|use your iPhone)/i,
 } as const;

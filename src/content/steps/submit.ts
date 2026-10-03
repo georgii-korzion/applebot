@@ -5,6 +5,7 @@
 import { SEL } from '../../shared/selectors';
 import type { Ctl } from '../ctl';
 import { clickEl, errorContext, isEnabled, raceFirst, sleep, waitForResource, waitForUrl, waitUntil } from '../dom';
+import { track } from '../perf';
 
 export interface SubmitResult { result: 'next' | 'error' | 'timeout'; text: string; generic: boolean }
 
@@ -26,12 +27,14 @@ export async function submitAndWait(c: Ctl, btn: Element, nextUrl: RegExp, error
   const t0 = performance.now();
   const before = errorSnapshot(errorRe);
   clickEl(btn);
-  const r = await raceFirst([
+  // запрос чекаута — это сеть; после ответа ждём не фиксированные 400 мс, а смену URL / текст ошибки (верхняя граница 400 мс, §20.1)
+  const settle = () => raceFirst([['u', waitForUrl(nextUrl, 400, sig)], ['e', waitUntil(() => { const s = errorSnapshot(errorRe); return s && s !== before ? s : null; }, 400, sig)]], 400, sig).then(() => true);
+  const r = await track('net', () => raceFirst([
     ['next', waitForUrl(nextUrl, timeout, sig)],
     ['error', waitUntil(() => { const s = errorSnapshot(errorRe); return s && s !== before ? s : null; }, timeout, sig)],
-    ['done', waitForResource(CHECKOUTX, t0, timeout, sig).then((ok) => (ok ? sleep(400, sig).then(() => true) : null))],
+    ['done', waitForResource(CHECKOUTX, t0, timeout, sig).then((ok) => (ok ? settle() : null))],
     ['cycle', waitForButtonCycle(btn, timeout, sig).then((ok) => (ok ? sleep(250, sig).then(() => true) : null))],
-  ], timeout, sig);
+  ], timeout, sig));
   if (r.key === 'next' || nextUrl.test(location.href)) return { result: 'next', text: '', generic: false };
   if (r.key === 'timeout') return { result: 'timeout', text: 'нет ответа', generic: true };
   // запрос завершился, но шаг не сменился — даём React дорисовать и читаем ошибку как есть (даже если текст тот же)

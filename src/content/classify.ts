@@ -5,7 +5,7 @@ import { bodyText, isVisible, qa } from './dom';
 
 export type Kind =
   | 'queue' | 'closed' | 'busy' | 'notfound' | 'atb-pending' | 'attach' | 'product' | 'bag'
-  | 'signin' | 'checkout' | 'thankyou' | 'home' | 'other';
+  | 'signin' | 'checkout' | 'thankyou' | 'home' | 'other' | 'blocked' | 'captcha';
 
 export interface PageInfo {
   kind: Kind;
@@ -77,6 +77,10 @@ export function classify(): PageInfo {
   const base = { url, status, country, metaRefreshSec: metaRefresh() };
   const head = title + '\n' + text.slice(0, 4000);
 
+  // BOT-SPEC §8: проверка «я не робот» поверх любой страницы — решает человек
+  if (hasCaptcha(head)) return { ...base, kind: 'captcha' };
+  // блокировка по IP: 403/429 или «Access Denied» на почти пустой странице
+  if (status === 403 || status === 429 || (markers < 3 && SEL.txtBlocked.test(head))) return { ...base, kind: 'blocked' };
   // очередь Apple: страница сама пустит дальше — её не рефрешим (проверяем раньше заглушек и закрытия)
   if (markers < 3 && SEL.txtQueue.test(head)) {
     return { ...base, kind: 'queue' };
@@ -112,6 +116,12 @@ export function classify(): PageInfo {
   }
   if (/^\/ae\/?$/.test(path)) return { ...base, kind: 'home' };
   return { ...base, kind: 'other' };
+}
+
+/** Видимая капча: фрейм/блок капчи или текст проверки (§8). */
+export function hasCaptcha(head = document.title + '\n' + bodyText().slice(0, 4000)): boolean {
+  if (SEL.txtCaptcha.test(head)) return true;
+  return qa<HTMLElement>(SEL.captchaEls).some((el) => isVisible(el) && el.getBoundingClientRect().width > 60);
 }
 
 /** Есть ли на странице хоть что-то от страницы покупки (конфигурация/форма). */

@@ -5,7 +5,7 @@ import type { Orchestrator, TabInfo } from './orchestrator';
 export function computeRoles(o: Orchestrator): Map<number, Role> {
   const roles = new Map<number, Role>();
   const race = [...o.tabs.values()].filter((t) => t.mode === 'race' && t.state !== 'STUCK').sort((a, b) => a.tabId - b.tabId);
-  const otherProfileWatches = o.hub.connected && !!o.watcherProfile && o.watcherProfile !== o.cfg.profileId;
+  const otherProfileWatches = o.hub.connected && o.watcherProfiles.length > 0 && !o.watcherProfiles.includes(o.cfg.profileId);
   const needWatcher = o.os.armed && !o.os.openedAt && !otherProfileWatches;
   let watcher: TabInfo | undefined;
   if (needWatcher) {

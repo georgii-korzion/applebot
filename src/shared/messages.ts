@@ -1,5 +1,6 @@
 // Типы сообщений SW ↔ content ↔ hub (§5.4).
 import type { Config, OrderCfg } from './config';
+import type { BotCommand, ClickTarget, HumanReason, PayWaitKind, StepPerf, Strategy } from './bot';
 
 export type Mode = 'idle' | 'race' | 'checkout' | 'standby' | 'prep' | 'clean';
 export type Role = 'watcher' | 'racer' | 'standby' | 'idle';
@@ -48,6 +49,33 @@ export interface TabState {
   /** Place Order нажат расширением (autoPlaceOrder) — повторно не нажимать, даже после перезагрузки страницы. */
   placeOrderTried?: boolean;
   placeOrderAt?: number;
+  // ---------- режим бота ----------
+  /** Когда вошли в текущее состояние (для пульса и сторожа). */
+  stateSince?: number;
+  /** Накопленное время шага: сеть / ожидание элемента / пауза (§20 bench). */
+  perf?: { net: number; wait: number; pause: number };
+  /** «Дальше я сам»: расширение только наблюдает и ловит номер заказа. */
+  manual?: boolean;
+  /** ADMITTED отправлен для текущего цикла «пул → заказ». */
+  admitSent?: boolean;
+  admittedAt?: number;
+  warmedUp?: boolean;
+  blockedInRow?: number;
+  captchaSince?: number;
+  /** Исход после Place Order (§9.1). */
+  payOutcome?: 'WAIT_3DS' | 'CARD_DECLINED' | 'NEED_HUMAN' | 'ORDERED';
+  threeDsSince?: number;
+  /** Apple Pay: сколько раз открывали лист, когда показали QR. */
+  applePayOpens?: number;
+  qrShownAt?: number;
+  /** Ждём возврата на Billing: смена карты / способа оплаты (§9.3). */
+  swapPending?: 'card' | 'applepay';
+  /** Попытка оплаты по заказу (1 — первая, 2 — Apple Pay после отказа карты). */
+  payAttempt?: number;
+  /** На какой попытке оплаты нажат Place Order (после SWITCH_PAY исход прошлой попытки уже не ждём). */
+  placedAttempt?: number;
+  /** Классы страниц, для которых уже снят снимок заглушки (§7). */
+  snapClasses?: string[];
   updatedAt: number;
 }
 
@@ -85,6 +113,11 @@ export interface OrderState {
   watchAt?: number;
   watchSource?: 'tab' | 'sw';
   timestamps: Record<string, number>;
+  // режим бота
+  admittedAt?: number;
+  spare?: boolean;
+  placedAt?: number;
+  payWait?: 'WAIT_3DS' | 'WAIT_APPLEPAY';
 }
 
 export function newOrderState(): OrderState {
@@ -109,7 +142,7 @@ export interface AtbDiag {
 // content → SW
 export type C2S =
   | { t: 'HELLO'; url: string; kind: string; mode?: Mode; state?: string }
-  | { t: 'STATE'; state: string; mode: Mode; detail?: string; outcome?: string; counters?: { reloads: number; atb404: number } }
+  | { t: 'STATE'; state: string; mode: Mode; detail?: string; outcome?: string; counters?: { reloads: number; atb404: number }; page?: string; step?: string; since?: number; perf?: StepPerf }
   | { t: 'OPEN'; source: string; buyable: string[] }
   | { t: 'WATCH'; statuses: Record<string, { isBuyable: boolean; reason?: string; quote?: string }>; pickup?: string }
   | { t: 'WATCH_TICK'; ok: boolean }
@@ -125,11 +158,26 @@ export type C2S =
   | { t: 'CLEANED'; count: number }
   | { t: 'STORE'; closed: boolean; reason: string }
   | { t: 'LOG'; level: 'info' | 'warn' | 'error'; msg: string; state?: string }
-  | { t: 'PING' };
+  | { t: 'PING' }
+  // режим бота
+  | { t: 'ADMITTED'; part?: string; at: number }
+  | { t: 'PLACE_REQ' }
+  | { t: 'PLACED'; at: number }
+  | { t: 'PAY_WAIT'; kind: PayWaitKind; input?: boolean; detail?: string }
+  | { t: 'CARD_DECLINED'; text: string }
+  | { t: 'CARD_SWAP_ACK'; ok: boolean; detail?: string }
+  | { t: 'CARD_REQ' }
+  | { t: 'NEED_HUMAN'; reason: HumanReason; step: string; text: string }
+  | { t: 'HUMAN_DONE' }
+  | { t: 'HUMAN'; action: 'resume' | 'manual' | 'stop' }
+  | { t: 'CLICK_REQ'; purpose: 'applepay'; how: 'cdp' | 'os'; target: ClickTarget }
+  | { t: 'SNAPSHOT'; reason: string; cls: string; title: string; html: string; metaRefresh?: number; status: number }
+  | { t: 'BLOCKED'; status: number; text: string }
+  | { t: 'FULLSCREEN'; on: boolean };
 
 // SW → content
 export type S2C =
-  | { t: 'WELCOME'; tabId: number; windowId: number; profileId: string; cfg: Config; order: OrderCfg | null; os: OrderState; ts: TabState; role: Role; hub: boolean }
+  | { t: 'WELCOME'; tabId: number; windowId: number; profileId: string; cfg: Config; order: OrderCfg | null; os: OrderState; ts: TabState; role: Role; hub: boolean; bot?: boolean }
   | { t: 'ROLE'; role: Role }
   | { t: 'OPEN'; activeTarget?: string }
   | { t: 'ATB_LOCK'; granted: boolean; reason?: string }
@@ -143,30 +191,82 @@ export type S2C =
   | { t: 'DIAG'; net: { url: string; status: number; ago: number }[] }
   | { t: 'NET'; kind: 'updateSummary'; acpartNone: boolean; at: number }
   | { t: 'SW_WATCH'; at: number; ok: boolean }
-  | { t: 'MODE'; mode: Mode; extra?: Partial<TabState> };
+  | { t: 'MODE'; mode: Mode; extra?: Partial<TabState>; reset?: boolean }
+  // режим бота
+  | { t: 'PLACE_TURN'; local?: boolean }
+  | { t: 'CARD_SWAP'; card: OrderCfg['card']; cardId: string; billing: OrderCfg['billing'] }
+  | { t: 'SWITCH_PAY'; method: 'applepay' }
+  | { t: 'CMD'; cmd: BotCommand }
+  | { t: 'CLICK_DONE'; ok: boolean; how: 'cdp' | 'os'; error?: string }
+  | { t: 'SNAP_REQ'; reason: string }
+  | { t: 'SPARE' };
 
 // SW ↔ hub
 export type Hub2S =
-  | { t: 'WATCHER'; profile: string | null; targets?: string[] }
+  | { t: 'WATCHER'; profile: string | null; targets?: string[]; profiles?: string[] }
   | { t: 'OPEN'; at: number; buyable: string[]; source: string }
   | { t: 'WIN'; orderId: string; profile: string; takeover?: boolean }
   | { t: 'LOSE'; orderId: string }
   | { t: 'CLEAN'; orderId: string }
   | { t: 'PAY_TURN'; orderId: string; profile: string }
-  | { t: 'PONG' };
+  | { t: 'PONG' }
+  // режим бота (§13)
+  | { t: 'CONFIG'; cfg: Config }
+  | { t: 'ASSIGN'; order: OrderCfg }
+  | { t: 'SPARE' }
+  | { t: 'UNASSIGN'; orderId: string; reason: string }
+  | { t: 'SET_STRATEGY'; strategy: Strategy; reason?: string }
+  | { t: 'PLACE_TURN'; orderId: string }
+  | { t: 'CARD_SWAP'; orderId: string; cardId: string; card: OrderCfg['card']; billing: OrderCfg['billing'] }
+  | { t: 'SWITCH_PAY'; orderId: string; method: 'applepay' }
+  | { t: 'COMMAND'; cmd: BotCommand; arg?: string }
+  | { t: 'CLICK_DONE'; ok: boolean; how: 'cdp' | 'os'; error?: string }
+  | { t: 'REJECT'; reason: string };
 
 export type S2Hub =
-  | { t: 'REGISTER'; profile: string; orderId: string | null; priority: number; tabs: number; targets: string[] }
+  | { t: 'REGISTER'; profile: string; orderId: string | null; priority: number; tabs: number; targets: string[]; bot?: BotRegister }
   | { t: 'OPEN'; profile: string; buyable: string[]; source: string }
   | { t: 'WIN_REQ'; orderId: string; profile: string }
   | { t: 'FAILED'; orderId: string; profile: string; reason: string }
-  | { t: 'PAY_READY'; orderId: string; profile: string; priority: number; store: string; slotLabel: string; readyAt: number; record?: OrderRecord }
+  | { t: 'PAY_READY'; orderId: string; profile: string; priority: number; store: string; slotLabel: string; readyAt: number; record?: OrderRecord; method?: string }
   | { t: 'PAY_DONE'; orderId: string; profile: string; stage: string }
   | { t: 'NEXT' }
   | { t: 'ORDERED'; orderId: string; profile: string; orderNo: string; record?: OrderRecord }
   | { t: 'STATUS'; profile: string; orderId: string | null; stage?: string; tabs: TabRow[]; openedAt?: number }
   | { t: 'LOG'; line: string }
-  | { t: 'PING' };
+  | { t: 'PING' }
+  // режим бота (§13)
+  | { t: 'STATE'; profile: string; orderId: string | null; state: string; since: number; mode: Mode; detail?: string; page?: string; step?: string; path?: string; error?: string; reloads?: number; perf?: StepPerf; beat?: boolean; manual?: boolean }
+  | { t: 'SNAPSHOT'; profile: string; reason: string; cls: string; url: string; title: string; html: string; status: number; metaRefresh?: number; headers?: Record<string, string> }
+  | { t: 'ADMITTED'; profile: string; at: number; part?: string; reloads?: number }
+  | { t: 'RELEASED'; profile: string; orderId: string; reason: string }
+  | { t: 'PLACE_REQ'; profile: string; orderId: string }
+  | { t: 'PLACED'; profile: string; orderId: string; at: number }
+  | { t: 'PAY_WAIT'; profile: string; orderId: string; kind: PayWaitKind; input?: boolean; detail?: string }
+  | { t: 'CARD_DECLINED'; profile: string; orderId: string; text: string }
+  | { t: 'CARD_SWAP_ACK'; profile: string; orderId: string; cardId?: string; ok: boolean; detail?: string }
+  | { t: 'CARD_REQ'; profile: string; orderId: string }
+  | { t: 'NEED_HUMAN'; profile: string; orderId: string | null; reason: HumanReason; step: string; text: string }
+  | { t: 'HUMAN_DONE'; profile: string }
+  | { t: 'HUMAN'; profile: string; action: 'resume' | 'manual' | 'stop' }
+  | { t: 'CLICK_REQ'; profile: string; purpose: 'applepay'; how: 'cdp' | 'os'; target: ClickTarget }
+  | { t: 'BLOCKED'; profile: string; status: number; text: string }
+  | { t: 'PREPARED'; profile: string; ok: boolean; detail: string }
+  | { t: 'CLEANED'; profile: string; count: number };
+
+/** Что браузер сообщает о себе при (пере)подключении — хаб восстанавливает картину после перезапуска (§3.6). */
+export interface BotRegister {
+  token: string;
+  state: string;
+  mode: Mode;
+  inBag: boolean;
+  leader: boolean;
+  placed: boolean;
+  payMethod?: string;
+  orderNo?: string;
+  openedAt?: number;
+  ext: string;
+}
 
 export interface TabRow {
   tabId: number;
@@ -204,6 +304,9 @@ export interface OrderRecord {
   orderedAt?: number;
   orderNo?: string;
   status: 'BILLING_READY' | 'ORDERED';
+  /** Режим бота: машина и последние 4 цифры карты. */
+  machine?: string;
+  cardLast4?: string;
 }
 
 // popup/options → SW

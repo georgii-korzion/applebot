@@ -1,4 +1,6 @@
 // Плашка статуса на странице (§7.9): Shadow DOM, правый верхний угол, не перекрывает кнопки Apple.
+// Режим бота (BOT-SPEC §10): кнопки «Продолжить автоматику», «Дальше я сам», «Стоп».
+declare const __DEV__: boolean;
 
 export interface OverlayData {
   profile: string;
@@ -27,6 +29,7 @@ const CSS = `
 .btns { display: flex; gap: 6px; margin-top: 6px; }
 button { all: unset; cursor: pointer; background: #3a3a3c; color: #f5f5f7; padding: 2px 8px; border-radius: 6px; font-size: 11px; }
 button:hover { background: #48484a; }
+button.go { background: #248a3d; } button.stop { background: #8e1b14; }
 .banner { pointer-events: auto; position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 2147483647; max-width: min(760px, calc(100vw - 32px)); background: #0071e3; color: #fff; border-radius: 14px; padding: 14px 20px; font-size: 17px; font-weight: 600; box-shadow: 0 8px 30px rgba(0,0,0,.35); text-align: center; }
 .banner.ok { background: #248a3d; } .banner.warn { background: #b25000; }
 .banner small { display: block; font-size: 12px; font-weight: 400; opacity: .9; margin-top: 4px; }
@@ -42,10 +45,14 @@ export class Overlay {
   private tick: ReturnType<typeof setInterval>;
   onPause: (paused: boolean) => void = () => {};
   onHide: (hidden: boolean) => void = () => {};
+  /** Режим бота: кнопки человека. */
+  bot = false;
+  onHuman: (action: 'resume' | 'manual' | 'stop') => void = () => {};
 
   constructor(hidden = false) {
     this.host = document.createElement('apple-drop-assistant');
-    this.root = this.host.attachShadow({ mode: 'closed' });
+    // dev-сборка: открытый shadow root — e2e кликает кнопки плашки как человек
+    this.root = this.host.attachShadow({ mode: typeof __DEV__ !== 'undefined' && __DEV__ ? 'open' : 'closed' });
     const style = document.createElement('style');
     style.textContent = CSS;
     const wrap = document.createElement('div');
@@ -100,7 +107,7 @@ export class Overlay {
     }
     const head = row(`${d.profile || '—'} · заказ ${d.order || '—'}`, d.role ?? '');
     const st = document.createElement('div');
-    st.className = 'state' + (/STUCK|TIMEOUT|ERROR/.test(d.state) ? ' err' : /ASSIST|PAUSE|STANDBY|COUNTRY|CLOSED|BUSY|QUEUE|NEED_HUMAN/.test(d.state) ? ' warn' : '');
+    st.className = 'state' + (/STUCK|TIMEOUT|ERROR|BLOCKED|DECLINED/.test(d.state) ? ' err' : /ASSIST|PAUSE|STANDBY|COUNTRY|CLOSED|BUSY|QUEUE|NEED_HUMAN|HOLD|CAPTCHA|WAIT_|SPARE|MANUAL/.test(d.state) ? ' warn' : '');
     st.textContent = d.paused ? `⏸ ${d.state}` : d.state;
     const det = document.createElement('div');
     det.className = 'detail';
@@ -112,13 +119,32 @@ export class Overlay {
     const counters = row(`рефреши ${d.reloads} · 404 ${d.atb404}`, timer);
     const btns = document.createElement('div');
     btns.className = 'btns';
-    const pause = document.createElement('button');
-    pause.textContent = d.paused ? 'Продолжить' : 'Пауза';
-    pause.onclick = () => this.onPause(!d.paused);
     const hide = document.createElement('button');
     hide.textContent = 'Скрыть';
     hide.onclick = () => { this.minimized = true; this.onHide(true); this.render(); };
-    btns.append(pause, hide);
+    if (this.bot) {
+      const mk = (text: string, cls: string, action: 'resume' | 'manual' | 'stop', title: string) => {
+        const b = document.createElement('button');
+        b.textContent = text;
+        b.className = cls;
+        b.title = title;
+        b.dataset.ada = action;
+        b.onclick = () => this.onHuman(action);
+        return b;
+      };
+      btns.style.flexWrap = 'wrap';
+      btns.append(
+        mk('Продолжить автоматику', 'go', 'resume', 'Я поправил — бот продолжает с текущего шага'),
+        mk('Дальше я сам', '', 'manual', 'Бот перестаёт действовать в этой вкладке, но ловит номер заказа'),
+        mk('Стоп', 'stop', 'stop', 'Браузер выходит из гонки; заказ возвращается в пул, если Place Order не нажат'),
+        hide,
+      );
+    } else {
+      const pause = document.createElement('button');
+      pause.textContent = d.paused ? 'Продолжить' : 'Пауза';
+      pause.onclick = () => this.onPause(!d.paused);
+      btns.append(pause, hide);
+    }
     p.append(head, st, det, counters, btns);
   }
 }

@@ -18,10 +18,29 @@ import { fulfillmentStep, shippingStep } from './steps/fulfillment';
 import { contactStep } from './steps/contact';
 import { checkPayTimeout, onFocusForPay, ordered, paymentStep, reviewStep, showPayBanner, watchForOrderNo } from './steps/payment';
 import { cleanStep, prepStep, standbyStep } from './steps/prepare';
+import { blockedStep, captchaStep, manualStep, snapshot, snapshotNewClass } from './steps/bot';
+import { notePlaceTurn, onCardSwap, onSwitchPay } from './steps/botPay';
+import { newTabState } from '../shared/messages';
 
 async function dispatch(c: Ctl): Promise<void> {
   const page = classify();
+  c.pageKind = page.kind;
+  c.pageStep = page.step ?? '';
   if (c.ts.paused) { c.renderOverlay(); return; }
+  if (c.ts.mode !== 'idle') snapshotNewClass(c, page);
+  // режим бота: «Дальше я сам» — только наблюдаем и ловим номер заказа (§10)
+  if (c.ts.manual && c.ts.mode !== 'idle') {
+    if (page.kind === 'thankyou') { ordered(c, page.orderNo!); return; }
+    manualStep(c, page);
+    return;
+  }
+  if (page.kind !== 'blocked' && c.ts.blockedInRow) { c.ts.blockedInRow = 0; void c.save(); }
+  if (page.kind === 'captcha' && c.ts.mode !== 'idle') { captchaStep(c, page); return; }
+  if (page.kind === 'blocked' && c.ts.mode !== 'idle') {
+    if (c.ts.mode === 'race' && c.ts.atbPendingSince) { c.ts.atbPendingSince = undefined; c.send({ t: 'ATB_RESULT', ok: false, outcome: 'BUSY' }); }
+    blockedStep(c, page);
+    return;
+  }
   if (c.ts.mode === 'idle') {
     ensureWatcher(c);
     c.renderOverlay();
@@ -276,19 +295,89 @@ function onSwMessage(c: Ctl, m: S2C): void {
     case 'FOCUS_FOR_PAY':
       onFocusForPay(c);
       break;
-    case 'CONFIG':
+    case 'CONFIG': {
+      const prevId = c.order?.lobby ? '' : c.order?.id ?? '';
       c.cfg = m.cfg;
       c.order = m.order;
+      c.overlay.bot = c.bot;
       c.renderOverlay();
+      const nextId = c.order?.lobby ? '' : c.order?.id ?? '';
+      // режим бота: пришёл заказ (ASSIGN) — цель заказа, дальше Add to Bag (§6.3–6.4)
+      if (c.bot && c.ts.mode === 'race' && nextId && nextId !== prevId) {
+        c.ts.target = c.os.activeTarget && c.order?.targets.includes(c.os.activeTarget) ? c.os.activeTarget : c.order!.targets[0];
+        c.os.spare = false;
+        void c.save();
+        c.log(`заказ ${nextId} назначен — цель ${c.ts.target}`);
+        c.rerun('assigned');
+      } else if (c.bot && c.ts.mode === 'race' && ['HOLD', 'CLOSED', 'BUSY', 'QUEUE'].includes(c.ts.state)) c.rerun('config');
+      break;
+    }
+    case 'SPARE':
+      c.os.spare = true;
+      if (c.ts.mode === 'race') c.rerun('spare');
+      break;
+    case 'PLACE_TURN':
+      notePlaceTurn();
+      break;
+    case 'CARD_SWAP':
+      onCardSwap(c);
+      break;
+    case 'SWITCH_PAY':
+      onSwitchPay(c);
+      break;
+    case 'SNAP_REQ':
+      snapshot(c, classify(), m.reason);
+      break;
+    case 'CMD':
+      onCmd(c, m.cmd);
       break;
     case 'MODE':
       c.stopAll();
       c.overlay.banner(null);
+      // reset: новый цикл (бот: назад в пул) — состояние прошлого заказа не тянем
+      if (m.reset) c.ts = { ...newTabState(m.mode), hidden: c.ts.hidden, snapClasses: c.ts.snapClasses, warmedUp: c.ts.warmedUp, stateSince: Date.now() };
       c.setMode(m.mode, m.extra ?? {});
       c.setState('INIT', `режим ${m.mode}`);
       c.rerun('mode');
       break;
     default:
+      break;
+  }
+}
+
+/** Команды хаба (§13 COMMAND) и кнопки плашки (§10). */
+function onCmd(c: Ctl, cmd: string): void {
+  switch (cmd) {
+    case 'resume':
+      c.ts.manual = false;
+      c.ts.paused = false;
+      c.ts.captchaSince = undefined;
+      c.overlay.banner(null);
+      c.log('человек: продолжить автоматику');
+      if (c.ts.mode === 'idle' && c.ts.state === 'STOPPED' && c.os.armed) c.setMode('race', { ...newTabState('race'), target: c.target() });
+      c.setState(c.ts.state === 'STUCK' || c.ts.state === 'NEED_HUMAN' || c.ts.state === 'MANUAL' ? 'INIT' : c.ts.state, 'продолжаю после человека');
+      c.send({ t: 'HUMAN_DONE' });
+      c.rerun('human-resume');
+      break;
+    case 'manual':
+      c.stopAll();
+      c.ts.manual = true;
+      void c.save();
+      c.log('человек: дальше сам — бот только наблюдает');
+      c.send({ t: 'HUMAN_DONE' });
+      manualStep(c, classify());
+      break;
+    case 'stop':
+      becomeStopped(c, 'Стоп');
+      break;
+    case 'reload_target':
+      void c.navigate(c.targetUrl(), 'команда: к странице цели', true);
+      break;
+    case 'reload':
+      void c.reload('команда хаба');
+      break;
+    case 'snapshot':
+      snapshot(c, classify(), 'manual', true);
       break;
   }
 }
@@ -307,7 +396,13 @@ async function main(): Promise<void> {
   c.onMessage = (m) => onSwMessage(c, m);
   setFallbackReporter((key, how) => c.log(`селектор «${key}» не найден — нашёл по: ${how}. После дропа обновить selectors.ts`, 'warn'));
   await c.connect();
-  c.overlay = new Overlay(c.ts.hidden ?? c.ts.mode === 'idle');
+  c.overlay = new Overlay(c.ts.hidden ?? (c.ts.mode === 'idle' && !c.bot));
+  c.overlay.bot = c.bot;
+  c.overlay.onHuman = (action) => {
+    c.send({ t: 'HUMAN', action });
+    if (action === 'stop') { c.ts.manual = false; becomeStopped(c, 'Стоп (человек): браузер вышел из гонки'); return; }
+    onCmd(c, action);
+  };
   c.overlay.onPause = (paused) => {
     c.ts.paused = paused;
     void c.save();

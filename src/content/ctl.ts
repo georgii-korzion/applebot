@@ -6,6 +6,8 @@ import { newTabState } from '../shared/messages';
 import { partUrl } from '../shared/parts';
 import { Aborted, sleep } from './dom';
 import { Overlay } from './overlay';
+import { addNavigation, perf, resetPerf } from './perf';
+import type { HumanReason, StepPerf } from '../shared/bot';
 
 type Welcome = Extract<S2C, { t: 'WELCOME' }>;
 
@@ -24,6 +26,11 @@ export class Ctl {
   overlay!: Overlay;
   /** Последний успешный опрос страховочного поллера в SW (сообщение SW_WATCH). */
   swWatchAt = 0;
+  /** Режим бота (BOT-SPEC): конфиг от хаба, заказ назначается после ADMITTED. */
+  bot = false;
+  /** Класс текущей страницы (для пульса STATE в хаб). */
+  pageKind = '';
+  pageStep = '';
 
   private ac = new AbortController();
   private timers = new Set<ReturnType<typeof setTimeout>>();
@@ -40,6 +47,10 @@ export class Ctl {
 
   get signal(): AbortSignal { return this.ac.signal; }
   get t() { return this.cfg.timing; }
+  /** Настройки бота (только в режиме бота). */
+  get b() { return this.cfg.bot; }
+  /** Режим бота, заказа ещё нет (ждём ASSIGN). */
+  get lobby(): boolean { return this.bot && !!this.order?.lobby; }
   get base(): string { return this.cfg.baseUrl; }
 
   target(): string {
@@ -81,10 +92,15 @@ export class Ctl {
     try { this.port?.postMessage(m); } catch { /* порт закрыт — переподключимся */ }
   }
 
-  request<T extends S2C['t']>(m: C2S, reply: T, timeout: number): Promise<Extract<S2C, { t: T }> | null> {
+  /** Запрос к SW с ответом заданного типа; null — таймаут или шаг прерван (signal). */
+  request<T extends S2C['t']>(m: C2S, reply: T, timeout: number, signal?: AbortSignal): Promise<Extract<S2C, { t: T }> | null> {
     return new Promise((resolve) => {
-      const to = setTimeout(() => { this.waiters.delete(reply); resolve(null); }, timeout);
-      this.waiters.set(reply, (x) => { clearTimeout(to); this.waiters.delete(reply); resolve(x as Extract<S2C, { t: T }>); });
+      const done = (x: Extract<S2C, { t: T }> | null) => { clearTimeout(to); signal?.removeEventListener('abort', onAbort); if (this.waiters.get(reply) === waiter) this.waiters.delete(reply); resolve(x); };
+      const onAbort = () => done(null);
+      const to = setTimeout(() => done(null), timeout);
+      const waiter = (x: S2C) => done(x as Extract<S2C, { t: T }>);
+      this.waiters.set(reply, waiter);
+      signal?.addEventListener('abort', onAbort, { once: true });
       this.send(m);
     });
   }
@@ -105,8 +121,12 @@ export class Ctl {
       this.os = m.os;
       this.role = m.role;
       this.hub = m.hub;
+      this.bot = !!m.bot;
       if (first) {
         this.ts = m.ts;
+        this.ts.stateSince ??= Date.now();
+        resetPerf(this.ts.perf);
+        addNavigation();
         this.welcomeResolve!(m);
         this.welcomeResolve = null;
       }
@@ -129,12 +149,22 @@ export class Ctl {
   setState(state: string, detail?: string, patch: Partial<TabState> = {}): void {
     Object.assign(this.ts, patch);
     const changed = this.ts.state !== state || this.ts.detail !== detail;
+    let stepPerf: StepPerf | undefined;
+    if (this.ts.state !== state) {
+      // время шага для bot bench (§20): всего / сеть / ожидание / пауза
+      const now = Date.now();
+      stepPerf = { state: this.ts.state, ms: now - (this.ts.stateSince ?? now), net: Math.round(perf.net), wait: Math.round(perf.wait), pause: Math.round(perf.pause) };
+      this.ts.stateSince = now;
+      resetPerf();
+    }
+    this.ts.perf = { net: perf.net, wait: perf.wait, pause: perf.pause };
     this.ts.state = state;
     this.ts.detail = detail;
     void this.save();
     this.send({
       t: 'STATE', state, mode: this.ts.mode, detail, outcome: this.ts.lastOutcome,
       counters: { reloads: this.ts.reloads, atb404: this.ts.atb404InRow },
+      page: this.pageKind, step: this.pageStep, since: this.ts.stateSince, perf: stepPerf,
     });
     const line = `${state}${detail ? ` — ${detail}` : ''}`;
     if (changed && line !== this.lastLogged) {
@@ -255,6 +285,11 @@ export class Ctl {
 
   alert(title: string, msg: string): void {
     this.send({ t: 'ALERT', title, msg, sound: 'alert' });
+  }
+
+  /** Режим бота: позвать человека через очередь внимания хаба (§10). */
+  needHuman(reason: HumanReason, text: string): void {
+    if (this.bot) this.send({ t: 'NEED_HUMAN', reason, step: this.ts.state, text });
   }
 
   /** Лок Add to Bag от SW (§7.1). false — заказ уже в корзине другой вкладки. */

@@ -12,6 +12,9 @@ import { notify, playSound } from './notify';
 import { focusTab } from './windows';
 import { assignRoles, computeRoles } from './watcher';
 import { forgetTab, recent } from './diag';
+import { assignedId, botInit, mainTab, onBotHub, onBotTabMsg, release, sendState, setFullscreen, startBot, startHeartbeat } from './bot';
+import type { Bootstrap } from './bootstrap';
+import type { StepPerf } from '../shared/bot';
 
 export interface TabInfo {
   tabId: number;
@@ -26,6 +29,13 @@ export interface TabInfo {
   reloads: number;
   atb404: number;
   updatedAt: number;
+  // режим бота: пульс STATE в хаб (§11)
+  since?: number;
+  page?: string;
+  step?: string;
+  lastError?: string;
+  manual?: boolean;
+  perf?: StepPerf;
 }
 
 interface PayItem { tabId: number; orderId: string; priority: number; readyAt: number; store: string; slotLabel: string }
@@ -40,6 +50,10 @@ export class Orchestrator {
   logs = new LogStore();
   hub: HubClient;
   watcherProfile: string | null = null;
+  /** Наблюдатели JSON (с хабом бота — два, на разных IP, §7). */
+  watcherProfiles: string[] = [];
+  /** Режим бота (bootstrap.json) или null — автономный режим. */
+  bot: Bootstrap | null = null;
   payQueue: PayItem[] = [];
   payActive: number | null = null;
   ready: Promise<void>;
@@ -63,8 +77,11 @@ export class Orchestrator {
 
   private async init(): Promise<void> {
     await this.logs.load();
-    this.cfg = await loadConfig();
-    this.order = orderFor(this.cfg) ?? null;
+    const isBot = await botInit(this);
+    if (!isBot) {
+      this.cfg = await loadConfig();
+      this.order = orderFor(this.cfg) ?? null;
+    }
     const s = await chrome.storage.session.get([K.order, QUEUE_KEY]);
     this.os = { ...newOrderState(), ...(s[K.order] ?? {}) };
     const pq = (s[QUEUE_KEY] ?? {}) as { queue?: PayItem[]; active?: number | null };
@@ -72,10 +89,11 @@ export class Orchestrator {
     this.payActive = pq.active ?? null;
     this.hub.setUrl(this.cfg.hubUrl);
     this.ensureSwWatch();
+    if (isBot) startHeartbeat(this);
   }
 
   /** Вкладку гонки/чекаута Chrome не должен выгружать (Memory Saver): content script там — вся логика. */
-  private keepTab(tabId: number): void {
+  keepTab(tabId: number): void {
     chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
   }
 
@@ -83,13 +101,13 @@ export class Orchestrator {
   log(tab: number | string, state: string, msg: string, level: 'info' | 'warn' | 'error' = 'info'): void {
     const line = fmtLine({
       ts: Date.now(), openedAt: this.os.openedAt, openAt: Date.parse(this.cfg?.openAt ?? ''),
-      profile: this.cfg?.profileId ?? '?', order: this.order?.id ?? '-', tab, state, msg: scrub(msg), level,
+      profile: this.cfg?.profileId ?? '?', order: this.order?.lobby ? 'пул' : this.order?.id ?? '-', tab, state, msg: scrub(msg, this.bot ? this.cfg?.bot?.privacy : undefined), level,
     });
     this.logs.push(line);
     this.hub.send({ t: 'LOG', line });
   }
 
-  private async saveOs(push = false): Promise<void> {
+  async saveOs(push = false): Promise<void> {
     await chrome.storage.session.set({ [K.order]: this.os });
     if (push) for (const t of this.tabs.values()) this.sendTab(t.tabId, { t: 'OS', os: this.os }, false);
     this.hubStatusSoon();
@@ -108,11 +126,11 @@ export class Orchestrator {
     if (queue) this.pendingCmds.set(tabId, [...(this.pendingCmds.get(tabId) ?? []), m]);
   }
 
-  private broadcast(m: S2C, filter: (t: TabInfo) => boolean = () => true): void {
+  broadcast(m: S2C, filter: (t: TabInfo) => boolean = () => true): void {
     for (const t of this.tabs.values()) if (filter(t)) this.sendTab(t.tabId, m);
   }
 
-  private async initTab(tabId: number, ts: TabState): Promise<void> {
+  async initTab(tabId: number, ts: TabState): Promise<void> {
     this.pendingInit.set(tabId, ts);
     await chrome.storage.session.set({ [K.tab(tabId)]: ts });
   }
@@ -150,7 +168,7 @@ export class Orchestrator {
       t.role = role;
       port.postMessage({
         t: 'WELCOME', tabId, windowId, profileId: this.cfg.profileId, cfg: this.cfg, order: this.order,
-        os: this.os, ts, role, hub: this.hub.connected,
+        os: this.os, ts, role, hub: this.hub.connected, bot: !!this.bot,
       } satisfies S2C);
       const queued = this.pendingCmds.get(tabId);
       if (queued) { this.pendingCmds.delete(tabId); for (const q of queued) port.postMessage(q); }
@@ -159,17 +177,23 @@ export class Orchestrator {
     }
     if (!t) return; // сообщение до HELLO — игнор
     t.updatedAt = Date.now();
+    if (onBotTabMsg(this, tabId, t, m)) return;
     switch (m.t) {
       case 'STATE': {
         const modeChanged = t.mode !== m.mode;
-        Object.assign(t, { state: m.state, mode: m.mode, detail: m.detail, outcome: m.outcome });
+        const enteringStuck = m.state === 'STUCK' && t.state !== 'STUCK';
+        if (t.state !== m.state || t.since === undefined) t.since = m.since ?? Date.now();
+        Object.assign(t, { state: m.state, mode: m.mode, detail: m.detail, outcome: m.outcome, page: m.page ?? t.page, step: m.step, perf: m.perf });
         if (m.counters) { t.reloads = m.counters.reloads; t.atb404 = m.counters.atb404; }
+        if (this.bot && mainTab(this) === t) sendState(this, t, false);
         if (modeChanged || m.state === 'STUCK') assignRoles(this);
+        // бот: любой STUCK — в очередь внимания человека (§10)
+        if (this.bot && enteringStuck) this.hub.send({ t: 'NEED_HUMAN', profile: this.cfg.profileId, orderId: assignedId(this), reason: 'stuck', step: m.state, text: m.detail ?? 'STUCK' });
         if (tabId === this.os.winnerTabId && m.mode === 'checkout' && this.os.stage !== m.state) {
           this.os.stage = m.state;
           void this.saveOs();
         }
-        if (m.state === 'STUCK' && tabId === this.os.winnerTabId && m.mode === 'checkout') this.onWinnerFailed(tabId, m.detail ?? 'STUCK');
+        if (!this.bot && m.state === 'STUCK' && tabId === this.os.winnerTabId && m.mode === 'checkout') this.onWinnerFailed(tabId, m.detail ?? 'STUCK');
         // следующий на оплату — только после номера заказа или кнопки «Следующий»: Review теперь открывает само расширение
         if (m.state === 'ORDERED' && tabId === this.payActive) void this.advancePay(m.state);
         this.hubStatusSoon();
@@ -177,6 +201,7 @@ export class Orchestrator {
       }
       case 'LOG':
         this.log(tabId, m.state ?? t.state, m.msg, m.level);
+        if (m.level !== 'info' && m.msg) t.lastError = m.msg.slice(0, 200);
         break;
       case 'OPEN':
         await this.onOpen(m.source, m.buyable, false);
@@ -227,11 +252,13 @@ export class Orchestrator {
         void notify({ id: `ordered-${tabId}`, title: `Заказ ${this.order?.id}: оформлен ✅`, message: m.orderNo, tabId, sound: 'done', sticky: true });
         const rec = await this.recordOrder({ orderNo: m.orderNo, orderedAt: Date.now(), status: 'ORDERED' });
         if (this.order) this.hub.send({ t: 'ORDERED', orderId: this.order.id, profile: this.cfg.profileId, orderNo: m.orderNo, record: rec });
+        if (this.bot) { this.os.payWait = undefined; void setFullscreen(t.windowId, false); }
         if (tabId === this.payActive) await this.advancePay('ORDERED');
         break;
       }
       case 'ASSIST':
         this.log(tabId, 'ASSIST', `${m.step}: ${m.msg}`, 'warn');
+        if (this.bot) this.hub.send({ t: 'NEED_HUMAN', profile: this.cfg.profileId, orderId: assignedId(this), reason: 'assist', step: t.state, text: `${m.step}: ${m.msg}` });
         await focusTab(tabId);
         void notify({ id: `assist-${tabId}`, title: `Заказ ${this.order?.id}: нужен клик`, message: m.msg, tabId, sound: 'assist', sticky: true });
         break;
@@ -243,12 +270,18 @@ export class Orchestrator {
         this.sendTab(tabId, { t: 'DIAG', net: recent(tabId) }, false);
         break;
       case 'PREPARED':
+        if (this.bot) this.hub.send({ t: 'PREPARED', profile: this.cfg.profileId, ok: m.ok, detail: m.detail });
         await chrome.storage.local.set({ [K.prepared]: { ok: m.ok, detail: m.detail, at: Date.now() } });
         this.log(tabId, m.ok ? 'PREPARED' : 'PREP_FAILED', m.detail, m.ok ? 'info' : 'warn');
         void notify({ title: m.ok ? `Профиль ${this.cfg.profileId} готов ✓` : `Профиль ${this.cfg.profileId}: Prepare не прошёл`, message: m.detail, tabId, sound: m.ok ? undefined : 'alert' });
         break;
       case 'CLEANED':
         this.log(tabId, 'CLEANED', `корзина очищена, удалено ${m.count}`);
+        if (this.bot) {
+          this.hub.send({ t: 'CLEANED', profile: this.cfg.profileId, count: m.count });
+          // запас почистил корзину (CLEAN после оплаты лидера / снят заказ) — назад в пул (§6.5)
+          if (this.os.armed && (assignedId(this) || this.os.inBag)) await release(this, tabId, 'корзина очищена');
+        }
         break;
       case 'STORE':
         await this.onStore(tabId, m.closed, m.reason);
@@ -281,6 +314,19 @@ export class Orchestrator {
     if (!url) return;
     // вкладку, открытую Start, могло увести ещё до первого запуска content script
     const mode = this.tabs.get(tabId)?.mode ?? (this.os.raceTabs.includes(tabId) ? 'race' : undefined);
+    if (this.bot && mode === 'checkout' && this.os.placedAt && !this.os.payWait && complete) {
+      // после Place Order ушли со страниц Apple — это банк (3-D Secure, §9.1): страницу банка не трогаем
+      try {
+        const u = new URL(url);
+        if (!u.hostname.endsWith('apple.com') && !url.startsWith(this.cfg.baseUrl)) {
+          this.os.payWait = 'WAIT_3DS';
+          void this.saveOs();
+          this.log(tabId, 'WAIT_3DS', `после Place Order — страница банка ${u.hostname}`);
+          const oid = assignedId(this);
+          if (oid) this.hub.send({ t: 'PAY_WAIT', profile: this.cfg.profileId, orderId: oid, kind: '3ds', input: true, detail: u.hostname });
+        }
+      } catch { /* */ }
+    }
     // только гонка и прогрев: в чекауте возможны 3-D Secure и действия человека — не вмешиваемся
     if (!mode || !['race', 'prep'].includes(mode)) return;
     let u: URL;
@@ -298,6 +344,12 @@ export class Orchestrator {
     }
     if (!this.os.armed || !this.order) return;
     if (n === 2) void this.onStore(tabId, true, `редирект вне /ae/: ${u.pathname}`);
+    if (this.holdActive()) {
+      // стратегия hold (§7): заглушку вне /ae/ тоже не трогаем, пока не выйдет терпение
+      if (n === 1) this.log(tabId, 'HOLD', `заглушка вне /ae/ (${u.pathname}) — hold: не уводим`);
+      this.scheduleBack(tabId, Math.max(1000, Date.parse(this.cfg.openAt) + (this.cfg.bot?.holdMaxWaitSec ?? 0) * 1000 - Date.now()));
+      return;
+    }
     if (n === 3) void notify({ id: `away-${tabId}`, title: `Заказ ${this.order.id}: вкладку уводит с /ae/`, message: 'Возвращаю на страницу товара по расписанию. Если это не закрытие магазина — проверь VPN/гео.', tabId });
     this.scheduleBack(tabId, n === 1 ? 0 : closedReloadMs(this.cfg, this.os.openedAt));
   }
@@ -310,6 +362,14 @@ export class Orchestrator {
       const url = partUrl(this.cfg.baseUrl, this.os.activeTarget ?? this.order.targets[0]);
       void chrome.tabs.update(tabId, { url }).catch(() => {});
     }, ms));
+  }
+
+  /** hold (§7): с openAt−120 с до openAt+holdMaxWaitSec заглушку не перезагружаем. */
+  holdActive(now = Date.now()): boolean {
+    const b = this.cfg.bot;
+    if (!this.bot || b?.strategy !== 'hold') return false;
+    const openAt = Date.parse(this.cfg.openAt);
+    return Number.isFinite(openAt) && now >= openAt - 120_000 && now < openAt + b.holdMaxWaitSec * 1000;
   }
 
   private clearAway(tabId: number): void {
@@ -379,7 +439,7 @@ export class Orchestrator {
   // (таймеры, Memory Saver), поэтому SW опрашивает сам, пока вкладка не подтверждает тиками, что жива.
   ensureSwWatch(): void {
     const me = this.cfg.profileId;
-    const otherWatches = this.hub.connected && !!this.watcherProfile && this.watcherProfile !== me;
+    const otherWatches = this.hub.connected && this.watcherProfiles.length > 0 && !this.watcherProfiles.includes(me);
     const should = this.os.armed && !this.os.openedAt && !!this.order && !otherWatches;
     if (!should) { clearTimeout(this.swWatchTimer); this.swWatchTimer = undefined; return; }
     if (this.swWatchTimer) return;
@@ -488,6 +548,13 @@ export class Orchestrator {
   }
 
   private onWinnerFailed(tabId: number, reason: string): void {
+    if (this.bot) {
+      // бот: заказ не отдаём сразу — сначала человек (§10); «Стоп» на плашке отпустит заказ в пул
+      this.log(tabId, 'STUCK', `чекаут остановился: ${reason} — зову человека`, 'warn');
+      this.hub.send({ t: 'NEED_HUMAN', profile: this.cfg.profileId, orderId: assignedId(this), reason: 'stuck', step: this.tabs.get(tabId)?.state ?? 'STUCK', text: reason });
+      if (!this.hub.connected) void notify({ title: `Заказ ${this.order?.id}: чекаут остановился`, message: reason, tabId, sound: 'alert' });
+      return;
+    }
     this.log(tabId, 'FAILED', `победитель упал на чекауте: ${reason}`, 'warn');
     if (this.order && this.hub.connected) this.hub.send({ t: 'FAILED', orderId: this.order.id, profile: this.cfg.profileId, reason });
     void notify({ title: `Заказ ${this.order?.id}: чекаут остановился`, message: reason, tabId, sound: 'alert' });
@@ -510,8 +577,12 @@ export class Orchestrator {
       store: this.os.store ?? '', storeName: storeName(this.os.store), slotLabel: this.os.slotLabel ?? '',
       firstName: o.contact.firstName, lastName: o.contact.lastName, email: o.contact.email, phone: o.contact.phone,
       payment: o.payment, openedAt: this.os.openedAt, billingAt: this.os.billingReadyAt ?? Date.now(), status: 'BILLING_READY',
+      ...(this.bot ? { machine: this.cfg.bot?.machine ?? '' } : {}),
     };
-    const rec: OrderRecord = { ...base, ...patch, store: this.os.store ?? base.store, storeName: storeName(this.os.store ?? base.store), slotLabel: this.os.slotLabel ?? base.slotLabel };
+    const rec: OrderRecord = {
+      ...base, ...patch, store: this.os.store ?? base.store, storeName: storeName(this.os.store ?? base.store), slotLabel: this.os.slotLabel ?? base.slotLabel,
+      payment: o.payment, ...(o.payment === 'manual' && o.card.number ? { cardLast4: o.card.number.slice(-4) } : {}),
+    };
     const next = [...list.filter((r) => r.key !== key), rec].slice(-200);
     await chrome.storage.local.set({ orders: next });
     return rec;
@@ -537,7 +608,7 @@ export class Orchestrator {
     const rec = await this.recordOrder({ price, billingAt: Date.now(), status: 'BILLING_READY' });
     const item: PayItem = { tabId, orderId: this.order?.id ?? '?', priority: this.order?.priority ?? 99, readyAt: Date.now(), store, slotLabel };
     if (this.hub.connected && this.order) {
-      this.hub.send({ t: 'PAY_READY', orderId: item.orderId, profile: this.cfg.profileId, priority: item.priority, store, slotLabel, readyAt: item.readyAt, record: rec });
+      this.hub.send({ t: 'PAY_READY', orderId: item.orderId, profile: this.cfg.profileId, priority: item.priority, store, slotLabel, readyAt: item.readyAt, record: rec, method });
       return;
     }
     this.payQueue = [...this.payQueue.filter((p) => p.tabId !== tabId), item].sort((a, b) => a.priority - b.priority || a.readyAt - b.readyAt);
@@ -559,6 +630,8 @@ export class Orchestrator {
     const label = `Заказ ${o?.id ?? '?'}: ${what}`;
     this.log(tabId, 'PAYING', `на оплату: ${storeName(this.os.store)} · ${this.os.slotLabel ?? ''}`);
     this.sendTab(tabId, { t: 'FOCUS_FOR_PAY', label });
+    // бот с картой: Review и Place Order жмёт сам, человек нужен только в приложении банка — окно не дёргаем
+    if (this.bot && (o?.payment === 'manual' || this.cfg.bot?.stopBeforePay)) return;
     await focusTab(tabId);
     void notify({ id: `pay-${tabId}`, title: label, message: `${storeName(this.os.store)} · ${this.os.slotLabel ?? ''}`, tabId, sound: 'pay', sticky: true });
   }
@@ -578,25 +651,36 @@ export class Orchestrator {
   private onHubState(connected: boolean): void {
     this.log('sw', 'HUB', connected ? `подключён ${this.hub.address}` : 'отключён', connected ? 'info' : 'warn');
     if (connected) this.register();
-    else this.watcherProfile = null;
+    else { this.watcherProfile = null; this.watcherProfiles = []; }
     assignRoles(this);
     this.ensureSwWatch();
     this.broadcast({ t: 'OS', os: this.os }, (t) => !!t.port);
   }
 
-  private register(): void {
+  register(): void {
+    const main = this.bot ? mainTab(this) : undefined;
     this.hub.send({
-      t: 'REGISTER', profile: this.cfg.profileId, orderId: this.order?.id ?? null, priority: this.order?.priority ?? 99,
+      t: 'REGISTER', profile: this.cfg.profileId, orderId: this.bot ? assignedId(this) : this.order?.id ?? null, priority: this.order?.priority ?? 99,
       tabs: this.order?.racersPerProfile ?? 0, targets: this.order?.targets ?? [],
+      ...(this.bot ? {
+        bot: {
+          token: this.bot.token, state: main?.state ?? 'IDLE', mode: main?.mode ?? 'idle', inBag: !!this.os.inBagVerified,
+          leader: this.os.decision === 'go' && this.os.winnerTabId !== undefined, placed: !!this.os.placedAt,
+          payMethod: this.order?.payment, orderNo: this.os.orderNo, openedAt: this.os.openedAt, ext: chrome.runtime.getManifest().version,
+        },
+      } : {}),
     });
     this.hubStatusSoon();
   }
 
   private onHub(m: Hub2S): void {
     const me = this.cfg.profileId;
+    if (this.bot && onBotHub(this, m)) return;
     switch (m.t) {
       case 'WATCHER':
         this.watcherProfile = m.profile;
+        this.watcherProfiles = m.profiles ?? (m.profile ? [m.profile] : []);
+        if (m.profiles?.includes(me) && m.targets) { this.os.watchTargets = m.targets; void this.saveOs(true); }
         if (m.profile === me && m.targets) { this.os.watchTargets = m.targets; void this.saveOs(true); }
         assignRoles(this);
         this.ensureSwWatch();
@@ -658,6 +742,7 @@ export class Orchestrator {
 
   // ---------- конфиг ----------
   async reloadConfig(): Promise<void> {
+    if (this.bot) return; // режим бота: конфиг только от хаба
     this.cfg = await loadConfig();
     this.order = orderFor(this.cfg) ?? null;
     this.hub.setUrl(this.cfg.hubUrl);
@@ -713,12 +798,14 @@ export class Orchestrator {
       payActive: this.payActive,
       prepared: s[K.prepared] ?? null,
       orders: Array.isArray(s.orders) ? (s.orders as OrderRecord[]).slice(-10) : [],
-      validation: validateConfig(this.cfg),
+      validation: this.bot ? { errors: [], warnings: [] } : validateConfig(this.cfg),
+      bot: this.bot ? { browserId: this.bot.browserId, strategy: this.cfg.bot?.strategy, stopBeforePay: this.cfg.bot?.stopBeforePay, assigned: assignedId(this), spare: !!this.os.spare } : null,
       log: this.logs.tail(60),
     };
   }
 
   private async start(): Promise<unknown> {
+    if (this.bot) { await startBot(this); return { ok: true, warnings: [] }; }
     this.cfg = await loadConfig();
     this.order = orderFor(this.cfg) ?? null;
     const v = validateConfig(this.cfg);

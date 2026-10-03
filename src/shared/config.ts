@@ -1,5 +1,6 @@
 // Схема конфига (§10), значения по умолчанию и валидация.
 import { PARTS, STORES, normPart } from './parts';
+import { normalizeBotRuntime, type BotRuntime } from './bot';
 
 declare const __DEFAULT_BASE_URL__: string;
 declare const __DEV__: boolean;
@@ -41,6 +42,10 @@ export interface OrderCfg {
   autoPlaceOrder: boolean;
   deliveryFallback: boolean;
   address: { street: string; area: string; city: string };
+  /** Режим бота: id карты из пула (в лог — только ****1234). */
+  cardId?: string;
+  /** Режим бота: заказа ещё нет — вкладка ждёт ASSIGN на странице цели (§6). */
+  lobby?: boolean;
 }
 
 export interface Timing {
@@ -69,6 +74,8 @@ export interface Config {
   retries: { checkout: number; slotsPerStore: number };
   limits: { maxTabsTotal: number };
   baseUrl: string;
+  /** Режим бота (bootstrap.json): настройки от хаба. В автономном режиме нет. */
+  bot?: BotRuntime;
 }
 
 export const DEFAULT_TIMING: Timing = {
@@ -181,6 +188,8 @@ export function normalizeConfig(raw: unknown): Config {
           area: str(o?.address?.area),
           city: str(o?.address?.city, 'Dubai'),
         },
+        ...(o?.cardId ? { cardId: str(o.cardId) } : {}),
+        ...(o?.lobby ? { lobby: true } : {}),
       } satisfies OrderCfg;
     })
     : d.orders;
@@ -200,6 +209,7 @@ export function normalizeConfig(raw: unknown): Config {
     },
     limits: { maxTabsTotal: num(r.limits?.maxTabsTotal, d.limits.maxTabsTotal) },
     baseUrl: str(r.baseUrl, d.baseUrl).replace(/\/$/, ''),
+    ...(r.bot ? { bot: normalizeBotRuntime(r.bot) } : {}),
   };
 }
 
@@ -252,12 +262,8 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   const openAt = Date.parse(cfg.openAt);
   if (!Number.isFinite(openAt)) errors.push('openAt — не дата ISO');
   else if (openAt <= now) warnings.push('openAt в прошлом — старт сразу в режиме «после открытия» (так и нужно для тестов на живом товаре)');
-  if (cfg.timing.minReloadMs < 1500) errors.push('timing.minReloadMs < 1500 — не чаще раза в 1,5 с (§0)');
+  errors.push(...timingErrors(cfg.timing));
   if (cfg.timing.postOpenReloadMs < cfg.timing.minReloadMs) warnings.push('postOpenReloadMs < minReloadMs — будет поднят до minReloadMs');
-  if (cfg.timing.pollMs < 1000) errors.push('timing.pollMs < 1000 — наблюдатель не чаще раза в секунду (§7.1)');
-  if (cfg.timing.closedReloadMs < 5000) errors.push('timing.closedReloadMs < 5000 — закрытый магазин до старта не чаще раза в 5 с');
-  if (cfg.timing.queueMaxWaitSec < 10) errors.push('timing.queueMaxWaitSec < 10 — страницу очереди Apple нельзя дёргать чаще');
-  if (cfg.timing.cardWaitMs < 3000) errors.push('timing.cardWaitMs < 3000 — блок карты у Apple грузится несколько секунд');
   if (cfg.limits.maxTabsTotal > 12) warnings.push('maxTabsTotal > 12 — выше рекомендованного (§0)');
   if (!/^https?:\/\//.test(cfg.baseUrl)) errors.push('baseUrl должен начинаться с http(s)://');
   else if (!IS_DEV_BUILD && cfg.baseUrl !== LIVE_BASE) errors.push(`baseUrl «${cfg.baseUrl}» — боевая сборка работает только с ${LIVE_BASE}; мок-сервер только с dev-сборкой (папка extension-dev) в отдельном профиле`);
@@ -266,7 +272,18 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   return { errors, warnings };
 }
 
-function luhn(num: string): boolean {
+/** Нижние пределы таймингов (§9 HANDOFF): общие для расширения и бота. */
+export function timingErrors(t: Timing): string[] {
+  const errors: string[] = [];
+  if (t.minReloadMs < 1500) errors.push('timing.minReloadMs < 1500 — не чаще раза в 1,5 с (§0)');
+  if (t.pollMs < 1000) errors.push('timing.pollMs < 1000 — наблюдатель не чаще раза в секунду (§7.1)');
+  if (t.closedReloadMs < 5000) errors.push('timing.closedReloadMs < 5000 — закрытый магазин до старта не чаще раза в 5 с');
+  if (t.queueMaxWaitSec < 10) errors.push('timing.queueMaxWaitSec < 10 — страницу очереди Apple нельзя дёргать чаще');
+  if (t.cardWaitMs < 3000) errors.push('timing.cardWaitMs < 3000 — блок карты у Apple грузится несколько секунд');
+  return errors;
+}
+
+export function luhn(num: string): boolean {
   let sum = 0;
   let dbl = false;
   for (let i = num.length - 1; i >= 0; i--) {

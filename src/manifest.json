@@ -4,7 +4,7 @@
   "version": "3.0.0",
   "description": "Pre-order assistant for apple.com/ae: waits for the drop, adds to bag, walks guest checkout to payment. Payment is always done by a human.",
   "minimum_chrome_version": "120",
-  "permissions": ["storage", "tabs", "notifications", "offscreen", "webRequest", "alarms"],
+  "permissions": ["storage", "tabs", "notifications", "offscreen", "webRequest", "alarms", "declarativeNetRequest"],
   "host_permissions": [
     "https://www.apple.com/ae/*",
     "https://*.store.apple.com/*",

@@ -48,6 +48,7 @@ export async function contactStep(c: Ctl): Promise<void> {
   // не STUCK: заказ не потерян, поле поправит человек (STUCK передал бы заказ запасному профилю через хаб)
   c.setState('NEED_HUMAN', `контакты: ${msg} — поправь поле и нажми Continue`);
   c.alert(`Заказ ${o.id}: контакты`, `Apple: ${msg} — поправь поле в окне`);
+  c.needHuman('validation', `контакты: ${msg}`);
   // если Apple не приняла, вкладку не трогаем — человек поправит поле, дальше продолжим сами
   const fixed = await waitForUrl(/_s=Billing/i, 600_000, sig);
   if (fixed) c.log('Billing после ручного исправления контактов');

@@ -7,13 +7,17 @@ import type { Ctl } from '../ctl';
 import { assistClick } from '../assist';
 import { clickEl, clickable, isChecked, pickRadio, qa, resolveInput, setInput, setSelect, sleep, textOf, waitForUrl, waitUntil } from '../dom';
 import { billingRoot, findEl, findField, findSelect, waitEl, waitEnabled, type Key } from '../find';
+import { botApplePay, botPlaceOrder, goBilling, placedThisAttempt, requestCard, resumePlaced, swapOnBilling } from './botPay';
 
 const REVIEW_URL = /_s=Review/i;
 
 export async function paymentStep(c: Ctl): Promise<void> {
   const sig = c.signal;
   const o = c.order!;
-  if (['PAY_QUEUE', 'PAYING', 'REVIEW', 'ORDERED', 'NEED_HUMAN'].includes(c.ts.state)) {
+  // режим бота: смена карты / переход на Apple Pay (§9.3); после Place Order — только наблюдение
+  if (c.bot && c.ts.swapPending) return swapOnBilling(c);
+  if (c.bot && placedThisAttempt(c) && c.ts.state !== 'ORDERED') return resumePlaced(c);
+  if (['PAY_QUEUE', 'PAYING', 'REVIEW', 'ORDERED', 'NEED_HUMAN', 'PLACE_WAIT', 'PLACED', 'WAIT_3DS', 'WAIT_APPLEPAY', 'APPLEPAY', 'CARD_DECLINED', 'PAY_TIMEOUT'].includes(c.ts.state)) {
     // вернулись на Billing (например, из Review) — ничего не трогаем, человек в процессе
     if (c.ts.state === 'PAYING' && c.ts.payTurn) await onTurn(c);
     else showPayBanner(c);
@@ -24,13 +28,17 @@ export async function paymentStep(c: Ctl): Promise<void> {
   let method = o.payment;
   if (method === 'applepay') {
     const ap = findEl('payApplePay');
-    if (!ap) {
-      if (o.applePayFallback === 'manual') {
+    if (!ap && c.bot && !o.card.number && (await requestCard(c))) {
+      c.log('Apple Pay недоступен — карта из пула (хаб)', 'warn');
+      method = 'manual';
+    } else if (!ap) {
+      if (o.applePayFallback === 'manual' && (!c.bot || c.order!.card.number)) {
         c.log('Apple Pay недоступен — фолбэк на карту (applePayFallback=manual)', 'warn');
         method = 'manual';
       } else {
         c.setState('NEED_HUMAN', 'Apple Pay недоступен, фолбэк выключен — выбери способ оплаты сам');
         c.alert(`Заказ ${o.id}: оплата`, 'Apple Pay недоступен — выбери способ оплаты в окне');
+        c.needHuman('payment', 'Apple Pay недоступен, свободной карты нет');
         c.overlay.banner(`${payLabel(c)} · Apple Pay недоступен`, 'Выбери способ оплаты сам; расширение ничего не вводит', 'warn');
         return;
       }
@@ -67,7 +75,7 @@ export async function paymentStep(c: Ctl): Promise<void> {
  * Блок карты у Apple появляется через несколько секунд после выбора «Credit or Debit Card» (live 30.09) —
  * ждём до timing.cardWaitMs; если через 3 с полей нет и radio не выбран, кликаем его ещё раз.
  */
-async function waitCardFields(c: Ctl, radio: HTMLElement | null): Promise<HTMLInputElement | null> {
+export async function waitCardFields(c: Ctl, radio: HTMLElement | null): Promise<HTMLInputElement | null> {
   const t0 = Date.now();
   const total = Math.max(1000, c.t.cardWaitMs);
   let num = await waitUntil(() => findField('cardNumber'), Math.min(3000, total), c.signal);
@@ -82,7 +90,7 @@ async function waitCardFields(c: Ctl, radio: HTMLElement | null): Promise<HTMLIn
 }
 
 /** Карта из конфига: номер, срок, CVV, имя. Данные не логируются; в лог — только последние 4 цифры. */
-async function fillCard(c: Ctl, num: HTMLInputElement): Promise<void> {
+export async function fillCard(c: Ctl, num: HTMLInputElement): Promise<void> {
   const card = c.order?.card;
   num.scrollIntoView({ block: 'center' });
   if (!card?.number) { c.log('карта в конфиге не задана — вводит человек (курсор в поле карты)'); num.focus(); return; }
@@ -97,6 +105,7 @@ async function fillCard(c: Ctl, num: HTMLInputElement): Promise<void> {
   const missed: string[] = [];
   for (const [f, val, label] of fields) {
     if (!val) continue;
+    if (!f && label === 'имя') continue; // поля «имя на карте» на живом AE нет — это не ошибка
     if (!f) { missed.push(label); continue; }
     setInput(f, val);
     await sleep(80, c.signal);
@@ -112,7 +121,7 @@ async function fillCard(c: Ctl, num: HTMLInputElement): Promise<void> {
  * Billing Address при оплате картой (18 Pro, live 30.09): First/Last Name, Street Address, Area, City обязательны,
  * Title и Town — нет. Без адреса «Review Your Order» отвечает «Please complete this mandatory field».
  */
-async function fillBillingAddress(c: Ctl): Promise<void> {
+export async function fillBillingAddress(c: Ctl): Promise<void> {
   const o = c.order!;
   const b = o.billing;
   const street = b.street || o.address.street;
@@ -251,6 +260,8 @@ async function tryApplePay(c: Ctl): Promise<void> {
 
 export function reviewStep(c: Ctl): void {
   if (c.ts.state === 'ORDERED') return;
+  if (c.bot && c.ts.swapPending) { void goBilling(c).catch(() => {}); return; }
+  if (c.bot && placedThisAttempt(c)) { void resumePlaced(c).catch(() => {}); return; }
   c.setState('REVIEW', c.ts.payMethod === 'applepay' ? 'Apple Pay (человек)' : 'ждём Place Order (человек)');
   showPayBanner(c);
   watchForOrderNo(c);
@@ -260,6 +271,11 @@ export function reviewStep(c: Ctl): void {
 
 /** Наш ход на Review: Apple Pay — открыть лист; карта с autoPlaceOrder — нажать Place Order (один раз). */
 async function onReviewTurn(c: Ctl): Promise<void> {
+  if (c.bot) {
+    if (c.ts.payMethod === 'applepay') await botApplePay(c);
+    else await botPlaceOrder(c);
+    return;
+  }
   if (c.ts.payMethod === 'applepay') await tryApplePay(c);
   else if (c.order?.autoPlaceOrder) await tryPlaceOrder(c);
 }
@@ -300,7 +316,7 @@ async function tryPlaceOrder(c: Ctl): Promise<void> {
  * Review: «I have read, understand, and agree to the Terms & Conditions of Sale» — без галочки Apple не принимает
  * заказ (18 Pro, live: «Please read and accept the terms & conditions of this order.»). Это не оплата, ставим сами.
  */
-async function acceptTerms(c: Ctl, wait = 4000): Promise<boolean> {
+export async function acceptTerms(c: Ctl, wait = 4000): Promise<boolean> {
   const el = await waitEl('termsCheckbox', wait, c.signal);
   if (!el) {
     if (wait >= 2000) c.log('чекбокс Terms & Conditions не найден — если он на экране, поставь галочку сам', 'warn');
@@ -321,8 +337,9 @@ async function acceptTerms(c: Ctl, wait = 4000): Promise<boolean> {
   return false;
 }
 
-function termsErrorShown(): boolean {
-  return SEL.txtTermsError.test(document.body?.innerText ?? '');
+export function termsErrorShown(): boolean {
+  const errs = qa<HTMLElement>('[role="alert"], [aria-live], [class*="error" i]').map(textOf).join(' | ');
+  return SEL.txtTermsError.test(errs) || SEL.txtTermsError.test(document.body?.innerText ?? '');
 }
 
 let orderObserver: MutationObserver | null = null;
@@ -351,8 +368,10 @@ export function ordered(c: Ctl, orderNo: string): void {
 /** Таймаут ручной оплаты (§7.7 п. 6). */
 export function checkPayTimeout(c: Ctl): void {
   if (!c.ts.payStartedAt || !['PAYING', 'REVIEW'].includes(c.ts.state)) return;
+  if (c.bot && (c.b?.stopBeforePay || c.ts.placeOrderTried)) return; // бот: свои таймауты (3-D Secure, Apple Pay)
   if (Date.now() - c.ts.payStartedAt > c.t.manualPayTimeoutSec * 1000) {
     c.setState('PAY_TIMEOUT', `нет подтверждения ${c.t.manualPayTimeoutSec} с`);
     c.alert(`Заказ ${c.order?.id}: PAY_TIMEOUT`, 'Оплата не подтверждена — проверь окно');
+    c.needHuman('payment', `PAY_TIMEOUT: нет подтверждения ${c.t.manualPayTimeoutSec} с`);
   }
 }

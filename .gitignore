@@ -6,3 +6,8 @@ test/.profiles/
 test/.artifacts/
 *.log
 .DS_Store
+bot/dist/
+runtime/
+bot.config.json
+secrets.local.json
+test/.bot/

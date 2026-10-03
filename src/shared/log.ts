@@ -48,13 +48,19 @@ export function maskUrl(u: string): string {
     .replace(/([?&](?:ssi|_a_token|token|signKey|timeSlotId)=)[^&#]*/gi, '$1…');
 }
 
-/** Защита от случайной утечки: email/телефон/длинные hex в тексте лога. */
-export function scrub(msg: string): string {
-  return maskUrl(msg)
-    .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, (m) => maskEmail(m))
-    .replace(/\b0?5\d{8}\b/g, (m) => maskPhone(m))
-    .replace(/\b(?:\d[ -]?){12,18}\d\b/g, (m) => `****${m.replace(/\D/g, '').slice(-4)}`)
-    .replace(/\b[0-9a-f]{24,}\b/gi, (m) => `${m.slice(0, 4)}…`);
+/** Блок privacy конфига бота (BOT-SPEC §5). По умолчанию (автономный режим) — всё маскируется. */
+export interface Privacy { maskContactsInLogs: boolean; maskCardInLogs: boolean; logTokens: boolean }
+export const STRICT_PRIVACY: Privacy = { maskContactsInLogs: true, maskCardInLogs: true, logTokens: false };
+
+/** Защита от случайной утечки: email/телефон/номер карты/токены в тексте лога. */
+export function scrub(msg: string, p: Privacy = STRICT_PRIVACY): string {
+  let s = p.logTokens ? msg : maskUrl(msg);
+  if (p.maskContactsInLogs) {
+    s = s.replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, (m) => maskEmail(m)).replace(/\b0?5\d{8}\b/g, (m) => maskPhone(m));
+  }
+  if (p.maskCardInLogs) s = s.replace(/\b(?:\d[ -]?){12,18}\d\b/g, (m) => `****${m.replace(/\D/g, '').slice(-4)}`);
+  if (!p.logTokens) s = s.replace(/\b[0-9a-f]{24,}\b/gi, (m) => `${m.slice(0, 4)}…`);
+  return s;
 }
 
 // ---------- кольцевой буфер (только в SW) ----------

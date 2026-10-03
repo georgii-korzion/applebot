@@ -34,7 +34,7 @@ export function assistClick(c: Ctl, el: HTMLElement, step: string, msg: string):
       if (t && (el.contains(t) || t === el)) done();
     };
     const onAbort = () => { cleanup(); reject(new Aborted()); };
-    const done = () => { cleanup(); c.log(`${step}: человек нажал кнопку`); resolve(); };
+    const done = () => { cleanup(); c.log(`${step}: человек нажал кнопку`); if (c.bot) c.send({ t: 'HUMAN_DONE' }); resolve(); };
     const cleanup = () => {
       document.removeEventListener('click', onClick, true);
       signal.removeEventListener('abort', onAbort);
@@ -59,7 +59,7 @@ export function assistSelect(c: Ctl, el: HTMLSelectElement, step: string, msg: s
       setTimeout(() => { if (accept()) done(); }, 150);
     };
     const onAbort = () => { cleanup(); reject(new Aborted()); };
-    const done = () => { cleanup(); resolve(); };
+    const done = () => { cleanup(); if (c.bot) c.send({ t: 'HUMAN_DONE' }); resolve(); };
     const cleanup = () => {
       el.removeEventListener('change', onChange, true);
       signal.removeEventListener('abort', onAbort);

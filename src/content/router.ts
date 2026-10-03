@@ -1,5 +1,5 @@
 // Отслеживание смены URL без перезагрузки (одностраничный чекаут, §8.3).
-// pushState не даёт событий в изолированном мире — опрос location.href раз в 150 мс.
+// pushState не даёт событий в изолированном мире — опрос location.href раз в 50 мс (§20.2: было 150).
 
 export function routeKey(href: string): string {
   const u = new URL(href);
@@ -21,6 +21,6 @@ export function watchRoute(onChange: (href: string, prev: string) => void): () =
       prevKey = key;
       onChange(href, old);
     }
-  }, 150);
+  }, 50);
   return () => clearInterval(iv);
 }

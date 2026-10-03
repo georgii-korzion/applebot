@@ -2,17 +2,20 @@
   "name": "apple-drop-assistant",
   "version": "3.0.0",
   "private": true,
-  "description": "Chrome MV3 extension: pre-order assistant for apple.com/ae (stops before payment)",
+  "description": "Apple Drop Assistant (Chrome MV3) + Apple Drop Bot (оркестратор флота браузеров)",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
     "build:dev": "node build.mjs --dev",
+    "build:bot": "node build.mjs --bot",
     "watch": "node build.mjs --dev --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p bot",
     "hub": "node hub/server.mjs",
     "mock": "node test/mock-server.mjs",
-    "test": "node build.mjs --unit && node --test dist-test/unit.test.mjs",
-    "test:e2e": "node build.mjs --dev && node test/e2e.mjs"
+    "bot": "node build.mjs --bot && node bot/dist/bot.mjs",
+    "test": "node build.mjs --unit && node --test dist-test/unit.test.mjs dist-test/bot-unit.test.mjs",
+    "test:e2e": "node build.mjs --dev && node test/e2e.mjs",
+    "test:bot": "node build.mjs --dev && node build.mjs --bot && node test/bot-e2e.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -22,6 +25,8 @@
   },
   "devDependencies": {
     "@types/chrome": "^0.1.0",
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
     "esbuild": "^0.25.0",
     "playwright-core": "1.56.1",
     "typescript": "^5.6.0"

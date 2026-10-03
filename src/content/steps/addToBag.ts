@@ -60,10 +60,16 @@ export async function atbFlow(c: Ctl): Promise<void> {
   // 7. записать pending ДО клика — результат увидит следующая загрузка страницы
   Object.assign(c.ts, { atbPendingSince: Date.now(), atbPart: target, sawAcpartNone: sawAcpart, atbAssist: assist });
   await c.save();
+  const direct = c.bot && c.b?.directAtb && !assist ? directAtbUrl(btn) : null;
   if (assist) {
     await assistClick(c, btn, 'Add to Bag', 'Нажми Add to Bag');
     c.ts.atbPendingSince = Date.now();
     void c.save();
+  } else if (direct) {
+    // BOT-SPEC §2, §20.6: тот же запрос, что строит JS сайта, — с токеном, который сервер выдал этой сессии (cookie as_atb)
+    c.setState('ATB_PENDING', 'Add to Bag прямым запросом');
+    c.log('Add to Bag прямым запросом (directAtb)');
+    location.assign(direct);
   } else {
     c.setState('ATB_PENDING', 'клик Add to Bag');
     btn.scrollIntoView({ block: 'center' });
@@ -121,6 +127,27 @@ async function atbOk(c: Ctl, page: PageInfo): Promise<void> {
   await c.save();
   if (page.kind === 'attach') await c.navigate(c.bagUrl(), 'step=attach → /ae/shop/bag');
   else c.rerun('atb-ok-bag');
+}
+
+/**
+ * URL Add to Bag из полей формы + acpart=none + atbtoken из cookie as_atb (токен сессии, выданный сервером).
+ * Нет формы или cookie — null (тогда обычный клик).
+ */
+export function directAtbUrl(btn: HTMLElement): string | null {
+  const form = btn.closest('form') ?? document.querySelector<HTMLFormElement>(`form:has(${SEL.atbProductField})`);
+  const token = cookieNames().as_atb;
+  if (!form || !token) return null;
+  const fields = new FormData(form);
+  const product = String(fields.get('product') ?? '');
+  if (!product) return null;
+  const p = new URLSearchParams();
+  p.set('product', product);
+  for (const k of ['purchaseOption', 'step']) { const v = fields.get(k); if (v) p.set(k, String(v)); }
+  p.set('acpart', 'none');
+  p.set('atbtoken', token);
+  p.set('igt', 'true');
+  p.set('add-to-cart', 'add-to-cart');
+  return `${location.pathname}?${p.toString()}`;
 }
 
 /** Неудача Add to Bag: лок освободить, бэкофф, повтор с URL цели. */

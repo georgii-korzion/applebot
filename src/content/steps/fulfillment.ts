@@ -239,5 +239,6 @@ export async function shippingStep(c: Ctl): Promise<void> {
   }
   c.setState('NEED_HUMAN', `Shipping: ${msg} — поправь поле и нажми Continue`);
   c.alert(`Заказ ${o.id}: адрес`, msg);
+  c.needHuman('validation', `адрес доставки: ${msg}`);
   if (await waitForUrl(/_s=Billing/i, 600_000, sig)) c.log('Billing после ручного исправления адреса');
 }

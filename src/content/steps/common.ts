@@ -2,6 +2,7 @@
 import { closedReloadMs, phaseOf } from '../../shared/config';
 import type { Ctl } from '../ctl';
 import type { PageInfo } from '../classify';
+import { holdStep, holdUntil } from './bot';
 
 /** STOP: заказ взят другой вкладкой/профилем — вкладка уходит в IDLE (§7.1). */
 export function becomeStopped(c: Ctl, reason: string): void {
@@ -25,6 +26,8 @@ export function busyMs(c: Ctl): number {
 }
 
 export function busyBackoff(c: Ctl, page?: PageInfo): void {
+  const hold = c.ts.mode === 'race' && page ? holdUntil(c) : null;
+  if (hold && page && page.metaRefreshSec === undefined) { holdStep(c, page, 'заглушка Apple', hold); return; }
   const n = c.ts.busyInRow;
   const ms = busyMs(c);
   const meta = page?.metaRefreshSec;
@@ -46,7 +49,9 @@ export function busyBackoff(c: Ctl, page?: PageInfo): void {
 export function queueStep(c: Ctl, page: PageInfo): void {
   c.ts.queueSince ??= Date.now();
   const waited = Date.now() - c.ts.queueSince;
-  const max = c.t.queueMaxWaitSec * 1000;
+  // общее правило: очередь не трогаем; разница в терпении — refresh ждёт queueMaxWaitSec, hold — до openAt+holdMaxWaitSec (§7)
+  const hold = c.ts.mode === 'race' ? holdUntil(c) : null;
+  const max = Math.max(c.t.queueMaxWaitSec * 1000, hold ? hold - c.ts.queueSince : 0);
   if (waited >= max) {
     c.log(`очередь: страница не пустила за ${Math.round(waited / 1000)} с — перезагружаю`, 'warn');
     c.ts.queueSince = undefined;

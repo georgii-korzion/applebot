@@ -15,16 +15,31 @@ const dev = args.has('--dev');
 const watch = args.has('--watch');
 const MOCK_ORIGIN = 'http://127.0.0.1:4777';
 
+if (args.has('--bot')) {
+  // оркестратор бота (BOT-SPEC): bot/src → bot/dist/bot.mjs (Node 20+)
+  await esbuild.build({
+    entryPoints: [join(root, 'bot/src/main.ts')],
+    outfile: join(root, 'bot/dist/bot.mjs'),
+    bundle: true, platform: 'node', format: 'esm', target: 'node20', packages: 'external',
+    define: { __DEV__: 'false', __DEFAULT_BASE_URL__: JSON.stringify('https://www.apple.com') },
+    banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
+    logLevel: 'warning', sourcemap: 'inline',
+  });
+  if (!args.has('--unit')) process.exit(0);
+}
+
 if (args.has('--unit')) {
   const out = join(root, 'dist-test');
   rmSync(out, { recursive: true, force: true });
-  await esbuild.build({
-    entryPoints: [join(root, 'test/unit.test.ts')],
-    outfile: join(out, 'unit.test.mjs'),
-    bundle: true, platform: 'node', format: 'esm', target: 'node20',
-    define: { __DEV__: 'true', __DEFAULT_BASE_URL__: JSON.stringify(MOCK_ORIGIN) },
-    logLevel: 'warning',
-  });
+  for (const name of ['unit.test', 'bot-unit.test']) {
+    await esbuild.build({
+      entryPoints: [join(root, `test/${name}.ts`)],
+      outfile: join(out, `${name}.mjs`),
+      bundle: true, platform: 'node', format: 'esm', target: 'node20', packages: 'external',
+      define: { __DEV__: 'true', __DEFAULT_BASE_URL__: JSON.stringify(MOCK_ORIGIN) },
+      logLevel: 'warning',
+    });
+  }
   process.exit(0);
 }
 
