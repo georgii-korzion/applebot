@@ -207,7 +207,7 @@ function botConfig(name, openInSec, extra = {}) {
   return merge({
     machine: 'test', openAt: new Date(Date.now() + openInSec * 1000).toISOString(), baseUrl: MOCK, runtimeDir: `test/.bot/${name}/runtime`,
     hub: { port: HUB_PORT },
-    fleet: { browsers: 1, launchStaggerMs: 300, strategyMix: { refresh: 1, hold: 0 }, adaptive: false, holdMaxWaitSec: 120, claimersPerOrder: 1, headless: HEADLESS, extensionDir: 'dist-dev', extraArgs: ['--no-sandbox'], cdpBasePort: 19300, warmupSec: 0, window: { width: 1280, height: 900 }, openJitter: 'none' },
+    fleet: { browsers: 1, launchStaggerMs: 300, strategyMix: { refresh: 1, hold: 0 }, adaptive: false, holdMaxWaitSec: 120, claimersPerOrder: 1, headless: HEADLESS, extensionDir: 'dist-dev', extraArgs: ['--no-sandbox', '--disable-background-networking', '--disable-component-update'], cdpBasePort: 19300, warmupSec: 0, window: { width: 1280, height: 900 }, openJitter: 'none' },
     proxies: { mode: 'off', basePort: 18850, probe: '127.0.0.1:4777', downAfterSec: 6 },
     orders: [order('A', 0)],
     payment: { stopBeforePay: false, card: { threeDsTimeoutSec: 60 }, applePay: { timeoutSec: 90, reopenTries: 3 } },
@@ -249,7 +249,10 @@ async function startBot(name, cfg, sec, { fresh = true } = {}) {
 }
 
 function botPids(rt) {
-  try { return Object.values(JSON.parse(readFileSync(join(rt, 'state.json'), 'utf8')).browsers).map((b) => b.pid).filter(Boolean); } catch { return []; }
+  try {
+    const st = JSON.parse(readFileSync(join(rt, 'state.json'), 'utf8'));
+    return [...Object.values(st.browsers ?? {}), ...Object.values(st.forwarders ?? {})].map((b) => b.pid).filter(Boolean);
+  } catch { return []; }
 }
 async function stopBot(h, { kill = true } = {}) {
   if (!h) return;
@@ -291,6 +294,48 @@ async function humanPage(h, browserId, urlPart = '/ae/') {
   const pages = cdp.contexts().flatMap((c) => c.pages());
   const page = pages.find((p) => p.url().includes(urlPart)) ?? pages[0];
   return { cdp, page };
+}
+
+function findChrome() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+  const base = process.env.PLAYWRIGHT_BROWSERS_PATH ?? '/opt/pw-browsers';
+  for (const d of existsSync(base) ? readdirSync(base).sort().reverse() : []) {
+    const p = join(base, d, 'chrome-linux/chrome');
+    if (d.startsWith('chromium-') && existsSync(p)) return p;
+  }
+  return undefined;
+}
+
+/** Дашборд: открывается по токену, рисует браузеры/заказы/карты без ошибок JS; без токена — 403. */
+async function checkDashboard(h, { browsers, orders }) {
+  const bad = await fetch(`http://127.0.0.1:${HUB_PORT}/?token=wrong`);
+  assert.equal(bad.status, 403, 'дашборд без токена — 403');
+  const b = await chromium.launch({ executablePath: findChrome(), headless: true, args: ['--no-sandbox'] });
+  try {
+    const page = await b.newPage({ viewport: { width: 1400, height: 900 } });
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    await page.goto(`http://127.0.0.1:${HUB_PORT}/?token=${h.token}`);
+    await page.waitForFunction(() => !/подключение/.test(document.getElementById('head')?.textContent ?? 'подключение'), null, { timeout: 10000 });
+    await page.waitForFunction((n) => document.querySelectorAll('#browsers tr').length >= n, browsers, { timeout: 10000 });
+    const r = await page.evaluate(() => ({
+      head: document.getElementById('head').textContent,
+      browsers: document.querySelectorAll('#browsers tr').length,
+      orders: document.querySelectorAll('#orders tr').length,
+      cards: document.querySelectorAll('#cards tr').length,
+      kpis: document.getElementById('kpis').textContent,
+    }));
+    mkdirSync(ART, { recursive: true });
+    await page.screenshot({ path: join(ART, `dashboard-${h.name}.png`), fullPage: true });
+    say(`дашборд: ${r.browsers} браузер(ов), ${r.orders} заказ(ов), ${r.cards} карт(ы) · ${r.head.slice(0, 80)}`);
+    assert.equal(r.browsers, browsers, 'дашборд: строки браузеров');
+    assert.equal(r.orders, orders, 'дашборд: строки заказов');
+    assert.ok(r.cards >= 1, 'дашборд: карты');
+    assert.deepEqual(errors, [], 'дашборд без ошибок JS');
+  } finally {
+    await b.close();
+  }
 }
 
 async function dump(name) {
@@ -358,6 +403,7 @@ scenarios['bot-single'] = async () => {
   assert.ok(tg.calls.some((c) => c.method === 'sendMessage' && /✅ Заказ W/.test(c.params.text)), 'Telegram: заказ');
   assert.ok(h.file('orders.txt').includes(s.orders[0].orderNo) && h.file('orders.txt').includes('0501234567'), 'orders.txt с полными данными');
   assert.ok(h.file('logs/b01.log').includes('****1111'), 'в логе карта как ****1111');
+  await checkDashboard(h, { browsers: 1, orders: 1 });
   assertNoLeaks(h);
 };
 
@@ -395,14 +441,15 @@ function h1(mode) {
     await startTelegram(); await startHooks();
     const cfg = botConfig(`h1-${mode}`, OPEN, {
       fleet: { browsers: 6, claimersPerOrder: 1, strategyMix: { refresh: 0.5, hold: 0.5 }, adaptive: true, adaptiveWindowsSec: [6, 5], holdMaxWaitSec: 150, launchStaggerMs: 200 },
-      orders: [order('A', 0), order('B', 1), order('C', 2)],
+      // заказов больше, чем браузеров одной стратегии: четвёртый достаётся только после адаптации
+      orders: [order('A', 0), order('B', 1), order('C', 2), order('D', 3)],
     });
     const h = await startBot(`h1-${mode}`, cfg, botSecrets({ cards: [CARD1, CARD2] }));
     const s0 = await waitFor(async () => { const x = await h.state(); return x.browsers.filter((b) => b.online).length === 6 ? x : null; }, 30000, '6 браузеров онлайн');
     const hold = s0.browsers.filter((b) => b.strategy === 'hold').map((b) => b.id);
     say(`h1-${mode}: hold ${hold.join(',')}, refresh ${s0.browsers.filter((b) => b.strategy === 'refresh').map((b) => b.id).join(',')}`);
     assert.equal(hold.length, 3);
-    const s = await waitFor(async () => { const x = await h.state(); return x.orders.every((o) => o.state === 'ORDERED') ? x : null; }, 150000, '3 заказа ORDERED', 1000);
+    const s = await waitFor(async () => { const x = await h.state(); return x.orders.every((o) => o.state === 'ORDERED') ? x : null; }, 150000, '4 заказа ORDERED', 1000);
     const ev = h.events();
     const sw = ev.filter((e) => e.type === 'strategy.switched');
     const win = mode === 'refresh' ? 'refresh' : 'hold';
@@ -648,8 +695,10 @@ scenarios['direct-requests'] = async () => {
 scenarios['hub-crash'] = async () => {
   await startMock({ OPEN_AFTER: '6', THREEDS_MS: '1500', ATTACH_DELAY_MS: '2500' });
   await startTelegram(); await startHooks();
-  const cfg = botConfig('crash', 6);
-  const sec = botSecrets();
+  // браузер ходит через прокси: форвардер — отдельный процесс и должен пережить оркестратор
+  await startHttpUpstream('px1', 18921);
+  const cfg = botConfig('crash', 6, { proxies: { mode: 'all', bypassLoopback: false } });
+  const sec = botSecrets({ proxies: [{ id: 'px1', label: 'AE-1', url: 'http://u:p@127.0.0.1:18921' }] });
   let h = await startBot('crash', cfg, sec);
   await waitFor(async () => ['CLAIMED', 'IN_BAG'].includes((await h.state()).orders[0].state), 60000, 'ASSIGN', 300);
   say('hub-crash: ASSIGN есть — убиваю оркестратор (SIGKILL)');
@@ -661,6 +710,7 @@ scenarios['hub-crash'] = async () => {
   const s = await waitFor(async () => { const x = await h.state(); return x.orders[0].state === 'ORDERED' && x.browsers[0].online ? x : null; }, 40000, 'состояние восстановлено', 500);
   say(`hub-crash: после перезапуска ${s.orders[0].orderNo}, браузер ${s.browsers[0].id} PID ${s.browsers[0].pid} подхвачен`);
   assert.equal(s.orders[0].orderNo, ms.orders[0].orderNo, 'номер заказа восстановлен из браузера');
+  assert.equal(ms.sessions.find((x) => x.sid === ms.orders[0].sid)?.addr, 'px1', 'заказ оформлен через прокси, пока оркестратора не было');
   assert.equal(ms.orders.length, 1, 'без дублей');
   assert.ok(/подхватываю/.test(h.file('hub.log')), 'живой браузер подхвачен, не перезапущен');
 };
@@ -702,9 +752,23 @@ scenarios.notify = async () => {
   assertNoLeaks(h);
 };
 
+/** Прогрев (§20.7): за warmupSec до старта браузер открывает корзину и возвращается на товар; снимок заглушки T−60 не мешает. */
+scenarios.warmup = async () => {
+  await startMock({ OPEN_AFTER: '3600' });
+  await startTelegram(); await startHooks();
+  // старт через 72 с, прогрев за 68 с — то есть через ~4 с после запуска
+  const h = await startBot('warmup', botConfig('warmup', 72, { fleet: { warmupSec: 68 } }), botSecrets());
+  await waitFor(() => /прогрев: корзина/.test(h.file('logs/b01.log')), 30000, 'прогрев начался', 500);
+  const s = await waitFor(async () => { const x = await h.state(); return x.browsers[0].state === 'ARMED' && x.browsers[0].page === 'product' && /прогрев/.test(h.file('logs/b01.log')) ? x : null; }, 30000, 'назад на товаре, ARMED', 500);
+  const log = h.file('logs/b01.log');
+  say(`warmup: ${s.browsers[0].state} на ${s.browsers[0].page}; корзина в логе: ${/→ прогрев перед стартом: \/ae\/shop\/bag/.test(log)}`);
+  assert.ok(/→ прогрев перед стартом: \/ae\/shop\/bag/.test(log), 'открыл корзину');
+  assert.ok(/WARMUP/.test(log) && /ARMED/.test(log.split('прогрев перед стартом')[1] ?? ''), 'вернулся к товару и ждёт старта');
+};
+
 // ---------- запуск ----------
 const want = process.argv.slice(2);
-const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify'];
+const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup'];
 if (!existsSync(BOT)) { console.error('нет bot/dist/bot.mjs — npm run test:bot собирает его сам'); process.exit(1); }
 let failed = 0;
 for (const name of list) {

@@ -207,6 +207,12 @@ export class Forwarder extends EventEmitter {
   }
 
   private onRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+    // запрос не через прокси (origin-form) — это оркестратор спрашивает статус
+    if ((req.url ?? '').startsWith('/__status')) {
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ...this.status(), pid: process.pid, targets: Object.fromEntries(this.targets) }));
+      return;
+    }
     let target: URL;
     try { target = new URL(req.url ?? ''); } catch { res.writeHead(400); res.end(); return; }
     const port = Number(target.port || 80);
@@ -258,4 +264,31 @@ export async function httpsGetVia(up: Upstream | null, url: string, timeoutMs = 
     req.on('error', reject);
     req.end();
   });
+}
+
+/** Статус форвардера по его порту (null — не запущен). */
+export async function forwarderStatus(port: number, timeoutMs = 1500): Promise<(ForwarderStatus & { pid: number; targets: Record<string, number> }) | null> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/__status`, { signal: AbortSignal.timeout(timeoutMs) });
+    return r.ok ? ((await r.json()) as ForwarderStatus & { pid: number; targets: Record<string, number> }) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Форвардер отдельным процессом (bot forwarder): переживает падение/закрытие оркестратора — браузеры через прокси
+ * не теряют сеть и доводят свои заказы (BOT-SPEC §3.5). Адрес прокси с паролем — из переменной окружения PROXY_URL.
+ */
+export async function runForwarderProcess(id: string, port: number, probe: string, downAfterSec: number): Promise<void> {
+  const url = process.env.PROXY_URL ?? '';
+  if (!url) throw new Error('PROXY_URL не задан');
+  const f = new Forwarder(id, parseProxyUrl(url), port, { probe, downAfterSec });
+  f.on('down', (e: string) => console.log(`[${new Date().toISOString()}] ${id} DOWN: ${e}`));
+  f.on('up', () => console.log(`[${new Date().toISOString()}] ${id} UP`));
+  await f.start();
+  console.log(`[${new Date().toISOString()}] форвардер ${id}: 127.0.0.1:${port} → ${redactProxy(url)} (PID ${process.pid})`);
+  const stop = () => { f.stop(); process.exit(0); };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
 }

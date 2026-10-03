@@ -1,5 +1,7 @@
 # Apple Drop Assistant — Chrome-расширение (MV3) для предзаказа на apple.com/ae
 
+> **Бот (флот браузеров, оплата до конца, пул карт, прокси, дашборд, Telegram/вебхуки)** — [bot/README.md](bot/README.md), ТЗ [docs/BOT-SPEC.md](docs/BOT-SPEC.md). Бот запускает это расширение в режиме бота; без бота расширение работает как описано ниже.
+
 Реализация ТЗ v3 ([docs/SPEC.md](docs/SPEC.md)). Расширение работает в обычных профилях Chrome, прямо на страницах Apple, без CDP/WebDriver:
 
 - ловит открытие продаж (JSON `fulfillment-messages` + запасной сигнал по HTML);

@@ -67,6 +67,24 @@ export function waitUntil<T>(pred: () => T | null | undefined | false, timeout: 
   }));
 }
 
+/**
+ * Пауза до первой перерисовки DOM (или до max мс) — вместо фиксированного sleep (§20.1 BOT-SPEC):
+ * прежнее значение паузы остаётся верхней границей.
+ */
+export function nextMutation(max: number, signal?: AbortSignal, root: Node = document.documentElement): Promise<void> {
+  return track('wait', () => new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(new Aborted());
+    let t2: ReturnType<typeof setTimeout> | undefined;
+    const done = () => { mo.disconnect(); clearTimeout(t); clearTimeout(t2); signal?.removeEventListener('abort', onAbort); resolve(); };
+    const onAbort = () => { mo.disconnect(); clearTimeout(t); clearTimeout(t2); reject(new Aborted()); };
+    // после первой мутации даём React дорисовать пачку (30 мс тишины)
+    const mo = new MutationObserver(() => { clearTimeout(t2); t2 = setTimeout(done, 30); });
+    mo.observe(root, { subtree: true, childList: true, attributes: true });
+    const t = setTimeout(done, max);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  }));
+}
+
 export function waitFor<T extends Element = HTMLElement>(sel: string, timeout: number, signal?: AbortSignal, root: ParentNode = document): Promise<T | null> {
   return waitUntil(() => root.querySelector<T>(sel), timeout, signal);
 }

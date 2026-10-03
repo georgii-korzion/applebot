@@ -82,10 +82,13 @@ export async function botPlaceOrder(c: Ctl): Promise<void> {
     const terms = await acceptTerms(c, 3000);
     if (!terms && findEl('termsCheckbox')) { c.needHuman('payment', 'галочка условий не ставится'); showPayBanner(c); return; }
     c.setState('PLACE_WAIT', `жду очередь по карте ****${last4(c)}`);
+    const cardAtGate = c.order?.cardId;
     if (!(await placeGate(c))) return;
     const b2 = findEl('placeOrderButton');
     if (c.ts.placeOrderTried || c.ts.swapPending || !b2 || !isEnabled(b2)) return;
     if (!(await acceptTerms(c, 1500)) && findEl('termsCheckbox')) { c.needHuman('payment', 'галочка условий не ставится'); return; }
+    // пока ставили галочку, карту могли заменить (отказ у другого браузера) — по старой не жмём
+    if (c.order?.cardId !== cardAtGate || c.ts.payMethod !== 'manual' || c.ts.swapPending) return;
     const before = errorTexts();
     c.ts.placeOrderTried = true;
     c.ts.placeOrderAt = Date.now();

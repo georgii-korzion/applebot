@@ -2,7 +2,7 @@
 export function dashboardHtml(): string {
   return /* html */ `<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Apple Drop Bot</title>
+<title>Apple Drop Bot</title><link rel="icon" href="data:,">
 <style>
 :root { --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --line:#d2d2d7; --card:#f5f5f7; --ok:#248a3d; --warn:#b25000; --err:#d70015; --accent:#0071e3; }
 @media (prefers-color-scheme: dark) { :root { --bg:#1d1d1f; --fg:#f5f5f7; --muted:#a1a1a6; --line:#424245; --card:#2c2c2e; --ok:#30d158; --warn:#ffd60a; --err:#ff453a; --accent:#2997ff; } }
@@ -14,7 +14,7 @@ h1 { font-size:18px; margin:0; } h2 { font-size:12px; color:var(--muted); text-t
 .kpi { background:var(--card); border-radius:10px; padding:8px 12px; } .kpi b { display:block; font-size:20px; }
 .wrap { overflow-x:auto; }
 table { border-collapse:collapse; width:100%; font-size:12px; } th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; white-space:nowrap; }
-td.d { white-space:normal; max-width:320px; } th { color:var(--muted); font-weight:500; }
+td.d { white-space:normal; max-width:260px; } td.acts { white-space:normal; min-width:210px; } td.acts button { margin:1px 0; } th { color:var(--muted); font-weight:500; }
 .ok { color:var(--ok); } .warn { color:var(--warn); } .err { color:var(--err); } .muted { color:var(--muted); }
 button { font:inherit; font-size:11px; padding:3px 8px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
 button.p { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; font-size:13px; padding:6px 12px; }
@@ -62,7 +62,7 @@ function render(s) {
     ['пущено', s.browsers.filter((b) => b.admittedSec !== null).length + ' (hold ' + s.browsers.filter((b) => b.admittedSec !== null && b.startStrategy === 'hold').length + ')'],
     ['заказы', ord('ORDERED') + ' оформлено / ' + (ord('PAY_READY') + ord('PLACED')) + ' на оплате / ' + (ord('OPEN') + ord('CLAIMED') + ord('IN_BAG')) + ' свободно'],
     ['карты', s.cards.filter((c) => c.status === 'ACTIVE').length + ' активны / ' + s.cards.filter((c) => c.status === 'EXHAUSTED').length + ' исчерпаны / ' + s.cards.filter((c) => c.status === 'BURNED').length + ' сгорели'],
-    ['прокси', [...new Set(s.browsers.map((b) => b.proxy))].length + ' (' + s.browsers.filter((b) => b.status === 'PROXY_DOWN').length + ' down)'],
+    ['прокси', (() => { const px = [...new Set(s.browsers.map((b) => b.proxy).filter((p) => p && p !== 'dir'))]; return px.length ? px.length + ' (' + s.browsers.filter((b) => b.status === 'PROXY_DOWN').length + ' down)' : 'нет — все напрямую'; })()],
     ['состояния', Object.entries(by).map(([k, v]) => k + ' ' + v).join(' · ')],
   ];
   $('kpis').innerHTML = kp.map(([k, v]) => '<div class="kpi"><span class="muted">' + esc(k) + '</span><b>' + esc(v) + '</b></div>').join('');
@@ -72,8 +72,8 @@ function render(s) {
     const st = !b.online && b.status === 'RUNNING' ? 'нет связи' : b.noLink ? 'нет связи' : b.status !== 'RUNNING' ? b.status : b.state;
     return '<tr><td><b>' + esc(b.id) + '</b>' + (b.online ? '' : ' <span class="err">○</span>') + '</td><td>' + esc(b.strategy) + (b.strategy !== b.startStrategy ? ' <span class="muted">(был ' + esc(b.startStrategy) + ')</span>' : '') + '</td><td>' + esc(b.proxy) + (b.exitIp ? ' · ' + esc(b.exitIp) : '') + '</td>'
       + '<td class="' + cls(st) + '" title="' + esc(b.detail) + '">' + esc(st) + (b.stuck ? ' ⏳' : '') + '</td><td>' + b.stateSec + '</td><td>' + esc(b.orderId || '') + (b.role ? ' <span class="muted">' + esc(b.role) + '</span>' : '') + '</td><td>' + esc(b.part) + '</td><td>' + esc((b.store || '').replace(/^Apple /, '')) + (b.slot ? ' · ' + esc(b.slot) : '') + '</td>'
-      + '<td>' + esc(b.payMethod === 'card' ? 'карта ' + b.card : b.payMethod === 'applepay' ? 'Apple Pay' : '') + '</td><td class="d err">' + esc((b.lastError || '').slice(0, 120)) + '</td>'
-      + '<td><button onclick="act(\\'show\\',\\'' + b.id + '\\')">окно</button> <button onclick="act(\\'resume\\',\\'' + b.id + '\\')">продолжить</button> <button onclick="act(\\'applepay\\',\\'' + b.id + '\\')">→ Apple Pay</button> <button onclick="const c=prompt(\\'id карты (c1, c2…)\\');if(c)act(\\'card\\',\\'' + b.id + '\\',c)">карта</button> <button onclick="act(\\'restart\\',\\'' + b.id + '\\')">перезапуск</button> <button onclick="act(\\'stop\\',\\'' + b.id + '\\')">стоп</button></td></tr>';
+      + '<td>' + esc(b.payMethod === 'card' ? 'карта ' + b.card : b.payMethod === 'applepay' ? 'Apple Pay' : '') + '</td><td class="d ' + (st === 'ORDERED' ? 'muted' : 'err') + '" title="' + esc(b.lastError) + '">' + esc((b.lastError || '').length > 90 ? b.lastError.slice(0, 90) + '…' : b.lastError || '') + '</td>'
+      + '<td class="acts"><button onclick="act(\\'show\\',\\'' + b.id + '\\')">окно</button> <button onclick="act(\\'resume\\',\\'' + b.id + '\\')">продолжить</button> <button onclick="act(\\'applepay\\',\\'' + b.id + '\\')">→ Apple Pay</button> <button onclick="const c=prompt(\\'id карты (c1, c2…)\\');if(c)act(\\'card\\',\\'' + b.id + '\\',c)">карта</button> <button onclick="act(\\'restart\\',\\'' + b.id + '\\')">перезапуск</button> <button onclick="act(\\'stop\\',\\'' + b.id + '\\')">стоп</button></td></tr>';
   }).join('') || '<tr><td colspan="11" class="muted">нет браузеров</td></tr>';
   $('orders').innerHTML = s.orders.map((o) => '<tr><td><b>' + esc(o.id) + '</b></td><td class="' + cls(o.state) + '">' + esc(o.state) + '</td><td>' + esc(o.leader || '—') + ' <span class="muted">' + esc(o.claimers.join(', ')) + '</span></td><td>' + esc(o.method === 'card' ? 'карта ' + o.card : 'Apple Pay') + (o.attempts ? ' (попытка ' + (o.attempts + 1) + ')' : '') + '</td>'
     + '<td class="ok"><b>' + esc(o.orderNo || '') + '</b></td><td>' + esc((o.store || '').replace(/^Apple /, '')) + (o.slot ? ' · ' + esc(o.slot) : '') + '</td><td class="d">' + esc(o.recipient) + '</td><td>' + (o.billingSec !== null ? '+' + o.billingSec + ' с' : '') + '</td><td>' + (o.orderedSec !== null ? '+' + o.orderedSec + ' с' : '') + '</td></tr>').join('');

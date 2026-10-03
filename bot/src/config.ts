@@ -54,6 +54,8 @@ export interface BotConfig {
     directAtb: boolean;
     blockHeavy: boolean;
     snapshots: boolean;
+    /** Живые тесты: снимать HTML каждого шага (в т.ч. чекаута) — потом в test/fixtures/live. */
+    recordPages: boolean;
   };
   proxies: {
     mode: 'off' | 'all' | 'mixed';
@@ -217,6 +219,7 @@ export function normalizeBotConfig(raw: unknown): BotConfig {
       directAtb: bool(f.directAtb, false),
       blockHeavy: bool(f.blockHeavy, false),
       snapshots: bool(f.snapshots, true),
+      recordPages: bool(f.recordPages, false),
     },
     proxies: {
       mode: p.mode === 'all' || p.mode === 'off' ? p.mode : 'mixed',
@@ -410,6 +413,7 @@ export function botRuntime(cfg: BotConfig, browserId: string, strategy: Strategy
     blockHeavy: cfg.fleet.blockHeavy,
     warmupSec: cfg.fleet.warmupSec,
     snapshots: cfg.fleet.snapshots,
+    recordPages: cfg.fleet.recordPages,
     lobby: lobbyOf(cfg),
     privacy: { ...cfg.privacy },
   };

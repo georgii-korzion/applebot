@@ -13,7 +13,7 @@ export async function contactStep(c: Ctl): Promise<void> {
   const self = await waitEl('selfPickup', 10000, sig);
   if (self && !isChecked(self)) {
     pickRadio(self);
-    await sleep(250, sig);
+    // поля получателя дорисовываются после выбора — ждём их ниже (waitUntil firstName), без фиксированной паузы
   }
   await waitUntil(() => findField('firstName'), 8000, sig);
   const fields: [Key, string, string][] = [
@@ -22,11 +22,17 @@ export async function contactStep(c: Ctl): Promise<void> {
     ['email', o.contact.email, 'email'],
     ['phone', o.contact.phone, 'phone'],
   ];
+  // все поля одним проходом, проверка — после прохода (§20.3 BOT-SPEC: без пауз между полями)
+  const filled: [HTMLInputElement, string, string][] = [];
   for (const [sel, val, name] of fields) {
     const f = findField(sel);
     if (!f) { c.log(`нет поля ${name}`, 'warn'); continue; }
     if (f.value !== val) setInput(f, val);
-    await sleep(60, sig);
+    filled.push([f, val, name]);
+  }
+  await sleep(60, sig);
+  for (const [f, val, name] of filled) {
+    if (f.value !== val) { setInput(f, val); await sleep(60, sig); }
     if (f.value !== val || f.getAttribute('aria-invalid') === 'true') c.log(`поле ${name} не принято (aria-invalid/значение)`, 'warn');
   }
   c.log(`контакт: ${o.contact.firstName[0] ?? ''}. ${o.contact.lastName[0] ?? ''}. ${maskEmail(o.contact.email)} ${maskPhone(o.contact.phone)}`);

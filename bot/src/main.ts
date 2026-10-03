@@ -26,7 +26,7 @@ function parseArgs(argv: string[]): Args {
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split('=');
       if (v !== undefined) opts[k] = v;
-      else if (argv[i + 1] && !argv[i + 1].startsWith('--') && ['config', 'secrets', 'runs', 'browsers'].includes(k)) opts[k] = argv[++i];
+      else if (argv[i + 1] && !argv[i + 1].startsWith('--') && ['config', 'secrets', 'runs', 'browsers', 'id', 'port', 'probe', 'down'].includes(k)) opts[k] = argv[++i];
       else flags.add(k);
     } else if (!cmd) cmd = a;
   }
@@ -101,9 +101,9 @@ async function cmdStop(a: Args): Promise<void> {
   const { cfg } = load(a);
   const r = await hubCall(cfg, 'shutdown').catch(() => null);
   if (r?.ok) { console.log('Оркестратор останавливает браузеры…'); await new Promise((res) => setTimeout(res, 1500)); }
-  const st = new Store(resolve(ROOT, cfg.runtimeDir)).load<{ browsers: Record<string, { pid?: number; status?: string }> }>();
+  const st = new Store(resolve(ROOT, cfg.runtimeDir)).load<{ browsers: Record<string, { pid?: number; status?: string }>; forwarders?: Record<string, { pid?: number }> }>();
   let n = 0;
-  for (const [id, b] of Object.entries(st?.browsers ?? {})) {
+  for (const [id, b] of [...Object.entries(st?.browsers ?? {}), ...Object.entries(st?.forwarders ?? {})]) {
     if (pidAlive(b.pid)) { try { process.kill(b.pid!, 'SIGTERM'); n++; console.log(`закрыт ${id} (PID ${b.pid})`); } catch { /* */ } }
   }
   console.log(n || r?.ok ? 'Готово.' : 'Живых браузеров нет.');
@@ -186,6 +186,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case 'wipe': return cmdWipe(a);
     case 'install-chrome': return cmdInstallChrome();
+    case 'forwarder': {
+      // служебная: форвардер прокси отдельным процессом (его запускает лаунчер)
+      const { runForwarderProcess } = await import('./proxy/forwarder');
+      return runForwarderProcess(a.opts.id ?? 'px', Number(a.opts.port), a.opts.probe ?? 'www.apple.com:443', Number(a.opts.down ?? 10));
+    }
     default:
       console.log(HELP);
   }

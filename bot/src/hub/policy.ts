@@ -75,12 +75,16 @@ export function assignStrategies(n: number, mix: { refresh: number; hold: number
   const total = mix.refresh + mix.hold || 1;
   const holdN = Math.round((n * mix.hold) / total);
   const out: Strategy[] = Array(n).fill('refresh');
-  // по очереди из каждой группы (прямые / прокси), чтобы hold достался обеим
-  const order: number[] = [];
-  const g = groups.map((x) => [...x]);
-  while (g.some((x) => x.length)) for (const x of g) { const v = x.shift(); if (v !== undefined) order.push(v); }
   let k = 0;
-  for (let i = 1; i < order.length && k < holdN; i += 2, k++) out[order[i]] = 'hold';
-  for (let i = 0; i < order.length && k < holdN; i += 2) if (out[order[i]] !== 'hold') { out[order[i]] = 'hold'; k++; }
+  // внутри каждой группы — через одного, пропорционально доле
+  for (const g of groups) {
+    const want = Math.round((g.length * mix.hold) / total);
+    const picks = [...g.filter((_, i) => i % 2 === 1), ...g.filter((_, i) => i % 2 === 0)];
+    for (const i of picks.slice(0, want)) { out[i] = 'hold'; k++; }
+  }
+  // округления: подогнать к общей доле
+  const all = groups.flat();
+  for (const i of all) { if (k >= holdN) break; if (out[i] === 'refresh') { out[i] = 'hold'; k++; } }
+  for (const i of [...all].reverse()) { if (k <= holdN) break; if (out[i] === 'hold') { out[i] = 'refresh'; k--; } }
   return out;
 }

@@ -25,6 +25,8 @@ export interface BotRuntime {
   warmupSec: number;
   /** Снимки заглушек для разбора гипотезы 1 (§7). */
   snapshots: boolean;
+  /** Живые тесты: HTML каждого нового шага, включая чекаут (токены вычищает хаб) — для test/fixtures/live (§20). */
+  recordPages: boolean;
   /** Пока заказа нет — на какой странице ждать (цели самого приоритетного заказа). */
   lobby: { targets: string[]; stores: string[] };
   /** false — bot prepare: гонку не начинать, ждать команды (§4). */
@@ -37,7 +39,7 @@ export function defaultBotRuntime(browserId = 'b01'): BotRuntime {
   return {
     browserId, machine: '', strategy: 'refresh', holdMaxWaitSec: 300, openJitter: true, stopBeforePay: false,
     applePay: { cdpClick: true, osClick: false, timeoutSec: 300, reopenTries: 3, fullscreen: true },
-    threeDsTimeoutSec: 300, directAtb: false, blockHeavy: false, warmupSec: 150, snapshots: true,
+    threeDsTimeoutSec: 300, directAtb: false, blockHeavy: false, warmupSec: 150, snapshots: true, recordPages: false,
     lobby: { targets: [], stores: [] },
     autoStart: true,
     privacy: { maskContactsInLogs: false, maskCardInLogs: true, logTokens: false },
@@ -69,6 +71,7 @@ export function normalizeBotRuntime(raw: unknown): BotRuntime | undefined {
     blockHeavy: b(r.blockHeavy, d.blockHeavy),
     warmupSec: n(r.warmupSec, d.warmupSec),
     snapshots: b(r.snapshots, d.snapshots),
+    recordPages: b(r.recordPages, d.recordPages),
     lobby: {
       targets: Array.isArray(r.lobby?.targets) ? r.lobby.targets.map(String) : [],
       stores: Array.isArray(r.lobby?.stores) ? r.lobby.stores.map(String) : [],

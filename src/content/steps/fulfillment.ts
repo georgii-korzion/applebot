@@ -6,7 +6,7 @@ import type { Ctl } from '../ctl';
 import { assistSelect } from '../assist';
 import { orderWindows } from '../slots';
 import { submitAndWait } from './submit';
-import { clickEl, isEnabled, isVisible, pickRadio, qa, resolveInput, setInput, setSelect, sleep, textOf, waitForUrl, waitUntil } from '../dom';
+import { clickEl, isEnabled, isVisible, nextMutation, pickRadio, qa, resolveInput, setInput, setSelect, sleep, textOf, waitForUrl, waitUntil } from '../dom';
 import { findAll, findEl, findField, findRadio, findSelect, waitEl, waitEnabled, type Key } from '../find';
 
 const NEXT_STEP = /[?&]_s=(PickupContact|Shipping|Billing)/i;
@@ -73,7 +73,7 @@ async function ensureCity(c: Ctl, city: HTMLSelectElement, want: string): Promis
   if (city.value === opt.value) return;
   const before = storeSignature();
   setSelect(city, opt.value);
-  await sleep(300, c.signal);
+  await nextMutation(300, c.signal);
   if (city.value !== opt.value) {
     await assistSelect(c, city, 'Город', `Выбери город ${want}`, () => city.value === opt.value);
   }
@@ -129,7 +129,7 @@ async function tryStore(c: Ctl, sid: string): Promise<boolean> {
   if (!radio.checked) {
     pickRadio(radio);
     await waitUntil(() => (radio.checked ? true : null), 3000, sig);
-    await sleep(250, sig); // даты старого магазина успевают смениться
+    await nextMutation(250, sig); // даты старого магазина успевают смениться (не дольше 250 мс)
   }
   let date = await pickDate(c, o.slot.day);
   if (!date) { c.log(`${name}: нет дат за 5 с — следующий магазин`, 'warn'); return false; }
@@ -147,7 +147,6 @@ async function tryStore(c: Ctl, sid: string): Promise<boolean> {
     const s = await waitUntil(() => { const x = slotSelect(); return x && Array.from(x.options).some((op) => op.value === w.value) ? x : null; }, 4000, sig);
     if (!s) { c.log(`окно ${w.label} исчезло`); continue; }
     setSelect(s, w.value);
-    await sleep(150, sig);
     let cont = await waitEnabled('fulfillmentContinue', 3000, sig);
     if (s.value !== w.value || !cont) {
       c.log('setSelect окна не принят приложением — ассистент', 'warn');

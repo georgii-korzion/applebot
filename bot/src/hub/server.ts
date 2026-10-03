@@ -113,6 +113,7 @@ interface Persisted {
   nextBrowserNo: number;
   summarySent?: boolean;
   holdExpired?: boolean;
+  forwarders?: Record<string, { pid?: number; port: number }>;
 }
 
 const LIVE_KEYS: (keyof BrowserRt)[] = ['online', 'lastBeat', 'state', 'stateSince', 'mode', 'page', 'step', 'path', 'detail', 'lastError', 'stuck', 'payWait', 'manual'];
@@ -131,6 +132,8 @@ export class Hub {
   nextBrowserNo = 1;
   watchers: string[] = [];
   fleet: FleetOps | null = null;
+  /** Процессы форвардеров прокси (переживают оркестратор): id → PID, порт. */
+  forwarders: Record<string, { pid?: number; port: number }> = {};
   /** Статистика форвардеров прокси (лаунчер). */
   proxyStats: () => unknown[] = () => [];
   notifier: Notifier | null = null;
@@ -169,6 +172,7 @@ export class Hub {
       this.nextBrowserNo = saved.nextBrowserNo ?? 1;
       this.summarySent = !!saved.summarySent;
       this.holdExpired = !!saved.holdExpired;
+      this.forwarders = saved.forwarders ?? {};
       for (const [id, b] of Object.entries(saved.browsers ?? {})) {
         this.browsers.set(id, {
           ...this.blankBrowser(id, String(b.token), (b.strategy as Strategy) ?? 'refresh', !!b.openJitter, b.proxyId ?? null, String(b.profileDir), String(b.extDir)),
@@ -225,7 +229,7 @@ export class Hub {
     const p: Persisted = {
       version: 1, runId: this.runId, machine: this.cfg.machine, startedAt: this.startedAt, dashToken: this.dashToken,
       openedAt: this.openedAt, openSource: this.openSource, browsers, orders, cards: this.cards.snapshot(), adapt: this.adapt,
-      nextBrowserNo: this.nextBrowserNo, summarySent: this.summarySent, holdExpired: this.holdExpired,
+      nextBrowserNo: this.nextBrowserNo, summarySent: this.summarySent, holdExpired: this.holdExpired, forwarders: this.forwarders,
     };
     this.store.save(p);
     this.dashDirty = true;
@@ -1100,6 +1104,7 @@ export class Hub {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
     if (url.pathname === '/health') return json(200, { ok: true, runId: this.runId });
+    if (url.pathname === '/favicon.ico') { res.writeHead(204); res.end(); return; }
     if (!this.authed(req, url)) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); res.end('нужен ?token=… (печатается при bot start)'); return; }
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });

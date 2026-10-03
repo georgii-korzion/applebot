@@ -18,8 +18,8 @@ export function hasLiveRun(runtimeDir: string): boolean {
 
 /** --fresh: закрыть браузеры прошлого запуска. */
 export function killRun(runtimeDir: string): void {
-  const st = new Store(runtimeDir).load<{ browsers?: Record<string, { pid?: number }> }>();
-  for (const b of Object.values(st?.browsers ?? {})) if (pidAlive(b.pid)) { try { process.kill(b.pid!, 'SIGTERM'); } catch { /* */ } }
+  const st = new Store(runtimeDir).load<{ browsers?: Record<string, { pid?: number }>; forwarders?: Record<string, { pid?: number }> }>();
+  for (const b of [...Object.values(st?.browsers ?? {}), ...Object.values(st?.forwarders ?? {})]) if (pidAlive(b.pid)) { try { process.kill(b.pid!, 'SIGTERM'); } catch { /* */ } }
 }
 
 /** Новый запуск: прошлое состояние и журнал — в runtime/archive/<время>/ (профили остаются: они прогреты). */
@@ -40,7 +40,8 @@ export async function startOrchestrator(cfg: BotConfig, sec: Secrets, root: stri
   mkdirSync(runtimeDir, { recursive: true });
   const live = hasLiveRun(runtimeDir);
   const resume = !opts.fresh && live;
-  if (live && opts.fresh) killRun(runtimeDir);
+  // новый запуск: браузеры и форвардеры прошлого запуска закрыть (форвардер мог остаться со старым паролем прокси)
+  if (!resume) killRun(runtimeDir);
   if (!resume) archiveRun(runtimeDir);
   const store = new Store(runtimeDir);
   const saved = resume ? store.load<any>() : null;
@@ -52,7 +53,7 @@ export async function startOrchestrator(cfg: BotConfig, sec: Secrets, root: stri
   hub.notifier = notifier;
   const launcher = new Launcher(cfg, sec, hub, root, log);
   hub.fleet = launcher;
-  hub.proxyStats = () => [...launcher.forwarders.values()].map((f) => ({ ...f.status(), targets: Object.fromEntries(f.targets) }));
+  hub.proxyStats = () => launcher.stats();
   await hub.listen();
   notifier.start(() => hub.statusText());
   if (resume) log(`перезапуск оркестратора: подхватываю запуск ${hub.runId} (живые браузеры не трогаю)`);
@@ -69,7 +70,7 @@ export async function startOrchestrator(cfg: BotConfig, sec: Secrets, root: stri
     hub, launcher, notifier, store,
     async stop(kill: boolean) {
       if (kill) launcher.killAll();
-      else launcher.stopForwarders();
+      else launcher.detach();
       notifier.stop();
       hub.close();
     },

@@ -289,7 +289,13 @@ export class Ctl {
 
   /** Режим бота: позвать человека через очередь внимания хаба (§10). */
   needHuman(reason: HumanReason, text: string): void {
-    if (this.bot) this.send({ t: 'NEED_HUMAN', reason, step: this.ts.state, text });
+    if (!this.bot) return;
+    this.send({ t: 'NEED_HUMAN', reason, step: this.ts.state, text });
+    // снимок при ошибке (§20 «Качество»): HTML страницы — разбор после дропа; скриншот снимет хаб через CDP
+    if (this.b?.snapshots) {
+      const html = document.documentElement.outerHTML;
+      this.send({ t: 'SNAPSHOT', reason: `human:${reason}`, cls: this.pageKind || 'other', title: document.title, html: html.length > 400_000 ? html.slice(0, 400_000) : html, status: 0 });
+    }
   }
 
   /** Лок Add to Bag от SW (§7.1). false — заказ уже в корзине другой вкладки. */

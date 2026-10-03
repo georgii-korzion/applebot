@@ -7,7 +7,7 @@ import { partLabel, partUrl } from '../shared/parts';
 import type { Orchestrator, TabInfo } from './orchestrator';
 import { readBootstrap, setHeavyBlocking } from './bootstrap';
 import { lastDocHeaders } from './diag';
-import { notify, playSound } from './notify';
+import { notify, playSound, setQuiet } from './notify';
 import { focusTab } from './windows';
 import { assignRoles } from './watcher';
 
@@ -43,6 +43,7 @@ function baseCfg(o: Orchestrator): Config {
 export async function botInit(o: Orchestrator): Promise<boolean> {
   o.bot = await readBootstrap();
   if (!o.bot) return false;
+  setQuiet(true);
   const s = await chrome.storage.session.get([K_CFG, K_ORDER]);
   o.cfg = s[K_CFG] ? normalizeConfig(s[K_CFG]) : baseCfg(o);
   o.cfg.profileId = o.bot.browserId;

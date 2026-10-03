@@ -121,12 +121,17 @@ export function snapshot(c: Ctl, page: PageInfo, reason: string, any = false): v
 
 /** Первая встреча класса страницы — снимок (§7 телеметрия). */
 export function snapshotNewClass(c: Ctl, page: PageInfo): void {
-  if (!c.bot || !c.b?.snapshots || !SNAP_CLASSES.has(page.kind)) return;
+  if (!c.bot || !c.b?.snapshots) return;
+  const record = !!c.b.recordPages;
+  if (!record && !SNAP_CLASSES.has(page.kind)) return;
+  const key = page.kind === 'checkout' ? `checkout:${page.step ?? '?'}` : page.kind;
   const seen = c.ts.snapClasses ?? [];
-  if (seen.includes(page.kind)) return;
-  c.ts.snapClasses = [...seen, page.kind];
+  if (seen.includes(key)) return;
+  c.ts.snapClasses = [...seen, key];
   void c.save();
-  snapshot(c, page, `first:${page.kind}`);
+  // чекаут: дать приложению дорисоваться, потом снять
+  if (page.kind === 'checkout') setTimeout(() => snapshot(c, page, `page:${key}`, true), 1500);
+  else snapshot(c, page, record ? `page:${key}` : `first:${page.kind}`, record);
 }
 
 /** Признак показанного QR Apple Pay (§9.2) — не снят на живом сайте (T10), набор эвристик. */

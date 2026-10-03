@@ -50,9 +50,10 @@ export function scheduleByPhase(c: Ctl): void {
   const grace = openAt + c.t.graceSec * 1000;
   const min = c.t.minReloadMs;
   if (!open && Number.isFinite(openAt) && now < openAt - PRE_WINDOW_MS) {
-    // бот: прогрев за warmupSec до старта (§20.7) — корзина и обратно: cookie, кэш скриптов и соединения уже готовы
+    // бот: прогрев за warmupSec до старта (§20.7) — корзина и обратно: cookie, кэш скриптов и соединения уже готовы.
+    // Наблюдатели тоже: прогрев идёт раньше окна опроса JSON (PRE_WINDOW_MS), а покупают они наравне со всеми.
     const warmAt = c.bot && c.b?.warmupSec ? openAt - c.b.warmupSec * 1000 : 0;
-    if (warmAt && !c.ts.warmedUp && c.role !== 'watcher' && now >= warmAt) {
+    if (warmAt && !c.ts.warmedUp && now >= warmAt) {
       c.ts.warmedUp = true;
       c.setState('WARMUP', 'прогрев: корзина → назад к товару');
       void c.navigate(c.bagUrl(), 'прогрев перед стартом');

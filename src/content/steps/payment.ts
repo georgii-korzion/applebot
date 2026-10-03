@@ -103,14 +103,20 @@ export async function fillCard(c: Ctl, num: HTMLInputElement): Promise<void> {
   ];
   const done: string[] = [];
   const missed: string[] = [];
+  // одним проходом, проверка после (§20.3)
+  const set: [HTMLInputElement, string, string][] = [];
   for (const [f, val, label] of fields) {
     if (!val) continue;
     if (!f && label === 'имя') continue; // поля «имя на карте» на живом AE нет — это не ошибка
     if (!f) { missed.push(label); continue; }
     setInput(f, val);
-    await sleep(80, c.signal);
-    const ok = f.value.replace(/\D/g, '') === val.replace(/\D/g, '') || f.value === val;
-    (ok ? done : missed).push(label);
+    set.push([f, val, label]);
+  }
+  await sleep(80, c.signal);
+  const same = (f: HTMLInputElement, val: string) => f.value.replace(/\D/g, '') === val.replace(/\D/g, '') || f.value === val;
+  for (const [f, val, label] of set) {
+    if (!same(f, val)) { setInput(f, val); await sleep(80, c.signal); }
+    (same(f, val) ? done : missed).push(label);
   }
   c.ts.cardFilled = done.includes('номер');
   c.log(`карта ****${digits.slice(-4)}: заполнено ${done.join(', ') || '—'}${missed.length ? `; не удалось: ${missed.join(', ')}` : ''}`, missed.length ? 'warn' : 'info');
@@ -144,15 +150,17 @@ export async function fillBillingAddress(c: Ctl): Promise<void> {
     ['billArea', area, 'Area'],
     ['billTown', b.town, 'Town'],
   ];
+  // одним проходом: текстовые поля и select, проверка после прохода (§20.3)
+  const set: [HTMLInputElement, string, string][] = [];
   for (const [key, val, label] of fields) {
     if (!val) continue;
     const f = findField(key, root);
     if (!f) { missed.push(label); continue; }
     if (f.value !== val) setInput(f, val);
-    await sleep(60, c.signal);
-    (f.value === val ? done : missed).push(label);
+    set.push([f, val, label]);
   }
   const selects: [Key, string, string][] = [['billTitle', b.title, 'Title'], ['billCity', city, 'город']];
+  const chosen: [HTMLSelectElement, string, string][] = [];
   for (const [key, val, label] of selects) {
     if (!val) continue;
     const s = findSelect(key, root);
@@ -160,8 +168,16 @@ export async function fillBillingAddress(c: Ctl): Promise<void> {
     const opt = Array.from(s.options).find((x) => x.text.trim().toLowerCase() === val.toLowerCase() || x.value.toLowerCase() === val.toLowerCase());
     if (!opt) { missed.push(`${label} (нет варианта «${val}»)`); continue; }
     if (s.value !== opt.value) setSelect(s, opt.value);
-    await sleep(60, c.signal);
-    (s.value === opt.value ? done : missed).push(label);
+    chosen.push([s, opt.value, label]);
+  }
+  await sleep(60, c.signal);
+  for (const [f, val, label] of set) {
+    if (f.value !== val) { setInput(f, val); await sleep(60, c.signal); }
+    (f.value === val ? done : missed).push(label);
+  }
+  for (const [s, val, label] of chosen) {
+    if (s.value !== val) { setSelect(s, val); await sleep(60, c.signal); }
+    (s.value === val ? done : missed).push(label);
   }
   c.log(`адрес плательщика: заполнено ${done.join(', ') || '—'}${missed.length ? `; не удалось: ${missed.join(', ')}` : ''}`, missed.length ? 'warn' : 'info');
   if (missed.length) c.overlay.banner(`${payLabel(c)} · допиши в Billing Address: ${missed.join(', ')}`, 'Остальное расширение заполнило', 'warn');

@@ -1,0 +1,83 @@
+// Конфиг бота (docs/BOT-SPEC.md §5). Скопируй в корень репозитория как bot.config.json.
+// Этот файл можно хранить в git — секретов в нём нет (получатели, карты, прокси, Telegram — в secrets.local.json).
+{
+  // имя этой машины: на каждом Mac свой bot.config.json, свои получатели и карты (Mac работают независимо)
+  "machine": "mac1",
+  "openAt": "2026-10-16T16:00:00+04:00",
+  "baseUrl": "https://www.apple.com",
+  "runtimeDir": "runtime",
+  "hub": { "port": 8765 },
+
+  "fleet": {
+    "browsers": 12,                 // ~0,5 ГБ памяти на браузер; 20 — только после bot bench (T17) на этой машине
+    "launchStaggerMs": 1500,
+    "strategyMix": { "refresh": 0.5, "hold": 0.5 },   // гипотеза 1 (§7)
+    "adaptive": true,               // через 45 с после первого пропуска перевести отстающих (ступенями)
+    "adaptiveWindowsSec": [45, 30],
+    "holdMaxWaitSec": 300,          // hold: сколько ждать заглушку после openAt, потом refresh
+    "claimersPerOrder": 2,          // сколько браузеров одновременно идут к корзине за один заказ
+    "cdp": true,                    // порт отладки на 127.0.0.1: настоящий клик Apple Pay, скриншоты
+    "cdpBasePort": 9301,
+    "chromePath": "",               // пусто — найти Chrome for Testing (npm run bot -- install-chrome)
+    "extensionDir": "dist",         // боевая сборка (npm run build)
+    "window": { "width": 900, "height": 800 },
+    "screen": null,                 // null — размер экрана спросить у macOS; окна плиткой
+    "extraArgs": [],
+    "openJitter": "half",           // задержка 0–500 мс после OPEN у половины флота (§20.5)
+    "warmupSec": 150,               // прогрев за 2,5 мин до старта: корзина и назад (§20.7); 0 — нет
+    "directAtb": false,             // Add to Bag прямым запросом — только если bot bench покажет выигрыш (§20.6)
+    "blockHeavy": false,            // не грузить картинки/видео/шрифты на товаре и в корзине — после замера (§20.4)
+    "snapshots": true,              // снимки заглушек в runtime/snapshots (для bot report)
+    "recordPages": false            // живые тесты на 18 Pro: HTML каждого шага (и чекаута) → потом в test/fixtures/live
+  },
+
+  "proxies": {
+    "mode": "mixed",                // off | all | mixed
+    "directBrowsers": 4,            // сколько браузеров идут с домашнего IP (mixed)
+    "maxBrowsersPerProxy": 1,
+    "requireCountry": "AE",
+    "relaunchOnBlock": true,        // заблокированный браузер без заказа — новый профиль на запасном прокси
+    "basePort": 18801,              // локальные форвардеры 127.0.0.1:18801…
+    "probe": "www.apple.com:443",   // проверка живости прокси раз в 3 с
+    "downAfterSec": 10
+  },
+
+  "orders": [
+    { "id": "A", "priority": 1, "targets": ["MK254AH/A", "MK244AH/A"], "stores": ["R597", "R596", "R706"], "city": "Dubai",
+      "slot": { "day": null, "after": null, "before": null }, "recipient": "r1", "payment": "card", "deliveryFallback": false },
+    { "id": "B", "priority": 2, "targets": ["MK274AH/A", "MK264AH/A"], "stores": ["R597", "R596"], "city": "Dubai",
+      "slot": { "day": null, "after": null, "before": null }, "recipient": "r2", "payment": "applepay", "deliveryFallback": false }
+  ],
+
+  "payment": {
+    "stopBeforePay": false,         // true — пробный прогон: стоп на Review, ничего не оплачивать
+    "card": { "parallelPerCard": 1, "threeDsTimeoutSec": 300, "burnAfterDeclines": 1, "burnOn3dsTimeout": false },
+    // QR у Apple Pay меняется — в Telegram не шлём; окно с QR выходит вперёд на весь экран
+    "applePay": { "cdpClick": true, "osClick": false, "timeoutSec": 300, "reopenTries": 3, "sendQrScreenshot": false, "fullscreen": true }
+  },
+
+  "notify": {
+    "telegram": { "enabled": false, "liveStatus": true, "statusEditMs": 3000 },
+    "webhooks": { "enabled": false, "events": ["order.placed", "human.needed", "card.declined"] },
+    "file": { "enabled": true, "path": "orders.txt" },   // все заказы с контактами — runtime/orders.txt
+    "fullContact": true,
+    "summaryAfterMin": 30
+  },
+
+  "privacy": {
+    "maskContactsInLogs": false,    // false — полные имя, телефон, email в логах и дашборде
+    "maskCardInLogs": true,         // карта в логах — ****1234
+    "logTokens": false
+  },
+
+  "watchdog": {
+    "enabled": true,
+    "thresholds": { "ATB_PENDING": 20, "IN_BAG": 20, "CHECKOUT": 20, "GUEST": 20, "FULFILLMENT": 40, "CONTACT": 25, "BILLING": 30, "REVIEW": 20 }
+  },
+
+  // тайминги расширения (HANDOFF §10); нижние пределы проверяются
+  "timing": {},
+
+  // bot bench: товар, который уже продаётся (18 Pro 256 GB Black), и размеры флота
+  "bench": { "runs": 5, "browsers": [1, 10, 20], "targets": ["MJR54AH/A"] }
+}

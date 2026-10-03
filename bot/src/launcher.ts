@@ -1,12 +1,13 @@
 // Лаунчер (BOT-SPEC §4): запуск и надзор за процессами Chrome. Один браузер = свой --user-data-dir =
 // одна сессия Apple = одна корзина. Браузеры отвязаны от оркестратора (detached): его падение не роняет покупку.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { BotConfig, Secrets } from './config';
 import { chromeArgs, chromeVersion, findChrome, majorOf, type ChromeBin } from './chrome';
-import { Forwarder, parseProxyUrl, redactProxy, httpsGetVia } from './proxy/forwarder';
+import { forwarderStatus, parseProxyUrl, redactProxy, httpsGetVia, type ForwarderStatus } from './proxy/forwarder';
+import { fileURLToPath } from 'node:url';
 import type { BrowserRt, FleetOps, Hub } from './hub/server';
 import { assignStrategies } from './hub/policy';
 import { activatePid, screenSize } from './os';
@@ -19,11 +20,17 @@ export function pidAlive(pid?: number): boolean {
 }
 
 const MAX_RELAUNCHES = 5;
+interface ProxyDefLite { id: string; label: string; url: string; i: number; bad: number }
+const BUNDLE = fileURLToPath(import.meta.url);
+
+/** Форвардер прокси — отдельный отвязанный процесс (переживает оркестратор, §3.5). */
+export interface FwdRt { id: string; port: number; pid?: number; up: boolean; status?: ForwarderStatus & { targets?: Record<string, number> } }
 
 export class Launcher implements FleetOps {
   chrome: ChromeBin | null;
   chromeVer: string | null = null;
-  forwarders = new Map<string, Forwarder>();
+  forwarders = new Map<string, FwdRt>();
+  private fwdTimer: ReturnType<typeof setInterval> | undefined;
   private procs = new Map<string, ChildProcess>();
   private watchTimer: ReturnType<typeof setInterval> | undefined;
   private blockedProxies = new Set<string>();
@@ -67,13 +74,31 @@ export class Launcher implements FleetOps {
     this.log(`флот: ${n} браузеров · ${strategies.filter((s) => s === 'hold').length} hold / ${strategies.filter((s) => s === 'refresh').length} refresh · прямых ${proxies.filter((p) => !p).length}, через прокси ${proxies.filter(Boolean).length}`);
   }
 
+  /**
+   * Порядок прокси: по результатам bot check (runtime/proxy-check.json) медленные (вдвое медленнее прямого канала),
+   * не из нужной страны и с ошибкой — в конец, то есть в запасные (§20.9).
+   */
+  private proxyOrder(): ProxyDefLite[] {
+    let check: { directMs?: number; results?: Record<string, { ms?: number; country?: string; error?: string }> } = {};
+    try { check = JSON.parse(readFileSync(join(this.hub.store.dir, 'proxy-check.json'), 'utf8')); } catch { /* bot check не запускали */ }
+    const bad = (id: string) => {
+      const r = check.results?.[id];
+      if (!r) return 0;
+      if (r.error) return 2;
+      if (r.country && r.country !== this.cfg.proxies.requireCountry) return 1;
+      if (check.directMs && r.ms && r.ms > check.directMs * 2) return 1;
+      return 0;
+    };
+    return [...this.sec.proxies].map((p, i) => ({ ...p, i, bad: bad(p.id) })).sort((a, b) => a.bad - b.bad || a.i - b.i);
+  }
+
   /** Свободные места на прокси (с учётом maxBrowsersPerProxy и уже занятых). */
   private proxySlots(exclude = new Set<string>()): string[] {
     const used = new Map<string, number>();
     for (const b of this.hub.browsers.values()) if (b.proxyId && b.status !== 'RETIRED') used.set(b.proxyId, (used.get(b.proxyId) ?? 0) + 1);
     const out: string[] = [];
     for (let round = 0; round < this.cfg.proxies.maxBrowsersPerProxy; round++) {
-      for (const p of this.sec.proxies) {
+      for (const p of this.proxyOrder()) {
         if (exclude.has(p.id) || this.blockedProxies.has(p.id)) continue;
         if ((used.get(p.id) ?? 0) <= round) { out.push(p.id); used.set(p.id, (used.get(p.id) ?? 0) + 1); }
       }
@@ -90,25 +115,62 @@ export class Launcher implements FleetOps {
   private extDir(id: string): string { return join(this.hub.store.dir, 'ext', id); }
 
   // ---------- прокси ----------
-  private async forwarder(proxyId: string): Promise<Forwarder> {
+  private async forwarder(proxyId: string): Promise<FwdRt> {
     const have = this.forwarders.get(proxyId);
     if (have) return have;
     const i = this.sec.proxies.findIndex((p) => p.id === proxyId);
     const def = this.sec.proxies[i];
-    const f = new Forwarder(proxyId, parseProxyUrl(def.url), this.cfg.proxies.basePort + i, { probe: this.cfg.proxies.probe, downAfterSec: this.cfg.proxies.downAfterSec });
-    await f.start();
-    f.on('down', (err: string) => this.hub.onProxyDown(proxyId, err));
-    f.on('up', () => this.hub.onProxyUp(proxyId));
+    const port = this.cfg.proxies.basePort + i;
+    let st = await forwarderStatus(port);
+    if (st && st.id !== proxyId) throw new Error(`порт ${port} занят чужим форвардером (${st.id})`);
+    if (!st) {
+      mkdirSync(join(this.hub.store.dir, 'logs'), { recursive: true });
+      const out = openSync(join(this.hub.store.dir, 'logs', `forwarder-${proxyId}.log`), 'a');
+      const ch = spawn(process.execPath, [BUNDLE, 'forwarder', '--id', proxyId, '--port', String(port), '--probe', this.cfg.proxies.probe, '--down', String(this.cfg.proxies.downAfterSec)], {
+        detached: true, stdio: ['ignore', out, out], env: { ...process.env, PROXY_URL: def.url },
+      });
+      ch.unref();
+      for (let k = 0; k < 40 && !st; k++) { await new Promise((r) => setTimeout(r, 100)); st = await forwarderStatus(port, 500); }
+      if (!st) throw new Error(`форвардер ${def.label} не запустился (порт ${port})`);
+      this.log(`форвардер ${def.label}: 127.0.0.1:${port} → ${redactProxy(def.url)} (PID ${st.pid})`);
+    } else this.log(`форвардер ${def.label} уже работает (PID ${st.pid}) — подхватываю`);
+    const f: FwdRt = { id: proxyId, port, pid: st.pid, up: st.up, status: st };
     this.forwarders.set(proxyId, f);
-    this.log(`форвардер ${def.label}: 127.0.0.1:${f.port} → ${redactProxy(def.url)}`);
+    this.hub.forwarders[proxyId] = { pid: st.pid, port };
+    this.hub.persist();
+    if (!this.fwdTimer) this.fwdTimer = setInterval(() => void this.pollForwarders(), 2000);
     // выходной IP — для статуса и отчёта (без сети просто не узнаем)
-    void httpsGetVia(f.upstream, 'https://api.ipify.org?format=json', 6000).then((r) => {
+    void httpsGetVia(parseProxyUrl(def.url), 'https://api.ipify.org?format=json', 6000).then((r) => {
       const ip = /"ip"\s*:\s*"([^"]+)"/.exec(r.body)?.[1];
       if (!ip) return;
       for (const b of this.hub.browsers.values()) if (b.proxyId === proxyId) b.exitIp = ip;
       this.hub.store.event('proxy.ip', { proxy: proxyId, ip });
     }).catch(() => {});
     return f;
+  }
+
+  /** Живость прокси (проба внутри форвардера) и самого процесса форвардера. */
+  private async pollForwarders(): Promise<void> {
+    for (const f of this.forwarders.values()) {
+      const st = await forwarderStatus(f.port);
+      if (!st) {
+        // процесс форвардера пропал — поднять снова (браузеры ходят на тот же порт)
+        if (f.up) { f.up = false; this.hub.onProxyDown(f.id, 'форвардер не отвечает — перезапускаю'); }
+        this.forwarders.delete(f.id);
+        await this.forwarder(f.id).catch((e) => this.log(`форвардер ${f.id}: ${e instanceof Error ? e.message : e}`, 'error'));
+        continue;
+      }
+      f.status = st;
+      f.pid = st.pid;
+      if (st.up !== f.up) {
+        f.up = st.up;
+        if (st.up) this.hub.onProxyUp(f.id); else this.hub.onProxyDown(f.id, st.lastError ?? 'нет ответа');
+      }
+    }
+  }
+
+  stats(): unknown[] {
+    return [...this.forwarders.values()].map((f) => ({ id: f.id, port: f.port, pid: f.pid, up: f.up, ...(f.status ?? {}) }));
   }
 
   // ---------- запуск ----------
@@ -238,8 +300,10 @@ export class Launcher implements FleetOps {
       if (b.status !== 'RETIRED') b.status = 'STOPPED';
       this.kill(b.id);
     }
-    for (const f of this.forwarders.values()) f.stop();
     clearInterval(this.watchTimer);
+    clearInterval(this.fwdTimer);
+    for (const [id, f] of Object.entries(this.hub.forwarders)) if (pidAlive(f.pid)) { try { process.kill(f.pid!, 'SIGTERM'); } catch { /* */ } this.log(`форвардер ${id} остановлен`); }
+    this.forwarders.clear();
     this.hub.persist();
   }
 
@@ -248,7 +312,9 @@ export class Launcher implements FleetOps {
     if (b?.pid) void activatePid(b.pid);
   }
 
-  stopForwarders(): void {
-    for (const f of this.forwarders.values()) f.stop();
+  /** Выход оркестратора без остановки: форвардеры (отдельные процессы) остаются — браузеры доводят заказы. */
+  detach(): void {
+    clearInterval(this.watchTimer);
+    clearInterval(this.fwdTimer);
   }
 }

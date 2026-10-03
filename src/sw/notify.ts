@@ -4,7 +4,12 @@ import { focusTab } from './windows';
 
 const tabByNotif = new Map<string, number>();
 
+/** Режим бота: флот из многих браузеров — мелкие уведомления и звуки молчат, человека зовёт хаб (очередь внимания). */
+let quiet = false;
+export function setQuiet(on: boolean): void { quiet = on; }
+
 export async function notify(o: { id?: string; title: string; message: string; tabId?: number; sound?: SoundKind; sticky?: boolean }): Promise<void> {
+  if (quiet && !o.sticky) return;
   const id = o.id ?? `n-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   try {
     if (o.id) await chrome.notifications.clear(id);
@@ -47,6 +52,7 @@ async function ensureOffscreen(): Promise<void> {
 }
 
 export async function playSound(kind: SoundKind): Promise<void> {
+  if (quiet && (kind === 'open' || kind === 'alert')) return;
   try {
     await ensureOffscreen();
     await chrome.runtime.sendMessage({ target: 'offscreen', t: 'PLAY', kind });
