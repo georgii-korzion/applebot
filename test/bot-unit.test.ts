@@ -1,9 +1,12 @@
 // Юнит-тесты бота (docs/BOT-SPEC.md §15): назначение заказов, пул карт, адаптация H1, сторож, очередь внимания,
-// шаблоны уведомлений, валидация конфига и секретов, JSONC, форвардер прокси (HTTP и SOCKS5 с логином).
+// шаблоны уведомлений, валидация конфига и секретов, JSONC, форвардер прокси (HTTP и SOCKS5 с логином), пульт.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { CardPool } from '../bot/src/hub/cards';
 import { AttentionQueue } from '../bot/src/hub/attention';
 import { adaptTick, assignStrategies, isStuck, newAdapt, pickOrder } from '../bot/src/hub/policy';
@@ -12,6 +15,7 @@ import { leaksSecrets, orderFileBlock, recipientOut, telegramText } from '../bot
 import { sign } from '../bot/src/notify';
 import { Forwarder, openTunnel, parseProxyUrl, redactProxy } from '../bot/src/proxy/forwarder';
 import { scrubHtml } from '../bot/src/hub/server';
+import { fromForm, loadForm, saveForm, toForm, validateForm } from '../bot/src/ui/server';
 import { isDeclineText, THREEDS_RE } from '../src/shared/bot';
 import { scrub } from '../src/shared/log';
 
@@ -296,4 +300,48 @@ test('прокси: разбор адреса, HTTP CONNECT и SOCKS5 с лог�
   const down = await new Promise<boolean>((resolve) => { f2.once('down', () => resolve(true)); setTimeout(() => resolve(false), 8000); });
   f2.stop();
   assert.ok(down, 'событие down');
+});
+
+test('пульт: первый запуск из примера, сохранение (секреты 600), битый файл — в .broken', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'bot-ui-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const o = { root: resolve('.'), configPath: join(dir, 'bot.config.json'), secretsPath: join(dir, 'secrets.local.json') };
+  // первый запуск: пример конфига, без прокси, пустые получатели под заказы примера
+  const first = loadForm(o);
+  assert.equal(first.configExists, false);
+  assert.ok(first.notes.some((n) => /не сохранялись/.test(n)));
+  assert.equal(first.form.config.proxies.mode, 'off', 'без прокси — все напрямую');
+  assert.deepEqual(first.form.secrets.recipients.map((r) => r.id), first.form.config.orders.map((x) => x.recipient), 'получатели под заказы примера');
+  assert.equal(first.form.secrets.cards.length, 1);
+  assert.ok(validateForm(o.root, first.form).errors.some((e) => /у получателя r1 пустое имя/.test(e)));
+  // заполнить и сохранить
+  const f = first.form;
+  f.secrets.recipients = [
+    { id: 'r1', firstName: 'Ahmed', lastName: 'Test', email: 'a@example.com', phone: '050 123 4567' },
+    { id: 'r2', firstName: 'Maria', lastName: 'Test', email: 'm@example.com', phone: '0529876543' },
+  ];
+  Object.assign(f.secrets.cards[0], { number: '4111 1111 1111 1111', expiry: '12/29', cvv: '123', name: 'AHMED TEST' });
+  Object.assign(f.secrets.cards[0].billing, { street: 'Sheikh Zayed Rd 1', area: 'Downtown' });
+  f.secrets.proxies.push({ id: 'px1', label: 'пустой', url: '' });
+  const saved = saveForm(o, f);
+  assert.deepEqual(saved.errors, []);
+  assert.equal(statSync(o.secretsPath).mode & 0o777, 0o600, 'секреты — 600');
+  const sec = JSON.parse(readFileSync(o.secretsPath, 'utf8'));
+  assert.equal(sec.recipients.r1.phone, '0501234567', 'телефон без пробелов');
+  assert.equal(sec.cards[0].number, '4111111111111111', 'номер без пробелов');
+  assert.equal(sec.proxies.length, 0, 'пустая строка прокси убрана');
+  // перечитать — те же данные
+  const again = loadForm(o);
+  assert.equal(again.configExists, true);
+  assert.deepEqual(again.notes, []);
+  assert.deepEqual(again.form, saved.form);
+  assert.deepEqual(fromForm(toForm(fromForm(again.form).cfg, fromForm(again.form).sec)).sec, fromForm(again.form).sec, 'форма ↔ файл без потерь');
+  // битые секреты: форма с пустыми секретами и предупреждением, при сохранении старый файл — в .broken (тоже 600)
+  writeFileSync(o.secretsPath, '{ "cards": [ { "number": "4111', { mode: 0o600 });
+  const broken = loadForm(o);
+  assert.ok(broken.notes.some((n) => /не читается/.test(n)));
+  saveForm(o, broken.form);
+  assert.ok(existsSync(o.secretsPath + '.broken'));
+  assert.equal(statSync(o.secretsPath + '.broken').mode & 0o777, 0o600);
+  assert.doesNotThrow(() => JSON.parse(readFileSync(o.secretsPath, 'utf8')));
 });

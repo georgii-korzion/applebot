@@ -1,0 +1,846 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apple Drop Bot — пульт</title>
+<link rel="icon" href="data:,">
+<style>
+:root { --bg:#f5f5f7; --panel:#fff; --fg:#1d1d1f; --muted:#6e6e73; --line:#d2d2d7; --accent:#0071e3; --ok:#248a3d; --warn:#b25000; --err:#d70015; --field:#fff; --chip:#e8e8ed; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#000; --panel:#1c1c1e; --fg:#f5f5f7; --muted:#a1a1a6; --line:#3a3a3c; --accent:#2997ff; --ok:#30d158; --warn:#ffd60a; --err:#ff453a; --field:#2c2c2e; --chip:#3a3a3c; }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif; }
+header.top { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:14px; padding:10px 20px; background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+header.top h1 { font-size:17px; margin:0; }
+.grow { flex:1; }
+.layout { display:grid; grid-template-columns:190px minmax(0, 1fr); gap:20px; max-width:1180px; margin:0 auto; padding:14px 20px 80px; }
+nav { position:sticky; top:70px; align-self:start; display:flex; flex-direction:column; gap:2px; }
+nav button { text-align:left; border:0; background:transparent; padding:8px 12px; border-radius:8px; font:inherit; color:var(--fg); cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+nav button:hover { background:var(--chip); }
+nav button.on { background:var(--panel); font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+.badge:empty { display:none; }
+.badge { background:var(--err); color:#fff; border-radius:9px; font-size:11px; padding:0 6px; min-width:18px; text-align:center; font-weight:600; }
+.card { background:var(--panel); border-radius:14px; padding:16px 18px; margin-bottom:14px; box-shadow:0 1px 2px rgba(0,0,0,.05); }
+h2 { font-size:15px; margin:0 0 10px; }
+h3 { font-size:15px; margin:0; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(210px, 1fr)); gap:10px 14px; margin:8px 0; }
+.fld { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.fld.wide { grid-column:1 / -1; }
+.fld > label { font-size:12px; color:var(--muted); }
+input[type=text], input[type=number], input[type=email], input[type=tel], input[type=password], input[type=time], input[type=datetime-local], select {
+  font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--field); color:var(--fg); width:100%; min-width:0;
+}
+input:focus, select:focus { outline:2px solid rgba(0,113,227,.35); outline-offset:0; border-color:var(--accent); }
+.chk { display:flex; gap:8px; align-items:flex-start; cursor:pointer; }
+.chk input { margin-top:3px; flex:none; }
+.fld.bool { justify-content:center; }
+.hint { font-size:12px; color:var(--muted); }
+p.hint { margin:0 0 10px; }
+button, .btn { font:inherit; font-size:13px; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--fg); cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; gap:6px; }
+button:hover, .btn:hover { border-color:var(--muted); }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+button.big { font-size:16px; padding:10px 22px; }
+button.danger { background:var(--err); border-color:var(--err); color:#fff; font-weight:600; }
+button.danger-t { color:var(--err); }
+button:disabled { opacity:.45; cursor:default; }
+button.link { border:0; background:none; color:var(--accent); padding:0; }
+.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.row.spread { justify-content:space-between; }
+.row.spread > p { flex:1 1 360px; }
+.item-h { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.chip { background:var(--chip); border-radius:16px; padding:3px 4px 3px 10px; font-size:13px; display:inline-flex; align-items:center; gap:2px; }
+.chip button { border:0; background:transparent; padding:0 5px; font-size:14px; line-height:1; color:var(--muted); }
+.chip button:hover { color:var(--fg); }
+.chips select { width:auto; max-width:340px; }
+.sec { display:flex; gap:4px; }
+.sec input { flex:1; }
+.eye { padding:4px 8px; }
+.ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--err); } .muted { color:var(--muted); }
+.valbar { max-width:1180px; margin:10px auto 0; padding:0 20px; font-size:13px; }
+.notes { background:rgba(0,113,227,.1); border-radius:10px; padding:8px 12px; margin-bottom:14px; font-size:13px; }
+.checks { list-style:none; padding:0; margin:0; }
+.checks li { display:flex; gap:10px; align-items:center; padding:9px 0; border-bottom:1px solid var(--line); }
+.checks li:last-child { border:0; }
+.checks .ic { width:22px; text-align:center; font-size:16px; flex:none; }
+.checks .t { flex:1; min-width:0; }
+.checks .t small { display:block; color:var(--muted); overflow-wrap:anywhere; }
+.mode { border-radius:10px; padding:10px 12px; margin-bottom:12px; }
+.mode.trial { background:rgba(36,138,61,.12); }
+.mode.live { background:rgba(215,0,21,.12); }
+.mode b.big { font-size:15px; }
+pre.con { background:#1d1d1f; color:#e8e8ed; font:12px/1.4 ui-monospace, Menlo, monospace; border-radius:10px; padding:10px 12px; max-height:440px; min-height:110px; overflow:auto; white-space:pre-wrap; word-break:break-word; margin:0; }
+.toast { position:fixed; right:20px; bottom:20px; background:var(--fg); color:var(--bg); padding:10px 16px; border-radius:10px; z-index:10; max-width:460px; box-shadow:0 4px 18px rgba(0,0,0,.2); }
+.toast.bad { background:var(--err); color:#fff; }
+.tag { font-size:12px; font-weight:400; background:var(--chip); border-radius:6px; padding:1px 7px; margin-left:6px; }
+.pill { display:flex; align-items:center; gap:6px; font-size:13px; flex-wrap:wrap; }
+.dot { width:9px; height:9px; border-radius:50%; background:var(--muted); display:inline-block; }
+.dot.on { background:var(--ok); } .dot.warn { background:var(--warn); }
+.vlist { margin:6px 0 0; padding-left:18px; }
+.vlist li { margin:3px 0; }
+input[type=range] { width:100%; }
+.empty { color:var(--muted); text-align:center; padding:30px 0; }
+.sub { margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
+@media (max-width: 820px) {
+  .layout { grid-template-columns:1fr; padding:12px 16px 60px; }
+  nav { position:static; flex-direction:row; overflow-x:auto; }
+  nav button { white-space:nowrap; }
+  header.top { padding:10px 16px; }
+  .valbar { padding:0 16px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Apple Drop Bot <span id="machineLbl" class="muted"></span></h1>
+  <div id="runPill" class="pill"><span class="dot"></span> …</div>
+  <div class="grow"></div>
+  <span id="dirty" class="warn" hidden>есть несохранённые изменения</span>
+  <button id="saveBtn" class="primary" data-act="save">Сохранить</button>
+</header>
+<div id="valbar" class="valbar"></div>
+<div class="layout">
+  <nav id="tabs"></nav>
+  <main id="main"><div class="card">Загрузка…</div></main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script>
+'use strict';
+const token = new URLSearchParams(location.search).get('token') || '';
+const S = { form: null, catalog: null, paths: null, notes: [], tab: 'start', dirty: false, val: { errors: [], warnings: [] }, status: null, job: null, jobId: null, consoleMode: 'job', orchLog: '', lastCheck: null, fresh: false };
+const $ = (s) => document.querySelector(s);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const plural = (n, a, b, c) => (n % 10 === 1 && n % 100 !== 11 ? a : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? b : c);
+
+async function api(path, body) {
+  const init = body === undefined ? { headers: { 'x-token': token } } : { method: 'POST', headers: { 'x-token': token, 'content-type': 'application/json' }, body: JSON.stringify(body) };
+  try {
+    const r = await fetch(path, init);
+    return await r.json().catch(() => ({ ok: false, error: 'HTTP ' + r.status }));
+  } catch (e) {
+    return { ok: false, error: 'пульт не отвечает — он закрыт? (npm run bot -- ui)' };
+  }
+}
+
+// ---------- путь в форме ----------
+function getP(path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), S.form); }
+function setP(path, v) {
+  const ks = path.split('.');
+  let o = S.form;
+  for (const k of ks.slice(0, -1)) { if (o[k] == null) o[k] = {}; o = o[k]; }
+  o[ks[ks.length - 1]] = v;
+}
+
+// ---------- проверки полей на лету ----------
+function luhn(d) {
+  let s = 0, alt = false;
+  for (let i = d.length - 1; i >= 0; i--) { let n = +d[i]; if (alt) { n *= 2; if (n > 9) n -= 9; } s += n; alt = !alt; }
+  return s % 10 === 0;
+}
+const CHECKS = {
+  phone: (v) => /^05\d{8}$/.test(String(v).replace(/[\s-]/g, '')),
+  email: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(v).trim()),
+  luhn: (v) => { const d = String(v).replace(/[\s-]/g, ''); return /^\d{13,19}$/.test(d) && luhn(d); },
+  expiry: (v) => /^(0[1-9]|1[0-2])\s?\/\s?(\d{2}|\d{4})$/.test(String(v).trim()),
+  cvv: (v) => /^\d{3,4}$/.test(String(v).trim()),
+  proxy: (v) => /^(https?|socks5h?|socks):\/\/.+:\d+\/?$/i.test(String(v).trim()),
+};
+function checkMark(kind, v) {
+  if (v == null || v === '') return '';
+  return CHECKS[kind](v) ? '<span class="ok">✓</span>' : '<span class="bad">✗ проверь</span>';
+}
+
+// ---------- поля ----------
+let uid = 0;
+function toDubai(iso) { const t = Date.parse(iso); return Number.isFinite(t) ? new Date(t + 4 * 3600e3).toISOString().slice(0, 16) : ''; }
+function fromDubai(v) { return v ? v + ':00+04:00' : ''; }
+
+function F(path, label, type, o = {}) {
+  const v = getP(path);
+  const id = 'f' + (++uid);
+  const common = `id="${id}" data-path="${esc(path)}" data-type="${type}"` + (o.rerender ? ' data-rerender="1"' : '') + (o.check ? ` data-check="${o.check}"` : '') + (o.ph ? ` placeholder="${esc(o.ph)}"` : '');
+  const hint = o.hint ? `<div class="hint">${o.hint}</div>` : '';
+  const cls = 'fld' + (o.wide ? ' wide' : '');
+  if (type === 'bool') return `<div class="${cls} bool"><label class="chk"><input type="checkbox" ${common}${v ? ' checked' : ''}><span>${esc(label)}</span></label>${hint}</div>`;
+  let input;
+  if (type === 'select' || type === 'nullsel') {
+    const cur = v == null ? '' : String(v);
+    input = `<select ${common}>${o.options.map(([val, l]) => `<option value="${esc(val)}"${String(val) === cur ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  } else {
+    const t = { num: 'number', email: 'email', tel: 'tel', time: 'time', dubai: 'datetime-local', secret: 'password', day: 'number' }[type] || 'text';
+    let val = v;
+    if (type === 'csv' || type === 'csvnum') val = Array.isArray(v) ? v.join(', ') : '';
+    else if (type === 'dubai') val = toDubai(v);
+    else if (v == null) val = '';
+    let extra = ' autocomplete="off" spellcheck="false"';
+    if (type === 'num') extra += ` step="${o.step || 'any'}"` + (o.min != null ? ` min="${o.min}"` : '');
+    if (type === 'day') extra += ' min="1" max="31" step="1"';
+    if (o.inputmode) extra += ` inputmode="${o.inputmode}"`;
+    input = `<input type="${t}" ${common} value="${esc(val)}"${extra}>`;
+    if (type === 'secret') input = `<div class="sec">${input}<button type="button" class="eye" data-act="reveal" data-for="${id}" title="показать / скрыть">👁</button></div>`;
+  }
+  const mark = o.check ? ` <span class="vchk" data-for="${id}">${checkMark(o.check, v)}</span>` : '';
+  return `<div class="${cls}"><label for="${id}">${esc(label)}${mark}</label>${input}${hint}</div>`;
+}
+
+function readVal(el) {
+  const t = el.dataset.type;
+  if (t === 'bool') return el.checked;
+  const v = el.value;
+  switch (t) {
+    case 'num': return v === '' ? null : Number(v);
+    case 'day': return v === '' ? null : String(Math.round(Number(v)));
+    case 'csv': return v.split(',').map((s) => s.trim()).filter(Boolean);
+    case 'csvnum': return v.split(/[,\s]+/).map(Number).filter((n) => Number.isFinite(n) && n > 0);
+    case 'time': return v || null;
+    case 'nullsel': return v === '' ? null : v;
+    case 'dubai': return fromDubai(v);
+    case 'holdpct': { const h = Number(v); return { refresh: Math.round(100 - h) / 100, hold: Math.round(h) / 100 }; }
+    default: return v;
+  }
+}
+
+function onField(e) {
+  const el = e.target;
+  if (!(el instanceof HTMLElement)) return;
+  if (el.id === 'fresh') { S.fresh = el.checked; return; }
+  if (el.dataset.chip && e.type === 'change') {
+    if (!el.value) return;
+    const arr = getP(el.dataset.chip) || [];
+    if (!arr.includes(el.value)) arr.push(el.value);
+    setP(el.dataset.chip, arr);
+    markDirty();
+    render();
+    return;
+  }
+  const path = el.dataset.path;
+  if (!path) return;
+  if (el.dataset.type === 'evset') {
+    if (e.type !== 'change') return;
+    const set = new Set(getP(path) || []);
+    if (el.checked) set.add(el.dataset.ev); else set.delete(el.dataset.ev);
+    setP(path, [...set]);
+  } else {
+    setP(path, readVal(el));
+  }
+  if (el.dataset.check) { const m = document.querySelector(`.vchk[data-for="${el.id}"]`); if (m) m.innerHTML = checkMark(el.dataset.check, el.value); }
+  if (el.dataset.type === 'holdpct') { $('#holdPct').textContent = el.value + '%'; $('#refPct').textContent = (100 - el.value) + '%'; }
+  if (path === 'config.fleet.browsers') { const m = $('#memEst'); if (m) m.textContent = memText(); }
+  markDirty();
+  if (e.type === 'change' && el.dataset.rerender) render();
+}
+document.addEventListener('input', onField);
+document.addEventListener('change', onField);
+
+function markDirty() {
+  S.dirty = true;
+  $('#dirty').hidden = false;
+  scheduleValidate();
+}
+let vTimer = null;
+function scheduleValidate() {
+  clearTimeout(vTimer);
+  vTimer = setTimeout(async () => {
+    const r = await api('/api/validate', { form: S.form });
+    if (r.ok) { S.val = { errors: r.errors, warnings: r.warnings }; renderValBar(); if (S.tab === 'start') renderStartLive(); }
+  }, 450);
+}
+
+// ---------- каталоги ----------
+function partGroups() {
+  const g = {};
+  for (const p of S.catalog.parts) (g[p.model] = g[p.model] || []).push([p.part, p.label.replace(p.model + ' ', '') + ' — ' + p.part]);
+  return Object.entries(g).map(([label, items]) => ({ label, items }));
+}
+function storeGroups() {
+  const g = {};
+  for (const s of S.catalog.stores) (g[s.city] = g[s.city] || []).push([s.id, s.name.replace(/^Apple /, '') + ' (' + s.id + ')']);
+  return Object.entries(g).map(([label, items]) => ({ label, items }));
+}
+function partName(id) { const p = S.catalog.parts.find((x) => x.part === id); return p ? p.label + ' · ' + id : id + ' (неизвестная модель)'; }
+function storeName(id) { const s = S.catalog.stores.find((x) => x.id === id); return s ? s.name.replace(/^Apple /, '') + ' · ' + s.city : id + ' (неизвестный магазин)'; }
+const cityOpts = () => S.catalog.cities.map((c) => [c, c]);
+
+function chips(path, arr, groups, nameOf) {
+  arr = arr || [];
+  return `<div class="chips">${arr.map((v, k) => `<span class="chip">${k + 1}. ${esc(nameOf(v))}${k ? `<button type="button" data-act="chip-up" data-chip="${esc(path)}" data-k="${k}" title="выше">↑</button>` : ''}<button type="button" data-act="chip-del" data-chip="${esc(path)}" data-k="${k}" title="убрать">×</button></span>`).join('')}
+    <select data-chip="${esc(path)}"><option value="">+ добавить…</option>${groups.map((g) => `<optgroup label="${esc(g.label)}">${g.items.filter(([v]) => !arr.includes(v)).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</optgroup>`).join('')}</select></div>`;
+}
+
+// ---------- вкладки ----------
+const TABS = [
+  ['start', '▶ Запуск'], ['orders', 'Заказы'], ['recipients', 'Получатели'], ['cards', 'Карты'], ['proxies', 'Прокси'],
+  ['fleet', 'Браузеры'], ['payment', 'Оплата'], ['notify', 'Уведомления'], ['advanced', 'Дополнительно'], ['results', 'Результаты'],
+];
+function errTab(m) {
+  if (/у получателя/.test(m)) return 'recipients';
+  if (/^Заказ|нет ни одного заказа/.test(m)) return 'orders';
+  if (/^Карта|карт[аыу]? /i.test(m) || /primary|reserve/.test(m)) return 'cards';
+  if (/прокси/i.test(m)) return 'proxies';
+  if (/Telegram|вебхук/i.test(m)) return 'notify';
+  if (/браузеров|strategyMix/.test(m)) return 'fleet';
+  if (/stopBeforePay|Place Order/.test(m)) return 'payment';
+  if (/timing|мс|baseUrl|Timing/.test(m)) return 'advanced';
+  return 'start';
+}
+
+const VIEWS = {
+  start: tabStart, orders: tabOrders, recipients: tabRecipients, cards: tabCards, proxies: tabProxies,
+  fleet: tabFleet, payment: tabPayment, notify: tabNotify, advanced: tabAdvanced, results: tabResults,
+};
+
+function render() {
+  uid = 0;
+  $('#tabs').innerHTML = TABS.map(([k, l]) => `<button type="button" data-tab="${k}" class="${S.tab === k ? 'on' : ''}"><span>${esc(l)}</span><span class="badge" data-badge="${k}"></span></button>`).join('');
+  $('#main').innerHTML = VIEWS[S.tab]();
+  $('#machineLbl').textContent = S.form.config.machine ? '· ' + S.form.config.machine : '';
+  renderValBar();
+  renderStatus();
+  updateConsole();
+  if (S.tab === 'results') loadOrders();
+}
+
+function renderValBar() {
+  const { errors, warnings } = S.val;
+  const counts = {};
+  for (const m of errors) { const t = errTab(m); counts[t] = (counts[t] || 0) + 1; }
+  document.querySelectorAll('[data-badge]').forEach((b) => { b.textContent = counts[b.dataset.badge] || ''; });
+  const el = $('#valbar');
+  if (!errors.length && !warnings.length) { el.innerHTML = '<span class="ok">✓ Настройки заполнены без ошибок</span>'; return; }
+  el.innerHTML = (errors.length ? `<b class="bad">✗ ${errors.length} ${plural(errors.length, 'ошибка', 'ошибки', 'ошибок')}</b>` : '<span class="ok">✓ ошибок нет</span>')
+    + (warnings.length ? ` · <span class="warn">⚠ ${warnings.length} ${plural(warnings.length, 'предупреждение', 'предупреждения', 'предупреждений')}</span>` : '')
+    + (S.tab !== 'start' ? ' · <button type="button" class="link" data-tab="start">список</button>' : '');
+}
+
+// ---------- Запуск ----------
+function checkRow(ok, title, sub, btn) {
+  const ic = ok === true ? '<span class="ok">✓</span>' : ok === false ? '<span class="bad">✗</span>' : '<span class="muted">○</span>';
+  return `<li><span class="ic">${ic}</span><span class="t">${title}<small>${sub}</small></span>${btn || ''}</li>`;
+}
+function busy(kind) { return !!(S.status && S.status.busy || []).includes(kind); }
+function jobBtn(kind, label, cls = '') { return `<button type="button" class="${cls}" data-job="${kind}"${busy(kind) ? ' disabled' : ''}>${busy(kind) ? 'идёт…' : label}</button>`; }
+
+function checksHtml() {
+  const s = S.status || {};
+  const saved = s.configExists && s.secretsExists;
+  const nErr = S.val.errors.length;
+  return checkRow(s.ext ? s.ext.built : null, 'Расширение собрано', s.ext ? (s.ext.built ? 'папка ' + esc(s.ext.dir) : 'нужно собрать один раз и после каждого обновления кода') : '…', jobBtn('build-ext', s.ext && s.ext.built ? 'Пересобрать' : 'Собрать'))
+    + checkRow(s.chrome ? true : s.chrome === null ? false : null, 'Chrome for Testing', s.chrome ? esc(s.chrome.version || s.chrome.path) : 'не найден — нужен отдельный Chrome для бота (≈200 МБ); твой обычный Chrome не трогается', s.chrome ? '' : jobBtn('install-chrome', 'Установить'))
+    + checkRow(saved && !S.dirty, 'Настройки сохранены', saved ? (S.dirty ? 'есть несохранённые изменения' : esc(S.paths.config) + ' · ' + esc(S.paths.secrets) + ' (права 600)') : 'ещё не сохранялись', `<button type="button" data-act="save"${S.dirty || !saved ? '' : ' disabled'}>Сохранить</button>`)
+    + checkRow(!nErr, 'Ошибок в настройках нет', nErr ? `${nErr} ${plural(nErr, 'ошибка', 'ошибки', 'ошибок')} — список ниже` : S.val.warnings.length ? 'есть предупреждения — посмотри ниже' : 'всё заполнено', '')
+    + checkRow(S.lastCheck ? S.lastCheck.ok : null, 'Проверка машины', S.lastCheck ? (S.lastCheck.ok ? 'пройдена в ' + new Date(S.lastCheck.at).toLocaleTimeString() : 'есть ✗ — смотри вывод ниже') : 'Chrome и расширение, память, часовой пояс, прокси, Telegram', jobBtn('check', 'Проверить'));
+}
+
+function runHtml() {
+  const s = S.status || {};
+  const trial = S.form.config.payment.stopBeforePay;
+  const fleetBusy = busy('prepare') || busy('bench');
+  return `<div class="mode ${trial ? 'trial' : 'live'}">
+      <label class="chk"><input type="checkbox" data-path="config.payment.stopBeforePay" data-type="bool" data-rerender="1"${trial ? ' checked' : ''}><span><b class="big">Пробный прогон</b> — браузеры дойдут до Review и остановятся, ничего не оплачивается</span></label>
+      <div class="hint" style="margin-top:6px">${trial ? 'Сейчас: <b>пробный прогон</b>.' : 'Сейчас: <b class="bad">БОЕВОЙ режим</b> — бот оформит заказы; по карте сам нажмёт Place Order (один раз), тебе — подтвердить в банке. Apple Pay — QR на весь экран, сканируешь телефоном.'}</div>
+    </div>
+    <div class="row">
+      <button type="button" class="primary big" data-act="start"${s.running || fleetBusy ? ' disabled' : ''}>▶ Запустить бота</button>
+      <button type="button" class="danger" data-act="stop"${busy('stop') ? ' disabled' : ''}>■ Остановить всё</button>
+      ${s.dashUrl ? `<a class="btn" href="${esc(s.dashUrl)}" target="_blank" rel="noopener">Открыть дашборд ↗</a>` : ''}
+    </div>
+    <label class="chk" style="margin-top:8px"><input type="checkbox" id="fresh"${S.fresh ? ' checked' : ''}><span class="hint">начать заново: закрыть браузеры прошлого запуска (без галочки живые браузеры подхватываются)</span></label>
+    <div class="sub row">${jobBtn('prepare', 'Подготовить профили (накануне)')}<span class="hint">страна, пустая корзина, цена в AED во всех браузерах — отчёт в выводе ниже</span></div>`;
+}
+
+function valListHtml() {
+  const { errors, warnings } = S.val;
+  if (!errors.length && !warnings.length) return '<span class="ok">✓ Всё заполнено.</span>';
+  const li = (m, cls) => { const t = errTab(m); return `<li class="${cls}">${esc(m)}${t !== 'start' ? ` <button type="button" class="link" data-tab="${t}">→ ${esc(TABS.find((x) => x[0] === t)[1])}</button>` : ''}</li>`; };
+  return (errors.length ? `<b class="bad">Ошибки — бот не запустится:</b><ul class="vlist">${errors.map((m) => li(m, '')).join('')}</ul>` : '')
+    + (warnings.length ? `<div style="margin-top:8px"><b class="warn">Предупреждения:</b><ul class="vlist">${warnings.map((m) => li(m, '')).join('')}</ul></div>` : '');
+}
+
+function renderStartLive() {
+  const c = $('#checks'); if (c) c.innerHTML = checksHtml();
+  const r = $('#runbox'); if (r) r.innerHTML = runHtml();
+  const v = $('#vallist'); if (v) v.innerHTML = valListHtml();
+}
+
+function tabStart() {
+  return (S.notes.length ? `<div class="notes">${S.notes.map(esc).join('<br>')}</div>` : '')
+    + `<section class="card"><h2>Эта машина и старт продаж</h2>
+      <div class="grid">
+        ${F('config.machine', 'Имя этой машины', 'text', { hint: 'на каждом Mac своё: mac1, mac2… Mac работают независимо', rerender: true })}
+        ${F('config.openAt', 'Старт продаж — время Дубая', 'dubai', { hint: 'дроп: 16.10.2026 16:00' })}
+      </div>
+      <div class="row"><button type="button" data-act="openAt-drop">16.10.2026 16:00</button><button type="button" data-act="openAt-now">Сейчас — для пробы на модели, которая уже продаётся</button></div>
+      <div class="hint" style="margin-top:6px">Для пробы: поставь «Сейчас», включи «Пробный прогон» и в заказе выбери модель, которая уже в продаже (например iPhone 18 Pro 256GB Black — MJR54AH/A).</div>
+    </section>
+    <section class="card"><h2>Подготовка</h2><ul class="checks" id="checks">${checksHtml()}</ul></section>
+    <section class="card"><h2>Запуск</h2><div id="runbox">${runHtml()}</div></section>
+    ${consoleHtml()}
+    <section class="card"><h2>Проверка настроек</h2><div id="vallist">${valListHtml()}</div></section>`;
+}
+
+// ---------- консоль ----------
+function consoleHtml() {
+  return `<section class="card"><div class="item-h"><h2 id="conTitle" style="margin:0">Вывод</h2><div class="row" id="conBtns"></div></div><pre id="conOut" class="con"></pre></section>`;
+}
+function updateConsole() {
+  const out = $('#conOut');
+  if (!out) return;
+  let title = 'Вывод', text = 'Здесь появится вывод проверки, подготовки и запуска.', btns = '';
+  const hasOrch = !!(S.orchLog || (S.status && (S.status.running || S.status.orchestratorAlive)));
+  if (S.consoleMode === 'orch' && hasOrch) {
+    title = 'Лог бота';
+    text = S.orchLog || 'бот запускается…';
+  } else if (S.job) {
+    title = S.job.title + (S.job.running ? ' — идёт…' : S.job.code === 0 ? ' — готово ✓' : ` — завершено с ошибкой (код ${S.job.code})`);
+    text = S.job.out || (S.job.running ? 'запуск…' : '(пусто)');
+    if (S.job.running) btns += '<button type="button" data-act="job-cancel">Прервать</button>';
+  }
+  if (S.job && hasOrch) btns += `<button type="button" data-act="con-job"${S.consoleMode !== 'orch' ? ' disabled' : ''}>Задача</button><button type="button" data-act="con-orch"${S.consoleMode === 'orch' ? ' disabled' : ''}>Лог бота</button>`;
+  $('#conTitle').textContent = title;
+  $('#conBtns').innerHTML = btns;
+  const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 30;
+  if (out.textContent !== text) { out.textContent = text; if (atBottom) out.scrollTop = out.scrollHeight; }
+}
+
+// ---------- Заказы ----------
+function tabOrders() {
+  const os = S.form.config.orders;
+  const recs = [['', '— выбери получателя —'], ...S.form.secrets.recipients.map((r) => [r.id, r.id + ' — ' + ((r.firstName + ' ' + r.lastName).trim() || 'имя не заполнено')])];
+  const body = os.map((o, i) => {
+    const p = 'config.orders.' + i;
+    return `<section class="card">
+      <div class="item-h"><h3>Заказ ${esc(o.id)} <span class="tag">${o.payment === 'applepay' ? 'Apple Pay' : 'карта'}</span></h3>
+        <div class="row"><button type="button" data-act="order-up" data-i="${i}"${i ? '' : ' disabled'} title="выше">↑</button><button type="button" data-act="order-down" data-i="${i}"${i < os.length - 1 ? '' : ' disabled'} title="ниже">↓</button><button type="button" class="danger-t" data-act="order-del" data-i="${i}">Удалить</button></div></div>
+      <div class="grid">
+        ${F(p + '.id', 'Имя заказа', 'text', { rerender: true, hint: 'A, B, C…' })}
+        ${F(p + '.priority', 'Приоритет', 'num', { min: 1, step: 1, hint: '1 — забирается первым' })}
+        ${F(p + '.recipient', 'Получатель', 'select', { options: recs, rerender: true })}
+        ${F(p + '.payment', 'Оплата', 'select', { options: [['card', 'Карта'], ['applepay', 'Apple Pay']], rerender: true, hint: o.payment === 'applepay' ? 'QR на весь экран — сканируешь телефоном' : 'бот сам нажмёт Place Order, ты подтверждаешь в банке' })}
+      </div>
+      <div class="fld wide" style="margin:10px 0"><label>Модели по порядку: первая — главная; нет в наличии — берётся следующая</label>${chips(p + '.targets', o.targets, partGroups(), partName)}</div>
+      <div class="fld wide" style="margin:10px 0"><label>Магазины самовывоза по порядку</label>${chips(p + '.stores', o.stores, storeGroups(), storeName)}</div>
+      <div class="grid">
+        ${F(p + '.city', 'Город (поиск магазинов)', 'select', { options: cityOpts() })}
+        ${F(p + '.slot.day', 'Окно: число месяца', 'day', { ph: 'любое', hint: 'пусто — ближайшее' })}
+        ${F(p + '.slot.after', 'Окно: не раньше', 'time', { hint: 'пусто — любое' })}
+        ${F(p + '.slot.before', 'Окно: не позже', 'time', { hint: 'пусто — любое' })}
+        ${o.payment === 'card' ? F(p + '.cardFallback', 'Поля карты не появились', 'nullsel', { options: [['applepay', 'перейти на Apple Pay'], ['', 'ждать меня']] }) : ''}
+      </div>
+      ${F(p + '.deliveryFallback', 'Если самовывоза нет — доставка по адресу', 'bool', { rerender: true })}
+      ${o.deliveryFallback ? `<div class="grid">${F(p + '.address.street', 'Улица, дом', 'text')}${F(p + '.address.area', 'Район (Area)', 'text')}${F(p + '.address.city', 'Город', 'select', { options: cityOpts() })}</div>` : ''}
+    </section>`;
+  }).join('');
+  return `<div class="row spread" style="margin-bottom:10px"><p class="hint" style="margin:0">Один заказ — один телефон и свой получатель. Браузеров должно быть не меньше, чем заказов.</p><button type="button" class="primary" data-act="order-add">+ Заказ</button></div>`
+    + (body || '<div class="card empty">Заказов нет — нажми «+ Заказ»</div>');
+}
+
+// ---------- Получатели ----------
+function tabRecipients() {
+  const rs = S.form.secrets.recipients;
+  const body = rs.map((r, i) => {
+    const p = 'secrets.recipients.' + i;
+    const used = S.form.config.orders.filter((o) => o.recipient === r.id).map((o) => o.id);
+    return `<section class="card">
+      <div class="item-h"><h3>${esc(r.id)}${used.length ? `<span class="tag">заказ ${esc(used.join(', '))}</span>` : '<span class="tag muted">не в заказе</span>'}</h3><button type="button" class="danger-t" data-act="rec-del" data-i="${i}">Удалить</button></div>
+      <div class="grid">
+        ${F(p + '.firstName', 'Имя (латиницей, как в документе)', 'text')}
+        ${F(p + '.lastName', 'Фамилия', 'text')}
+        ${F(p + '.email', 'Email', 'email', { check: 'email' })}
+        ${F(p + '.phone', 'Телефон ОАЭ', 'tel', { ph: '05XXXXXXXX', check: 'phone', hint: '10 цифр, начинается с 05' })}
+      </div></section>`;
+  }).join('');
+  return `<div class="row spread" style="margin-bottom:10px"><p class="hint" style="margin:0">Реальные люди, которые заберут заказ в магазине с документом (Emirates ID / паспорт).</p><button type="button" class="primary" data-act="rec-add">+ Получатель</button></div>`
+    + (body || '<div class="card empty">Получателей нет</div>');
+}
+
+// ---------- Карты ----------
+function tabCards() {
+  const cs = S.form.secrets.cards;
+  const cardOrders = S.form.config.orders.filter((o) => o.payment === 'card').length;
+  const cap = cs.filter((c) => c.role === 'primary').reduce((a, c) => a + (Number(c.maxOrders) || 0), 0);
+  const titles = [['', '—'], ['Mr.', 'Mr.'], ['Ms.', 'Ms.'], ['Mrs.', 'Mrs.']];
+  const body = cs.map((c, i) => {
+    const p = 'secrets.cards.' + i;
+    const d = String(c.number || '').replace(/\D/g, '');
+    return `<section class="card">
+      <div class="item-h"><h3>${esc(c.id)}${d.length >= 4 ? ' · ****' + esc(d.slice(-4)) : ''}<span class="tag">${c.role === 'reserve' ? 'запасная' : 'основная'}</span></h3><button type="button" class="danger-t" data-act="card-del" data-i="${i}">Удалить</button></div>
+      <div class="grid">
+        ${F(p + '.label', 'Название (для себя)', 'text')}
+        ${F(p + '.role', 'Роль', 'select', { options: [['primary', 'основная'], ['reserve', 'запасная']], rerender: true, hint: c.role === 'reserve' ? 'только вместо карты, которую отклонил банк' : 'оплачивает заказы по кругу' })}
+        ${F(p + '.maxOrders', 'Сколько заказов можно оплатить', 'num', { min: 1, step: 1 })}
+      </div>
+      <div class="grid">
+        ${F(p + '.number', 'Номер карты', 'secret', { check: 'luhn', inputmode: 'numeric', ph: '16 цифр' })}
+        ${F(p + '.expiry', 'Срок', 'text', { check: 'expiry', ph: 'MM/YY' })}
+        ${F(p + '.cvv', 'CVV', 'secret', { check: 'cvv', inputmode: 'numeric', ph: '3 цифры' })}
+        ${F(p + '.name', 'Имя на карте', 'text')}
+      </div>
+      <div class="sub"><div class="hint">Billing-адрес (как в банке) — без него Apple не откроет Review</div>
+      <div class="grid">
+        ${F(p + '.billing.title', 'Обращение', 'select', { options: titles })}
+        ${F(p + '.billing.firstName', 'Имя', 'text', { hint: 'пусто — имя получателя' })}
+        ${F(p + '.billing.lastName', 'Фамилия', 'text')}
+        ${F(p + '.billing.street', 'Улица, дом', 'text')}
+        ${F(p + '.billing.area', 'Район (Area)', 'text')}
+        ${F(p + '.billing.town', 'Town', 'text', { hint: 'необязательно' })}
+        ${F(p + '.billing.city', 'Город', 'select', { options: cityOpts() })}
+      </div></div>
+    </section>`;
+  }).join('');
+  return `<div class="row spread" style="margin-bottom:10px"><p class="hint" style="margin:0">Заказов с картой: <b>${cardOrders}</b> · основные карты покрывают: <b class="${cap >= cardOrders ? 'ok' : 'bad'}">${cap}</b>. Отклонённая карта сгорает, её заказы переходят на запасную, а без запасных — на Apple Pay. Одну карту на двух Mac не ставь.</p><button type="button" class="primary" data-act="card-add">+ Карта</button></div>`
+    + (body || '<div class="card empty">Карт нет — все заказы пойдут через Apple Pay</div>');
+}
+
+// ---------- Прокси ----------
+function tabProxies() {
+  const c = S.form.config.proxies;
+  const n = Number(S.form.config.fleet.browsers) || 0;
+  const need = c.mode === 'off' ? 0 : c.mode === 'all' ? n : Math.max(0, n - (Number(c.directBrowsers) || 0));
+  const have = S.form.secrets.proxies.length * (Number(c.maxBrowsersPerProxy) || 1);
+  const list = S.form.secrets.proxies.map((px, i) => {
+    const p = 'secrets.proxies.' + i;
+    return `<div class="grid" style="grid-template-columns:140px minmax(0,1fr) auto; align-items:end">
+      ${F(p + '.label', 'Название', 'text')}
+      ${F(p + '.url', 'Адрес ' + px.id, 'secret', { check: 'proxy', ph: 'http://логин:пароль@host:port  или  socks5://…' })}
+      <button type="button" class="danger-t" data-act="px-del" data-i="${i}">Удалить</button></div>`;
+  }).join('');
+  return `<section class="card"><h2>Как браузеры выходят в интернет</h2>
+      <div class="grid">
+        ${F('config.proxies.mode', 'Режим', 'select', { options: [['off', 'Без прокси'], ['mixed', 'Смешанно'], ['all', 'Все через прокси']], rerender: true, hint: { off: 'все браузеры с домашнего интернета', mixed: 'часть напрямую, остальные через прокси', all: 'каждый браузер через прокси' }[c.mode] })}
+        ${c.mode === 'mixed' ? F('config.proxies.directBrowsers', 'Сколько браузеров напрямую', 'num', { min: 0, step: 1, rerender: true }) : ''}
+        ${c.mode !== 'off' ? F('config.proxies.maxBrowsersPerProxy', 'Браузеров на один прокси', 'num', { min: 1, step: 1, rerender: true }) : ''}
+        ${c.mode !== 'off' ? F('config.proxies.requireCountry', 'Страна выхода', 'text', { hint: 'AE — проверка при bot check' }) : ''}
+      </div>
+      ${c.mode !== 'off' ? `<div class="grid">${F('config.proxies.relaunchOnBlock', 'Заблокированный браузер без заказа — перезапустить на запасном прокси', 'bool', { wide: true })}</div>
+      <p class="hint">Нужно мест на прокси: <b>${need}</b> · есть: <b class="${have >= need ? 'ok' : 'bad'}">${have}</b>${have < need ? ' — добавь прокси или увеличь «браузеров на один прокси»' : ''}</p>` : '<p class="hint">Apple может ограничить много браузеров с одного IP — проверь это заранее пробным прогоном полным флотом (T13).</p>'}
+    </section>
+    <section class="card"><div class="item-h"><h2 style="margin:0">Список прокси</h2><button type="button" class="primary" data-act="px-add">+ Прокси</button></div>
+      <p class="hint">Статические адреса ОАЭ; HTTP или SOCKS5, с логином. Пустые строки при сохранении убираются. Живость, страну и скорость проверяет «Проверить» на вкладке «Запуск».</p>
+      ${list || '<div class="empty">Прокси нет</div>'}
+    </section>`;
+}
+
+// ---------- Браузеры ----------
+function memText() {
+  const n = Number(S.form.config.fleet.browsers) || 0;
+  return `≈ ${(n * 0.5).toFixed(1).replace('.0', '')} ГБ памяти. На 16 ГБ — до 10–12 браузеров, на 32 ГБ — до 20, но только после замера скорости (Дополнительно → bot bench).`;
+}
+function tabFleet() {
+  const f = 'config.fleet.';
+  const m = S.form.config.fleet.strategyMix;
+  const tot = (Number(m.refresh) || 0) + (Number(m.hold) || 0) || 1;
+  const pct = Math.round(((Number(m.hold) || 0) / tot) * 100);
+  return `<section class="card"><h2>Флот</h2>
+      <div class="grid">
+        ${F(f + 'browsers', 'Сколько браузеров', 'num', { min: 1, step: 1 })}
+        ${F(f + 'claimersPerOrder', 'Браузеров на один заказ одновременно', 'num', { min: 1, step: 1, hint: 'остальные — запас и подхватывают, если лидер застрял' })}
+        ${F(f + 'launchStaggerMs', 'Пауза между запусками окон, мс', 'num', { min: 0, step: 100 })}
+      </div>
+      <div class="hint" id="memEst">${memText()}</div>
+    </section>
+    <section class="card"><h2>Ожидание открытия продаж</h2>
+      <div class="fld wide"><label>hold <b id="holdPct">${pct}%</b> · refresh <b id="refPct">${100 - pct}%</b></label>
+        <input type="range" min="0" max="100" step="5" value="${pct}" data-path="config.fleet.strategyMix" data-type="holdpct">
+        <div class="hint">refresh — перезагружать страницу; hold — ждать на странице-заглушке. Что сработает у Apple — заранее неизвестно, поэтому поровну.</div></div>
+      <div class="grid">
+        ${F(f + 'adaptive', 'Адаптация: через ~45 с после первого пропущенного перевести отстающих на сработавшую стратегию', 'bool', { wide: true })}
+        ${F(f + 'holdMaxWaitSec', 'hold: сколько ждать заглушку после старта, с', 'num', { min: 0, step: 10 })}
+        ${F(f + 'warmupSec', 'Прогрев за … с до старта (0 — нет)', 'num', { min: 0, step: 10 })}
+        ${F(f + 'openJitter', 'Разнос после открытия 0–0,5 с', 'select', { options: [['half', 'половине браузеров'], ['all', 'всем'], ['none', 'никому']] })}
+      </div>
+    </section>
+    <section class="card"><h2>Окна и ускорения</h2>
+      <div class="grid">
+        ${F(f + 'window.width', 'Ширина окна', 'num', { min: 400, step: 10 })}
+        ${F(f + 'window.height', 'Высота окна', 'num', { min: 300, step: 10 })}
+        ${F(f + 'cdp', 'Порт отладки (настоящий клик Apple Pay, скриншоты)', 'bool')}
+        ${F(f + 'snapshots', 'Снимки страниц-заглушек (для отчёта)', 'bool')}
+        ${F(f + 'directAtb', 'Add to Bag прямым запросом (только если bench покажет выигрыш)', 'bool')}
+        ${F(f + 'blockHeavy', 'Не грузить картинки и видео (после замера)', 'bool')}
+        ${F(f + 'recordPages', 'Записывать HTML каждого шага (живые тесты)', 'bool')}
+      </div>
+    </section>`;
+}
+
+// ---------- Оплата ----------
+function tabPayment() {
+  const p = 'config.payment.';
+  return `<section class="card"><h2>Режим</h2>
+      ${F(p + 'stopBeforePay', 'Пробный прогон — остановиться на Review, ничего не оплачивать', 'bool', { rerender: true })}
+    </section>
+    <section class="card"><h2>Карта</h2>
+      <div class="grid">
+        ${F(p + 'card.parallelPerCard', 'Одновременных оплат на одну карту', 'num', { min: 1, step: 1, hint: '1 — банк шлёт по одному подтверждению' })}
+        ${F(p + 'card.threeDsTimeoutSec', 'Ждать подтверждения в банке, с', 'num', { min: 30, step: 10 })}
+        ${F(p + 'card.burnAfterDeclines', 'Карта сгорает после … отказов', 'num', { min: 1, step: 1 })}
+        ${F(p + 'card.burnOn3dsTimeout', 'Сжигать карту, если подтверждение не пришло вовремя', 'bool')}
+      </div>
+    </section>
+    <section class="card"><h2>Apple Pay</h2>
+      <div class="grid">
+        ${F(p + 'applePay.fullscreen', 'Окно с QR — вперёд на весь экран', 'bool')}
+        ${F(p + 'applePay.timeoutSec', 'Ждать оплату по QR, с', 'num', { min: 30, step: 10 })}
+        ${F(p + 'applePay.reopenTries', 'Сколько раз переоткрыть просроченный QR', 'num', { min: 0, step: 1 })}
+        ${F(p + 'applePay.cdpClick', 'Нажимать Apple Pay настоящим кликом (через порт отладки)', 'bool')}
+        ${F(p + 'applePay.osClick', 'Запасной клик средствами macOS (нужен «Универсальный доступ»)', 'bool')}
+        ${F(p + 'applePay.sendQrScreenshot', 'Слать скриншот QR в Telegram', 'bool', { hint: 'QR меняется — по умолчанию выкл.' })}
+      </div>
+    </section>`;
+}
+
+// ---------- Уведомления ----------
+function tabNotify() {
+  const n = 'config.notify.';
+  const c = S.form.config.notify;
+  const evs = S.catalog.events.map((ev) => `<label class="chk"><input type="checkbox" data-path="config.notify.webhooks.events" data-type="evset" data-ev="${esc(ev)}"${(c.webhooks.events || []).includes(ev) ? ' checked' : ''}><span>${esc(ev)}</span></label>`).join('');
+  const hooks = S.form.secrets.webhooks.map((w, i) => `<div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,220px) auto; align-items:end">
+      ${F('secrets.webhooks.' + i + '.url', 'URL', 'text', { ph: 'https://…' })}
+      ${F('secrets.webhooks.' + i + '.secret', 'Секрет подписи', 'secret')}
+      <button type="button" class="danger-t" data-act="wh-del" data-i="${i}">Удалить</button></div>`).join('');
+  return `<section class="card"><h2>Файл заказов</h2>
+      <div class="grid">
+        ${F(n + 'file.enabled', 'Писать все заказы в текстовый файл', 'bool')}
+        ${F(n + 'file.path', 'Файл (в папке runtime)', 'text')}
+        ${F(n + 'fullContact', 'Полные контакты получателя в уведомлениях', 'bool')}
+        ${F(n + 'summaryAfterMin', 'Итог через … мин после старта', 'num', { min: 1, step: 1 })}
+      </div>
+    </section>
+    <section class="card"><h2>Telegram (необязательно)</h2>
+      ${F(n + 'telegram.enabled', 'Слать уведомления в Telegram', 'bool', { rerender: true })}
+      ${c.telegram.enabled ? `<div class="grid">
+        ${F('secrets.telegram.botToken', 'Токен бота (от @BotFather)', 'secret')}
+        ${F('secrets.telegram.chatId', 'Chat ID', 'text')}
+        ${F('secrets.telegram.allowedUserIds', 'Кто может слать команды (user id через запятую)', 'csvnum')}
+        ${F(n + 'telegram.liveStatus', 'Закреплённое сообщение со статусом', 'bool')}
+      </div>` : ''}
+    </section>
+    <section class="card"><h2>Вебхуки (необязательно)</h2>
+      ${F(n + 'webhooks.enabled', 'Отправлять события на свои URL', 'bool', { rerender: true })}
+      ${c.webhooks.enabled ? `<div class="hint" style="margin:8px 0 4px">События:</div><div class="grid">${evs}</div>
+        <div class="item-h sub"><b>Адреса</b><button type="button" data-act="wh-add">+ Адрес</button></div>${hooks || '<div class="hint">адресов нет</div>'}` : ''}
+    </section>`;
+}
+
+// ---------- Дополнительно ----------
+function tabAdvanced() {
+  const th = Object.keys(S.form.config.watchdog.thresholds || {}).map((k) => F('config.watchdog.thresholds.' + k, k + ', с', 'num', { min: 5, step: 1 })).join('');
+  const tm = S.catalog.timing.map((k) => F('config.timing.' + k, k, 'num', { step: 1 })).join('');
+  return `<section class="card"><h2>Приватность логов</h2>
+      <div class="grid">
+        ${F('config.privacy.maskContactsInLogs', 'Скрывать контакты в логах и дашборде', 'bool')}
+        ${F('config.privacy.maskCardInLogs', 'Карта в логах — ****1234', 'bool')}
+        ${F('config.privacy.logTokens', 'Писать служебные токены Apple в лог', 'bool')}
+      </div></section>
+    <section class="card"><h2>Сторож: позвать человека, если шаг завис дольше</h2>
+      ${F('config.watchdog.enabled', 'Сторож включён', 'bool')}
+      <div class="grid">${th}</div></section>
+    <section class="card"><h2>Замер скорости (bot bench)</h2>
+      <p class="hint">Прогон до Review без оплаты на модели, которая уже продаётся, разными размерами флота. Покажет, сколько браузеров тянет этот Mac.</p>
+      <div class="grid">
+        ${F('config.bench.runs', 'Прогонов', 'num', { min: 1, step: 1 })}
+        ${F('config.bench.browsers', 'Размеры флота', 'csvnum', { hint: 'например 1, 10, 20' })}
+        ${F('config.bench.targets', 'Модель', 'csv', { hint: 'MJR54AH/A — iPhone 18 Pro 256GB Black' })}
+      </div>
+      ${jobBtn('bench', 'Запустить замер')}</section>
+    <section class="card"><h2>Технические</h2>
+      <div class="grid">
+        ${F('config.hub.port', 'Порт дашборда', 'num', { step: 1 })}
+        ${F('config.fleet.cdpBasePort', 'Первый порт отладки', 'num', { step: 1 })}
+        ${F('config.proxies.basePort', 'Первый порт форвардеров прокси', 'num', { step: 1 })}
+        ${F('config.proxies.probe', 'Проверка прокси (host:port)', 'text')}
+        ${F('config.proxies.downAfterSec', 'Прокси «упал» после … с без ответа', 'num', { step: 1 })}
+        ${F('config.fleet.adaptiveWindowsSec.0', 'Адаптация: первое окно, с', 'num', { step: 1 })}
+        ${F('config.fleet.adaptiveWindowsSec.1', 'Адаптация: второе окно, с', 'num', { step: 1 })}
+        ${F('config.fleet.chromePath', 'Путь к Chrome (пусто — найти)', 'text')}
+        ${F('config.fleet.extensionDir', 'Папка расширения', 'text', { hint: 'dist — боевая сборка' })}
+        ${F('config.fleet.extraArgs', 'Доп. аргументы Chrome', 'csv')}
+        ${F('config.runtimeDir', 'Папка runtime', 'text')}
+        ${F('config.fleet.headless', 'Без окон (только тесты)', 'bool')}
+      </div></section>
+    <section class="card"><h2>Тайминги расширения</h2><p class="hint">Менять только если понимаешь зачем: нижние пределы проверяются.</p><div class="grid">${tm}</div></section>
+    ${consoleHtml()}`;
+}
+
+// ---------- Результаты ----------
+function tabResults() {
+  const s = S.status || {};
+  return `<section class="card"><div class="item-h"><h2 style="margin:0">Оформленные заказы</h2>
+      <div class="row"><button type="button" data-act="orders-refresh">Обновить</button>${jobBtn('report', 'Отчёт после дропа')}${s.dashUrl ? `<a class="btn" href="${esc(s.dashUrl)}" target="_blank" rel="noopener">Дашборд ↗</a>` : ''}</div></div>
+      <div class="hint" id="ordersPath" style="margin-bottom:6px"></div><pre id="ordersText" class="con">…</pre></section>
+    ${consoleHtml()}
+    <section class="card"><h2>После дропа</h2><p class="hint" style="margin:0">Удалить карты и профили: в Терминале <code>npm run bot -- wipe</code> (отчёт и список заказов останутся).</p></section>`;
+}
+async function loadOrders() {
+  const r = await api('/api/orders');
+  const t = $('#ordersText');
+  if (!t) return;
+  $('#ordersPath').textContent = r.path || '';
+  t.textContent = r.text || 'Пока заказов нет.';
+}
+
+// ---------- действия ----------
+function nextId(prefix, used) { for (let n = 1; ; n++) if (!used.has(prefix + n)) return prefix + n; }
+function move(arr, i, d) { const j = i + d; if (j < 0 || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; }
+const emptyRecipient = (id) => ({ id, firstName: '', lastName: '', email: '', phone: '' });
+
+function addOrder() {
+  const os = S.form.config.orders;
+  const used = new Set(os.map((o) => o.id));
+  let id = 'A';
+  for (let c = 65; c < 91; c++) if (!used.has(String.fromCharCode(c))) { id = String.fromCharCode(c); break; }
+  const usedRec = new Set(os.map((o) => o.recipient));
+  let rec = S.form.secrets.recipients.find((r) => !usedRec.has(r.id));
+  if (!rec) { rec = emptyRecipient(nextId('r', new Set(S.form.secrets.recipients.map((r) => r.id)))); S.form.secrets.recipients.push(rec); }
+  const prev = os[os.length - 1];
+  os.push({ id, priority: os.length + 1, targets: prev ? prev.targets.slice() : [], stores: prev ? prev.stores.slice() : ['R597', 'R596'], city: 'Dubai', slot: { day: null, after: null, before: null }, recipient: rec.id, payment: 'card', deliveryFallback: false, address: { street: '', area: '', city: 'Dubai' }, cardFallback: 'applepay' });
+}
+
+async function save() {
+  const r = await api('/api/save', { form: S.form });
+  if (!r.ok) { toast('Не сохранилось: ' + (r.error || ''), true); return false; }
+  S.form = r.form;
+  S.val = { errors: r.errors, warnings: r.warnings };
+  S.dirty = false;
+  S.notes = [];
+  $('#dirty').hidden = true;
+  render();
+  toast(r.errors.length ? `Сохранено, но есть ${r.errors.length} ${plural(r.errors.length, 'ошибка', 'ошибки', 'ошибок')}` : 'Сохранено ✓', !!r.errors.length);
+  refreshStatus();
+  return true;
+}
+
+async function runJob(kind) {
+  if (S.dirty && ['check', 'prepare', 'bench'].includes(kind) && !(await save())) return;
+  if (kind === 'prepare' && !confirm('Подготовка откроет все браузеры (страна, корзина, цена) и закроет их. Запустить?')) return;
+  if (kind === 'bench' && !confirm('Замер откроет до ' + Math.max(...(S.form.config.bench.browsers || [1])) + ' браузеров несколько раз (без оплаты). Запустить?')) return;
+  const r = await api('/api/job', { kind });
+  if (!r.ok) { toast(r.error || 'не запустилось', true); return; }
+  S.job = r.job; S.jobId = r.job.id; S.consoleMode = 'job';
+  updateConsole();
+  refreshStatus();
+  pollJob();
+}
+async function pollJob() {
+  if (!S.jobId) return;
+  const r = await api('/api/job?id=' + S.jobId);
+  if (!r.ok) return;
+  S.job = r.job;
+  updateConsole();
+  if (S.job.running) { setTimeout(pollJob, 700); return; }
+  if (S.job.kind === 'check') S.lastCheck = { ok: S.job.code === 0, at: Date.now() };
+  toast(S.job.title + (S.job.code === 0 ? ' — готово ✓' : ' — завершено с ошибкой'), S.job.code !== 0);
+  refreshStatus();
+}
+
+async function doStart() {
+  if (S.dirty && !(await save())) return;
+  if (S.val.errors.length) { toast('Сначала исправь ошибки в настройках', true); S.tab = 'start'; render(); return; }
+  if (!S.form.config.payment.stopBeforePay && !confirm('БОЕВОЙ запуск: бот будет оформлять и оплачивать заказы. Запустить?')) return;
+  const r = await api('/api/start', { fresh: S.fresh });
+  if (!r.ok) { toast((r.error || 'не запустилось') + (r.errors ? ': ' + r.errors.slice(0, 3).join('; ') : ''), true); return; }
+  S.consoleMode = 'orch';
+  S.orchLog = '';
+  toast('Бот запускается — дашборд откроется сам');
+  setTimeout(refreshStatus, 1500);
+}
+async function doStop() {
+  if (!confirm('Остановить бота и закрыть все его браузеры?')) return;
+  await runJob('stop');
+}
+
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-act],[data-job],[data-tab]');
+  if (!b || b.disabled) return;
+  if (b.dataset.tab) { S.tab = b.dataset.tab; render(); window.scrollTo(0, 0); return; }
+  if (b.dataset.job) { runJob(b.dataset.job); return; }
+  const i = Number(b.dataset.i);
+  const f = S.form;
+  switch (b.dataset.act) {
+    case 'save': save(); return;
+    case 'start': doStart(); return;
+    case 'stop': doStop(); return;
+    case 'job-cancel': await api('/api/job/cancel', { id: S.jobId }); return;
+    case 'con-job': S.consoleMode = 'job'; updateConsole(); return;
+    case 'con-orch': S.consoleMode = 'orch'; updateConsole(); return;
+    case 'orders-refresh': loadOrders(); return;
+    case 'reveal': { const inp = document.getElementById(b.dataset.for); if (inp) inp.type = inp.type === 'password' ? 'text' : 'password'; return; }
+    case 'openAt-drop': f.config.openAt = '2026-10-16T16:00:00+04:00'; break;
+    case 'openAt-now': f.config.openAt = new Date(Date.now() - 60_000).toISOString().replace(/\.\d+Z$/, 'Z'); break;
+    case 'order-add': addOrder(); break;
+    case 'order-del': if (!confirm('Удалить заказ ' + f.config.orders[i].id + '?')) return; f.config.orders.splice(i, 1); break;
+    case 'order-up': move(f.config.orders, i, -1); break;
+    case 'order-down': move(f.config.orders, i, 1); break;
+    case 'rec-add': f.secrets.recipients.push(emptyRecipient(nextId('r', new Set(f.secrets.recipients.map((r) => r.id))))); break;
+    case 'rec-del': {
+      const r = f.secrets.recipients[i];
+      const used = f.config.orders.filter((o) => o.recipient === r.id);
+      if (!confirm(used.length ? `${r.id} — получатель заказа ${used.map((o) => o.id).join(', ')}. Удалить?` : `Удалить ${r.id}?`)) return;
+      for (const o of used) o.recipient = '';
+      f.secrets.recipients.splice(i, 1);
+      break;
+    }
+    case 'card-add': f.secrets.cards.push({ id: nextId('c', new Set(f.secrets.cards.map((c) => c.id))), label: 'Карта ' + (f.secrets.cards.length + 1), role: 'primary', number: '', expiry: '', cvv: '', name: '', billing: { title: '', firstName: '', lastName: '', street: '', area: '', town: '', city: 'Dubai' }, maxOrders: 2 }); break;
+    case 'card-del': if (!confirm('Удалить карту ' + f.secrets.cards[i].id + '?')) return; f.secrets.cards.splice(i, 1); break;
+    case 'px-add': f.secrets.proxies.push({ id: nextId('px', new Set(f.secrets.proxies.map((p) => p.id))), label: 'AE-' + (f.secrets.proxies.length + 1), url: '' }); break;
+    case 'px-del': f.secrets.proxies.splice(i, 1); break;
+    case 'wh-add': f.secrets.webhooks.push({ url: '', secret: '' }); break;
+    case 'wh-del': f.secrets.webhooks.splice(i, 1); break;
+    case 'chip-del': { const arr = getP(b.dataset.chip); arr.splice(Number(b.dataset.k), 1); break; }
+    case 'chip-up': { const arr = getP(b.dataset.chip); move(arr, Number(b.dataset.k), -1); break; }
+    default: return;
+  }
+  markDirty();
+  render();
+});
+
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
+});
+window.addEventListener('beforeunload', (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+let toastTimer = null;
+function toast(text, bad = false) {
+  const t = $('#toast');
+  t.textContent = text;
+  t.className = 'toast' + (bad ? ' bad' : '');
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, bad ? 7000 : 3500);
+}
+
+// ---------- статус ----------
+function renderStatus() {
+  const s = S.status;
+  const pill = $('#runPill');
+  if (!s) return;
+  if (s.running) pill.innerHTML = `<span class="dot on"></span> бот работает · браузеров ${s.liveBrowsers}` + (s.dashUrl ? ` · <a href="${esc(s.dashUrl)}" target="_blank" rel="noopener">дашборд ↗</a>` : '');
+  else if (s.orchestratorAlive) pill.innerHTML = '<span class="dot warn"></span> бот запускается…';
+  else if (s.liveBrowsers) pill.innerHTML = `<span class="dot warn"></span> открыто браузеров: ${s.liveBrowsers}, бот не запущен — «Запустить» подхватит их`;
+  else pill.innerHTML = '<span class="dot"></span> бот не запущен';
+  if (S.tab === 'start') renderStartLive();
+}
+async function refreshStatus() {
+  const s = await api('/api/status');
+  if (!s.ok) { $('#runPill').innerHTML = '<span class="dot warn"></span> ' + esc(s.error || 'пульт не отвечает'); return; }
+  S.status = s;
+  renderStatus();
+  if (s.running || s.orchestratorAlive || S.consoleMode === 'orch') {
+    const l = await api('/api/orchestrator-log');
+    if (l.ok) { S.orchLog = l.text; updateConsole(); }
+  }
+}
+async function loop() { await refreshStatus(); setTimeout(loop, 2000); }
+
+(async () => {
+  const r = await api('/api/load');
+  if (!r.ok) { $('#main').innerHTML = `<div class="card bad">${esc(r.error || 'не загрузилось')}</div>`; return; }
+  S.form = r.form; S.catalog = r.catalog; S.paths = r.paths; S.notes = r.notes || [];
+  S.val = { errors: r.errors || [], warnings: r.warnings || [] };
+  render();
+  loop();
+})();
+</script>
+</body>
+</html>

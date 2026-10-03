@@ -23,6 +23,7 @@ if (args.has('--bot')) {
     bundle: true, platform: 'node', format: 'esm', target: 'node20', packages: 'external',
     define: { __DEV__: 'false', __DEFAULT_BASE_URL__: JSON.stringify('https://www.apple.com') },
     banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
+    loader: { '.html': 'text' },
     logLevel: 'warning', sourcemap: 'inline',
   });
   if (!args.has('--unit')) process.exit(0);
@@ -37,6 +38,7 @@ if (args.has('--unit')) {
       outfile: join(out, `${name}.mjs`),
       bundle: true, platform: 'node', format: 'esm', target: 'node20', packages: 'external',
       define: { __DEV__: 'true', __DEFAULT_BASE_URL__: JSON.stringify(MOCK_ORIGIN) },
+      loader: { '.html': 'text' },
       logLevel: 'warning',
     });
   }

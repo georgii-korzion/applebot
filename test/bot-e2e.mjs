@@ -766,9 +766,101 @@ scenarios.warmup = async () => {
   assert.ok(/WARMUP/.test(log) && /ARMED/.test(log.split('прогрев перед стартом')[1] ?? ''), 'вернулся к товару и ждёт старта');
 };
 
+/** Пульт (npm run bot -- ui): заполнить получателя и карту в форме, сохранить, запустить кнопкой, заказ, остановить. */
+scenarios.ui = async () => {
+  await startMock({ OPEN_AFTER: '25', THREEDS_MS: '800' });
+  const dir = join(root, 'test/.bot/ui');
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const cfgPath = join(dir, 'bot.config.json');
+  const secPath = join(dir, 'secrets.local.json');
+  // инфраструктура теста (мок, dev-сборка, порты) — в конфиге заранее; секретов нет — их вводим в пульте
+  writeFileSync(cfgPath, JSON.stringify(botConfig('ui', 25, { notify: { telegram: { enabled: false }, webhooks: { enabled: false } } }), null, 1));
+  const rt = join(root, 'test/.bot/ui/runtime');
+  const ui = run('bot/dist/bot.mjs', ['ui', '--no-open', '--port', '18770', '--config', cfgPath, '--secrets', secPath], { BOT_TEST: '1' }, 'bot-ui');
+  const url = await waitFor(() => /http:\/\/127\.0\.0\.1:\d+\/\?token=\w+/.exec(ui.logs.join(''))?.[0], 20000, 'адрес пульта');
+  const origin = new URL(url).origin;
+  // защита: API без токена, страница с чужим токеном, чужой Host (DNS rebinding)
+  assert.equal((await fetch(`${origin}/api/load`)).status, 403, 'API без токена — 403');
+  assert.equal((await fetch(`${origin}/?token=wrong`)).status, 403, 'страница с чужим токеном — 403');
+  const evilHost = await new Promise((res) => { http.get({ host: '127.0.0.1', port: new URL(url).port, path: new URL(url).pathname + new URL(url).search, headers: { host: 'evil.example:80' } }, (r) => { r.resume(); res(r.statusCode); }).on('error', () => res(0)); });
+  assert.equal(evilHost, 421, 'чужой Host — 421');
+  let orchPid = null;
+  const b = await chromium.launch({ executablePath: findChrome(), headless: true, args: ['--no-sandbox'] });
+  try {
+    const page = await b.newPage({ viewport: { width: 1280, height: 900 } });
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    page.on('dialog', (d) => { void d.accept(); });
+    await page.goto(url);
+    await page.waitForSelector('#checks li');
+    assert.match(await page.locator('#valbar').innerText(), /ошиб/, 'без получателя и карты — ошибки');
+    // получатель
+    await page.click('nav [data-tab=recipients]');
+    const r1 = RECIPIENTS.r1;
+    await page.fill('[data-path="secrets.recipients.0.firstName"]', r1.firstName);
+    await page.fill('[data-path="secrets.recipients.0.lastName"]', r1.lastName);
+    await page.fill('[data-path="secrets.recipients.0.email"]', r1.email);
+    await page.fill('[data-path="secrets.recipients.0.phone"]', '0501234');
+    assert.match(await page.locator('label:has([data-for]) .vchk').last().innerText(), /✗/, 'неполный телефон — ✗');
+    await page.fill('[data-path="secrets.recipients.0.phone"]', r1.phone);
+    assert.match(await page.locator('label:has([data-for]) .vchk').last().innerText(), /✓/, 'телефон — ✓');
+    // карта: опечатка в номере ловится Луном, потом верный номер
+    await page.click('nav [data-tab=cards]');
+    await page.fill('[data-path="secrets.cards.0.number"]', '4111111111111112');
+    assert.match(await page.locator('label[for] .vchk').first().innerText(), /✗/, 'номер с опечаткой — ✗');
+    await page.fill('[data-path="secrets.cards.0.number"]', CARD1.number);
+    assert.match(await page.locator('label[for] .vchk').first().innerText(), /✓/, 'номер — ✓');
+    await page.fill('[data-path="secrets.cards.0.expiry"]', CARD1.expiry);
+    await page.fill('[data-path="secrets.cards.0.cvv"]', CARD1.cvv);
+    await page.fill('[data-path="secrets.cards.0.name"]', CARD1.name);
+    await page.fill('[data-path="secrets.cards.0.billing.street"]', CARD1.billing.street);
+    await page.fill('[data-path="secrets.cards.0.billing.area"]', CARD1.billing.area);
+    await page.click('#saveBtn');
+    await page.waitForFunction(() => /без ошибок|ошибок нет/.test(document.getElementById('valbar').textContent), null, { timeout: 10000 });
+    // файлы: секреты с правами 600, инфраструктура теста в конфиге сохранилась
+    assert.equal(statSync(secPath).mode & 0o777, 0o600, 'secrets.local.json — права 600');
+    const sec = JSON.parse(readFileSync(secPath, 'utf8'));
+    assert.equal(sec.cards[0].number, CARD1.number);
+    assert.deepEqual(sec.recipients.r1, r1);
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    assert.equal(cfg.baseUrl, MOCK);
+    assert.equal(cfg.fleet.extensionDir, 'dist-dev');
+    // запуск кнопкой (боевой режим — подтверждение принимается)
+    await page.click('nav [data-tab=start]');
+    await page.click('[data-act=start]');
+    await waitHttp(`http://127.0.0.1:${HUB_PORT}/health`, 30000);
+    orchPid = await waitFor(async () => (await (await fetch(`${origin}/api/status`, { headers: { 'x-token': new URL(url).searchParams.get('token') } })).json()).orchestratorPid, 10000, 'PID оркестратора');
+    const token = await waitFor(() => { try { return JSON.parse(readFileSync(join(rt, 'state.json'), 'utf8')).dashToken; } catch { return null; } }, 10000, 'токен дашборда');
+    const st = await waitFor(async () => { const x = await (await fetch(`http://127.0.0.1:${HUB_PORT}/api/state?token=${token}`)).json(); return x.orders[0].state === 'ORDERED' ? x : null; }, 90000, 'ORDERED', 500);
+    const orderNo = st.orders[0].orderNo;
+    await page.waitForSelector('#runPill a[href*="token="]', { timeout: 10000 });
+    await page.click('nav [data-tab=results]');
+    await page.waitForFunction((n) => document.getElementById('ordersText')?.textContent.includes(n), orderNo, { timeout: 10000 });
+    await page.screenshot({ path: join(ART, 'ui-results.png'), fullPage: true });
+    say(`ui: ${orderNo} оформлен по кнопке «Запустить»; заказ виден на вкладке «Результаты»`);
+    // стоп кнопкой: оркестратор и браузеры закрыты
+    await page.click('nav [data-tab=start]');
+    await page.click('[data-act=stop]');
+    await waitFor(async () => !(await fetch(`http://127.0.0.1:${HUB_PORT}/health`).then((r) => r.ok).catch(() => false)), 20000, 'хаб остановлен');
+    await waitFor(() => botPids(rt).every((pid) => { try { process.kill(pid, 0); return false; } catch { return true; } }), 15000, 'браузеры закрыты');
+    await page.waitForFunction(() => /не запущен/.test(document.getElementById('runPill').textContent), null, { timeout: 10000 });
+    await page.screenshot({ path: join(ART, 'ui-start.png'), fullPage: true });
+    assert.deepEqual(errors, [], 'пульт без ошибок JS');
+    // полный номер карты — только в secrets.local.json
+    const orchLog = readFileSync(join(rt, 'orchestrator.log'), 'utf8');
+    for (const [n, t] of [['orchestrator.log', orchLog], ['вывод пульта', ui.logs.join('')], ['hub.log', readFileSync(join(rt, 'hub.log'), 'utf8')]]) assert.ok(!t.includes(CARD1.number), `${n}: полный номер карты`);
+  } finally {
+    await b.close();
+    if (orchPid) { try { process.kill(orchPid, 'SIGKILL'); } catch { /* */ } }
+    for (const pid of botPids(rt)) { try { process.kill(pid, 'SIGKILL'); } catch { /* */ } }
+  }
+};
+
 // ---------- запуск ----------
 const want = process.argv.slice(2);
-const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup'];
+const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup', 'ui'];
 if (!existsSync(BOT)) { console.error('нет bot/dist/bot.mjs — npm run test:bot собирает его сам'); process.exit(1); }
 let failed = 0;
 for (const name of list) {

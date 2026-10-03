@@ -1,4 +1,4 @@
-// CLI бота (BOT-SPEC §3): check | prepare | start | status | stop | report | bench | wipe | install-chrome
+// CLI бота (BOT-SPEC §3): ui | check | prepare | start | status | stop | report | bench | wipe | install-chrome
 //   npm run bot -- start [--config bot.config.json] [--secrets secrets.local.json] [--fresh]
 import { existsSync, readFileSync, rmSync, writeFileSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -30,7 +30,8 @@ function parseArgs(argv: string[]): Args {
       else flags.add(k);
     } else if (!cmd) cmd = a;
   }
-  return { cmd: cmd || 'help', config: opts.config ?? 'bot.config.json', secrets: opts.secrets ?? 'secrets.local.json', flags, opts };
+  // по умолчанию — файлы в корне репозитория, откуда бы ни запустили
+  return { cmd: cmd || 'help', config: opts.config ?? join(ROOT, 'bot.config.json'), secrets: opts.secrets ?? join(ROOT, 'secrets.local.json'), flags, opts };
 }
 
 function load(a: Args): { cfg: BotConfig; sec: Secrets } {
@@ -148,6 +149,7 @@ function cmdInstallChrome(): void {
 }
 
 const HELP = `Apple Drop Bot (docs/BOT-SPEC.md)
+  npm run bot -- ui               пульт в браузере: заполнить заказы, карты, прокси и запустить бота кнопками
   npm run bot -- check            проверка машины, Chrome, расширения, прокси, конфига и секретов
   npm run bot -- prepare          прогрев профилей (страна, корзина, цель в AED) и отчёт по браузерам
   npm run bot -- start [--fresh]  запуск флота и дашборда (--fresh — новый запуск, живые браузеры закрыть)
@@ -186,6 +188,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case 'wipe': return cmdWipe(a);
     case 'install-chrome': return cmdInstallChrome();
+    case 'ui': {
+      const { runUi } = await import('./ui/server');
+      await runUi({
+        root: ROOT, configPath: resolve(a.config), secretsPath: resolve(a.secrets), bundle: fileURLToPath(import.meta.url),
+        port: Number(a.opts.port ?? 8760), noOpen: a.flags.has('no-open'),
+      });
+      return;
+    }
     case 'forwarder': {
       // служебная: форвардер прокси отдельным процессом (его запускает лаунчер)
       const { runForwarderProcess } = await import('./proxy/forwarder');
