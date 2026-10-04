@@ -1,9 +1,9 @@
 // CLI бота (BOT-SPEC §3): ui | check | prepare | start | status | stop | report | bench | wipe | install-chrome
 //   npm run bot -- start [--config bot.config.json] [--secrets secrets.local.json] [--fresh]
-import { existsSync, readFileSync, rmSync, writeFileSync, readdirSync, statSync, chmodSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync, readdirSync, statSync, chmodSync, mkdirSync, lstatSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { normalizeBotConfig, normalizeSecrets, readJsonc, validateBot, type BotConfig, type Secrets } from './config';
 import { startOrchestrator } from './orchestrator';
@@ -12,6 +12,7 @@ import { buildReport } from './report';
 import { runBench } from './bench';
 import { pidAlive } from './launcher';
 import { Store } from './store';
+import { chromeVersion, findChrome } from './chrome';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -142,10 +143,42 @@ async function cmdWipe(a: Args): Promise<void> {
   console.log(`Удалено: ${a.secrets}, профили, расширения, снимки, состояние. Остались: ${[...keep].join(', ')}.`);
 }
 
-function cmdInstallChrome(): void {
-  console.log('Ставлю Chrome for Testing в runtime/chrome (≈200 МБ)…');
-  const r = spawnSync('npx', ['--yes', '@puppeteer/browsers', 'install', 'chrome@stable', '--path', join(ROOT, 'runtime', 'chrome')], { stdio: 'inherit' });
-  process.exit(r.status ?? 1);
+/** Размер папки в байтах (для прогресса установки; симлинки не раскрываем). */
+function dirSize(p: string): number {
+  let n = 0;
+  try {
+    const st = lstatSync(p);
+    if (st.isSymbolicLink()) return 0;
+    if (!st.isDirectory()) return st.size;
+    for (const e of readdirSync(p)) n += dirSize(join(p, e));
+  } catch { /* */ }
+  return n;
+}
+
+async function cmdInstallChrome(): Promise<void> {
+  const dir = join(ROOT, 'runtime', 'chrome');
+  mkdirSync(dir, { recursive: true });
+  console.log(`Ставлю Chrome for Testing в ${dir}`);
+  console.log('Скачивание ≈150–200 МБ, обычно 1–5 минут. Прогресс — раз в 5 с.\n');
+  const before = dirSize(dir);
+  const started = Date.now();
+  const ch = spawn('npx', ['--yes', '@puppeteer/browsers', 'install', 'chrome@stable', '--path', dir], { cwd: ROOT, stdio: ['ignore', 'inherit', 'inherit'] });
+  const timer = setInterval(() => {
+    const mb = Math.max(0, dirSize(dir) - before) / 1048576;
+    console.log(`… ${Math.round((Date.now() - started) / 1000)} с · в runtime/chrome ${mb.toFixed(0)} МБ`);
+  }, 5000);
+  const code = await new Promise<number>((res) => {
+    ch.on('error', (e) => { console.log(`✗ не запускается npx: ${e.message} — нужен Node.js с npm (nodejs.org)`); res(1); });
+    ch.on('close', (c) => res(c ?? 1));
+  });
+  clearInterval(timer);
+  const c = findChrome('', ROOT);
+  if (code === 0 && c?.kind === 'cft') {
+    console.log(`\n✓ Chrome for Testing установлен за ${Math.round((Date.now() - started) / 1000)} с: ${chromeVersion(c.path) ?? ''}\n  ${c.path}`);
+    process.exit(0);
+  }
+  console.log(`\n✗ Chrome for Testing не установился (код ${code}). Проверь интернет и нажми «Установить» ещё раз; в Терминале: npm run bot -- install-chrome`);
+  process.exit(1);
 }
 
 const HELP = `Apple Drop Bot (docs/BOT-SPEC.md)
