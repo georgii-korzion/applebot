@@ -437,7 +437,8 @@ scenarios['bot-pool'] = async () => {
 function h1(mode) {
   return async () => {
     const OPEN = 25;
-    await startMock({ OPEN_AFTER: String(OPEN), ADMIT_MODE: mode, ADMIT_EVERY_MS: '1500', ADMIT_MIN_WAIT_MS: '3000', THREEDS_MS: '500' });
+    // очередь пускает простоявших ≥5 с без перезагрузки: refresh перезагружается не реже раза в ~4 с и сам пройти не должен
+    await startMock({ OPEN_AFTER: String(OPEN), ADMIT_MODE: mode, ADMIT_EVERY_MS: '1500', ADMIT_MIN_WAIT_MS: mode === 'queue' ? '5000' : '3000', THREEDS_MS: '500' });
     await startTelegram(); await startHooks();
     const cfg = botConfig(`h1-${mode}`, OPEN, {
       fleet: { browsers: 6, claimersPerOrder: 1, strategyMix: { refresh: 0.5, hold: 0.5 }, adaptive: true, adaptiveWindowsSec: [6, 5], holdMaxWaitSec: 150, launchStaggerMs: 200 },
@@ -789,6 +790,58 @@ scenarios['no-connect'] = async () => {
   rmSync(ext, { recursive: true, force: true });
 };
 
+/** Живой сайт 04.10: 404 с хвостом ?product=…&step=… и фразой заглушки — не BUSY по кругу, а назад на чистый адрес товара. */
+scenarios['stale-404'] = async () => {
+  await startMock({ OPEN_AFTER: '3600' });
+  const h = await startBot('stale404', botConfig('stale404', -5, { notify: { telegram: { enabled: false }, webhooks: { enabled: false } } }), botSecrets());
+  await waitFor(async () => (await h.state()).browsers[0]?.online, 20000, 'b01 онлайн', 300);
+  const { cdp, page } = await humanPage(h, 'b01', '/ae/');
+  const clean = `${MOCK}/ae/shop/buy-iphone/iphone-duo/7.6-inch-display-256gb-night-sky`;
+  await page.goto(`${clean}?product=MK254AH%2FA&step=select&stale404=1`);
+  await waitFor(() => page.url() === clean, 20000, 'вернулся на чистый адрес товара', 300);
+  const log = h.file('logs/b01.log');
+  say(`stale-404: ${page.url().replace(MOCK, '')} · ${/404 вместо страницы товара[^\n]*/.exec(log)?.[0] ?? '?'}`);
+  assert.ok(/404 вместо страницы товара — назад к цели/.test(log), '404 распознана, а не заглушка');
+  assert.ok(!/заглушка Apple[^\n]*stale404/.test(log));
+  await cdp.close();
+};
+
+/** Сторож лечит зависание до корзины сам: 404 на Add to Bag → STUCK → страница товара заново → заказ. */
+scenarios['atb-heal'] = async () => {
+  await startMock({ OPEN_AFTER: '5', ATB_404_FIRST: '3' });
+  const cfg = botConfig('heal', 5, { timing: { closedReloadMs: 5000, atb404MaxInRow: 2 }, notify: { telegram: { enabled: false }, webhooks: { enabled: false } } });
+  const h = await startBot('heal', cfg, botSecrets());
+  const s = await waitFor(async () => { const x = await h.state(); return x.orders[0].state === 'ORDERED' ? x : null; }, 120000, 'ORDERED после самолечения', 500);
+  const heals = h.events().filter((e) => e.type === 'watchdog' && e.heal);
+  const ms = await mockState();
+  say(`atb-heal: ${s.orders[0].orderNo} · самолечений ${heals.length} (${heals.map((e) => e.state).join(', ')}) · 404 на Add to Bag: ${ms.sessions.map((x) => x.atb404).join(',')}`);
+  assert.ok(heals.some((e) => e.state === 'STUCK' && e.heal === 1), 'сторож сам вывел из STUCK');
+  assert.match(h.file('hub.log'), /открываю страницу товара заново \(1\/3\)/);
+  assert.equal(s.attention.items.filter((x) => x.reason === 'stuck').length, 0, 'человека не звали');
+  assert.equal(ms.orders.length, 1, 'один заказ');
+};
+
+/** Логи одним архивом: файлы на месте, номер карты и контакты получателя замаскированы. */
+scenarios.diag = async () => {
+  await startMock({ OPEN_AFTER: '6', THREEDS_MS: '500' });
+  const cfg = botConfig('diag', 6, { notify: { telegram: { enabled: false }, webhooks: { enabled: false } } });
+  const h = await startBot('diag', cfg, botSecrets());
+  await waitFor(async () => (await h.state()).orders[0].state === 'ORDERED', 90000, 'ORDERED', 500);
+  const out = join(h.dir, 'diag-out');
+  const r = spawnSyncNode(['bot/dist/bot.mjs', 'diag', '--config', join(h.dir, 'bot.config.json'), '--secrets', join(h.dir, 'secrets.local.json'), '--out', out]);
+  const zip = /Логи собраны: (\S+)/.exec(r)?.[1];
+  assert.ok(zip && existsSync(zip), `архив создан: ${r}`);
+  const list = spawnSync('unzip', ['-l', zip], { encoding: 'utf8' }).stdout;
+  for (const f of ['summary.txt', 'hub.log', 'logs/b01.log', 'state.json', 'bot.config.json']) assert.ok(list.includes(f), `в архиве ${f}`);
+  assert.ok(!list.includes('secrets.local.json') && !list.includes('orders.txt'), 'секретов и файла заказов нет');
+  const all = spawnSync('unzip', ['-p', zip], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).stdout;
+  assert.ok(!all.includes(CARD1.number), 'полного номера карты нет');
+  assert.ok(!all.includes(RECIPIENTS.r1.phone) && !all.includes(RECIPIENTS.r1.email), 'телефона и почты получателя нет');
+  assert.ok(all.includes('<тел r1>') || all.includes('<email r1>'), 'контакты замаскированы метками');
+  assert.ok(/"ts":\s?\d{13}/.test(all), 'метки времени целы');
+  say(`diag: ${zip.replace(root + '/', '')} · ${list.trim().split('\n').length} строк в оглавлении`);
+};
+
 /** Пульт (npm run bot -- ui): заполнить получателя и карту в форме, сохранить, запустить кнопкой, заказ, остановить. */
 scenarios.ui = async () => {
   await startMock({ OPEN_AFTER: '25', THREEDS_MS: '800' });
@@ -883,7 +936,7 @@ scenarios.ui = async () => {
 
 // ---------- запуск ----------
 const want = process.argv.slice(2);
-const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup', 'no-connect', 'ui'];
+const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup', 'no-connect', 'stale-404', 'atb-heal', 'diag', 'ui'];
 if (!existsSync(BOT)) { console.error('нет bot/dist/bot.mjs — npm run test:bot собирает его сам'); process.exit(1); }
 let failed = 0;
 for (const name of list) {

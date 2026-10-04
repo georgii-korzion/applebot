@@ -7,6 +7,7 @@ import type { Ctl } from '../ctl';
 import type { PageInfo } from '../classify';
 import { ensureWatcher } from './preopen';
 import { holdStep, holdUntil, isStub } from './bot';
+import { offTarget } from './common';
 
 const PHASE_LABEL = { armed: 'до старта', pre: 'последняя минута', post: 'после старта' } as const;
 
@@ -18,13 +19,6 @@ export function reportStore(c: Ctl, closed: boolean, reason: string): void {
   c.send({ t: 'STORE', closed, reason });
 }
 
-function onTargetPage(c: Ctl): boolean {
-  try {
-    return new URL(c.targetUrl()).pathname.toLowerCase() === location.pathname.replace(/\/$/, '').toLowerCase();
-  } catch {
-    return false;
-  }
-}
 
 export function closedStep(c: Ctl, page: PageInfo, reason: string): void {
   reportStore(c, true, reason);
@@ -51,7 +45,8 @@ export function closedStep(c: Ctl, page: PageInfo, reason: string): void {
   if (phase === 'armed' && untilPre > 0) ms = Math.min(ms, Math.max(untilPre, c.t.minReloadMs));
   if (phase === 'pre' && untilOpen > 0) ms = Math.min(ms, Math.max(untilOpen, c.t.minReloadMs));
 
-  const back = c.ts.mode === 'race' && !onTargetPage(c);
+  // не на чистом адресе цели (другой путь или хвост ?…&step=… после Add to Bag) — вернуться, а не рефрешить ту же 404
+  const back = offTarget(c);
   c.setState('CLOSED', `${reason} — ${back ? 'назад к цели' : 'рефреш'} через ${(ms / 1000).toFixed(1)} с (${PHASE_LABEL[phase]})`);
   c.renderOverlay(phase === 'post' ? { countdownTo: undefined } : { countdownTo: openAt });
   c.timer(ms, () => {

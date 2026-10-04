@@ -81,6 +81,10 @@ export function classify(): PageInfo {
   if (hasCaptcha(head)) return { ...base, kind: 'captcha' };
   // блокировка по IP: 403/429 или «Access Denied» на почти пустой странице
   if (status === 403 || status === 429 || (markers < 3 && SEL.txtBlocked.test(head))) return { ...base, kind: 'blocked' };
+  // 404 — раньше заглушек: на живом сайте «can’t be found» после Add to Bag принималась за BUSY и рефрешилась по кругу
+  if (status === 404 || /Page Not Found/i.test(title) || (SEL.txt404.test(text.slice(0, 3000)) && markers < 3)) {
+    return { ...base, kind: 'notfound' };
+  }
   // очередь Apple: страница сама пустит дальше — её не рефрешим (проверяем раньше заглушек и закрытия)
   if (markers < 3 && SEL.txtQueue.test(head)) {
     return { ...base, kind: 'queue' };
@@ -90,9 +94,6 @@ export function classify(): PageInfo {
   }
   if (status === 503 || status === 541 || (SEL.txtBusy.test(title + '\n' + text.slice(0, 4000)) && markers < 3)) {
     return { ...base, kind: 'busy' };
-  }
-  if (/Page Not Found/i.test(title) || status === 404 || (SEL.txt404.test(text.slice(0, 3000)) && markers < 3)) {
-    return { ...base, kind: 'notfound' };
   }
   const productParam = sp.get('product') ? normPart(sp.get('product')) : undefined;
   if (url.search.includes('add-to-cart=')) {

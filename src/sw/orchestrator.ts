@@ -187,8 +187,8 @@ export class Orchestrator {
         if (m.counters) { t.reloads = m.counters.reloads; t.atb404 = m.counters.atb404; }
         if (this.bot && mainTab(this) === t) sendState(this, t, false);
         if (modeChanged || m.state === 'STUCK') assignRoles(this);
-        // бот: любой STUCK — в очередь внимания человека (§10)
-        if (this.bot && enteringStuck) this.hub.send({ t: 'NEED_HUMAN', profile: this.cfg.profileId, orderId: assignedId(this), reason: 'stuck', step: m.state, text: m.detail ?? 'STUCK' });
+        // бот: STUCK в чекауте — сразу человеку (§10); до корзины (race) сторож хаба сначала сам откроет товар заново
+        if (this.bot && enteringStuck && m.mode !== 'race') this.hub.send({ t: 'NEED_HUMAN', profile: this.cfg.profileId, orderId: assignedId(this), reason: 'stuck', step: m.state, text: m.detail ?? 'STUCK' });
         if (tabId === this.os.winnerTabId && m.mode === 'checkout' && this.os.stage !== m.state) {
           this.os.stage = m.state;
           void this.saveOs();

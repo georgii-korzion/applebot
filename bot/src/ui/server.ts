@@ -136,6 +136,7 @@ const JOB_TITLES: Record<string, string> = {
   report: 'Отчёт после дропа (bot report)',
   bench: 'Замер скорости (bot bench)',
   stop: 'Остановить всё (bot stop)',
+  diag: 'Собрать логи для разработчика (bot diag)',
 };
 /** Эти задачи сами запускают флот на порту хаба — не вместе с работающим ботом. */
 const FLEET_JOBS = new Set(['prepare', 'bench']);

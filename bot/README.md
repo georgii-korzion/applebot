@@ -101,6 +101,14 @@ npm run bot -- report         # какая стратегия сработала
 npm run bot -- wipe           # удалить secrets.local.json, профили и runtime/ (кроме report.md, orders.txt, orders.csv)
 ```
 
+### Если бот повёл себя странно — «Собрать логи»
+
+Пульт → «Запуск» (или «Результаты») → **«Собрать логи»**: на рабочем столе появится `applebot-logs-<машина>-<время>.zip` (логи каждого браузера, хаба, снимки страниц-заглушек и 404). Номера карт, имена, телефоны и почты получателей, пароли прокси и токены в архиве замаскированы; `secrets.local.json` и файла заказов в нём нет. Перетащи архив в чат разработчику. В Терминале: `npm run bot -- diag`.
+
+### Сторож лечит зависания до корзины сам
+
+Если браузер завис до корзины — подготовка опций (ATB_PREP, 45 с), ожидание ответа после Add to Bag (ATB_PENDING, 20 с), STUCK после повторяющихся 404 — сторож сам открывает страницу товара заново и сбрасывает счётчики неудач (до 3 раз, в логе «открываю страницу товара заново (1/3)»). Только потом зовёт человека. В чекауте (после корзины) зависание сразу к человеку — там рисковать нельзя.
+
 ### Если браузеры открылись и стоят
 
 На дашборде у всех браузеров `STARTING` и красный кружок — значит расширение в окнах не подключилось к боту. Через 25 с бот сам пишет причину в лог (пульт → «Лог бота»), в колонку «ошибка» на дашборде и в `runtime/notify.txt`. Частые причины:
@@ -151,10 +159,10 @@ bot/src/
 npm run typecheck
 npm test                 # 13 юнит-тестов расширения + 14 юнит-тестов бота
 npm run test:e2e         # 16 сценариев расширения (автономный режим)
-npm run test:bot         # 18 сценариев бота (§15) на моке
+npm run test:bot         # 21 сценарий бота (§15) на моке
 ```
 
-Сценарии бота: `bot-single, bot-pool, h1-refresh, h1-queue, card-decline, card-pool-empty, place-generic-error, applepay-qr, stuck-human, proxy, blocked, captcha, direct-requests, hub-crash, notify, warmup, no-connect, ui`. Мок: `ADMIT_MODE, DECLINE_LAST4, PLACE_GENERIC_ERR, APPLEPAY_TRUSTED_ONLY, APPLEPAY_QR_EXPIRE_MS, BLOCK_AFTER_SESSIONS, CAPTCHA_AT, HANG_STORES` (описание — в шапке `test/mock-server.mjs`).
+Сценарии бота: `bot-single, bot-pool, h1-refresh, h1-queue, card-decline, card-pool-empty, place-generic-error, applepay-qr, stuck-human, proxy, blocked, captcha, direct-requests, hub-crash, notify, warmup, no-connect, stale-404, atb-heal, diag, ui`. Мок: `ADMIT_MODE, DECLINE_LAST4, PLACE_GENERIC_ERR, APPLEPAY_TRUSTED_ONLY, APPLEPAY_QR_EXPIRE_MS, BLOCK_AFTER_SESSIONS, CAPTCHA_AT, HANG_STORES` (описание — в шапке `test/mock-server.mjs`).
 
 ## 8. Что проверить вживую до 16.10 (§16)
 

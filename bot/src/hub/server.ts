@@ -22,6 +22,10 @@ import { withPage } from '../cdp';
 import { beep, osClick } from '../os';
 import { dashboardHtml } from '../dashboard/page';
 
+/** Зависания до корзины, которые сторож лечит сам (страница товара заново), прежде чем звать человека. */
+const HEAL_STATES = new Set(['ATB_PREP', 'ATB_WAIT_LOCK', 'ATB_PENDING', 'STUCK']);
+const HEAL_MAX = 3;
+
 export type BrowserStatus = 'STARTING' | 'RUNNING' | 'DEAD' | 'PROXY_DOWN' | 'RETIRED' | 'STOPPED';
 
 export interface BrowserRt {
@@ -44,6 +48,8 @@ export interface BrowserRt {
   noConnectAt?: number;
   /** Последнее подключение расширения к хабу (REGISTER). */
   connectedAt?: number;
+  /** Сколько раз сторож сам перезапускал страницу товара (до корзины); сброс — товар в корзине. */
+  heals?: number;
   relaunches: number;
   retiredReason?: string;
   // живое
@@ -444,6 +450,7 @@ export class Hub {
     if (m.error) b.lastError = m.error;
     if (m.perf) this.store.event('step', { browser: b.id, ...m.perf, sinceOpen: this.sinceOpen(), orderId: b.orderId });
     if (changed) {
+      if (m.state === 'IN_BAG') b.heals = 0;
       this.store.event('state', { browser: b.id, state: m.state, page: m.page, step: m.step, orderId: b.orderId, sinceOpen: this.sinceOpen() });
       if (b.stuck) { b.stuck = false; this.log(`${b.id}: вышел из зависания (${m.state})`); }
       this.resolveByState(b);
@@ -1046,8 +1053,17 @@ export class Hub {
       for (const b of this.browsers.values()) {
         if (!b.online || b.status !== 'RUNNING' || b.stuck || b.manual) continue;
         if (isStuck(b.state, b.stateSince, now, this.cfg.watchdog.thresholds, pay, this.cfg.payment.stopBeforePay)) {
-          b.stuck = true;
           const sec = Math.round((now - b.stateSince) / 1000);
+          // до корзины зависание лечится само: страница товара заново; после HEAL_MAX попыток — человек
+          if (HEAL_STATES.has(b.state) && !b.placed && b.role !== 'leader' && (b.heals ?? 0) < HEAL_MAX) {
+            b.heals = (b.heals ?? 0) + 1;
+            b.stateSince = now;
+            this.log(`${b.id}: ${b.state} без изменений ${sec} с${b.detail ? ` (${b.detail})` : ''} — открываю страницу товара заново (${b.heals}/${HEAL_MAX})`, 'warn');
+            this.store.event('watchdog', { browser: b.id, state: b.state, sec, heal: b.heals });
+            this.send(b.id, { t: 'COMMAND', cmd: 'reload_target' });
+            continue;
+          }
+          b.stuck = true;
           this.store.event('watchdog', { browser: b.id, state: b.state, sec });
           this.onNeedHuman(b, 'stuck', `${b.state} без изменений ${sec} с${b.detail ? `: ${b.detail}` : ''}`, b.state);
         }

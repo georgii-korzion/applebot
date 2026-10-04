@@ -371,6 +371,11 @@ function onCmd(c: Ctl, cmd: string): void {
       becomeStopped(c, 'Стоп');
       break;
     case 'reload_target':
+      // начать с чистого листа: сторож хаба или человек — счётчики неудач сбросить, иначе STUCK вернётся сразу
+      Object.assign(c.ts, { atbPendingSince: undefined, atb404InRow: 0, busyInRow: 0, queueSince: undefined });
+      c.ts.fails.atb = 0;
+      // STUCK переживает перезагрузку (диспетчер на нём останавливается) — снять, иначе новая страница сразу встанет
+      if (c.ts.state === 'STUCK' || c.ts.state === 'NEED_HUMAN') c.setState('INIT', 'начинаю заново со страницы товара');
       void c.navigate(c.targetUrl(), 'команда: к странице цели', true);
       break;
     case 'reload':

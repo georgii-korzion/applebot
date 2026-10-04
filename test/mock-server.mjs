@@ -38,6 +38,7 @@
 //                          (адрес — заголовок x-test-exit-ip от тестового прокси, иначе 127.0.0.1)
 //   CAPTCHA_AT=<шаг>       product | bag | signin | checkout: проверка «я не робот», проходит только настоящий клик
 //   HANG_STORES=1          список магазинов на Fulfillment «ищется» бесконечно (зависание для сторожа)
+//   ?stale404=1 на адресе товара — 404 «can’t be found» с фразой заглушки в подвале (ловушка классификации)
 // Служебное: GET /__state, POST /__reset, POST /__config, POST /__addr_sessions {addr, n}
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -747,6 +748,8 @@ const server = http.createServer(async (req, res) => {
     if (m) {
       const p = partBySlug(m[1], m[2]);
       if (!p) return send(res, notFound(s));
+      // живой сайт 04.10: 404 на адресе товара с хвостом ?product=…&step=…; в подвале — фраза, похожая на заглушку
+      if (q.get('stale404') === '1') return send(res, page(s, 'Page Not Found - Apple (AE)', '<h1>The page you’re looking for can’t be found.</h1><footer><p>Some items or features may not be available right now in your country.</p><p>This item isn’t available right now.</p></footer>', { status: 404 }));
       if (q.get('add-to-cart') === 'add-to-cart') {
         const bad = q.get('acpart') !== 'none' || !q.get('atbtoken') || q.get('atbtoken') !== s.atb || (q.get('product') ?? '').toUpperCase() !== p.part
           || (S.requireTrusted && q.get('hx') !== '1') || !isOpen(p) || s.atb404 < S.atb404First || Math.random() < S.atb404Rate;

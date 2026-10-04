@@ -25,6 +25,20 @@ export function busyMs(c: Ctl): number {
   return base;
 }
 
+/**
+ * Гонка, а вкладка не на чистом адресе цели: другой путь или хвост ?product=…&step=… после Add to Bag.
+ * Перезагрузка такого адреса повторяет ту же 404/заглушку — нужно вернуться на страницу товара.
+ */
+export function offTarget(c: Ctl): boolean {
+  if (c.ts.mode !== 'race') return false;
+  try {
+    const t = new URL(c.targetUrl());
+    return t.pathname.toLowerCase() !== location.pathname.replace(/\/$/, '').toLowerCase() || location.search !== '';
+  } catch {
+    return false;
+  }
+}
+
 export function busyBackoff(c: Ctl, page?: PageInfo): void {
   const hold = c.ts.mode === 'race' && page ? holdUntil(c) : null;
   if (hold && page && page.metaRefreshSec === undefined) { holdStep(c, page, 'заглушка Apple', hold); return; }
@@ -36,6 +50,11 @@ export function busyBackoff(c: Ctl, page?: PageInfo): void {
     const wait = Math.max((meta + 5) * 1000, ms);
     c.setState('BUSY', `заглушка Apple (${n + 1}) обновится сама через ${meta} с — не мешаем`);
     c.scheduleReload(wait, 'busy-meta-fallback');
+    return;
+  }
+  if (offTarget(c)) {
+    c.setState('BUSY', `заглушка Apple (${n + 1}) — назад к странице товара через ${ms} мс`);
+    c.timer(ms, () => { void c.navigate(c.targetUrl(), 'заглушка не на адресе цели → цель', true); });
     return;
   }
   c.setState('BUSY', `заглушка Apple (${n + 1}), рефреш через ${ms} мс`);

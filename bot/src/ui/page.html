@@ -350,7 +350,8 @@ function runHtml() {
       ${s.dashUrl ? `<a class="btn" href="${esc(s.dashUrl)}" target="_blank" rel="noopener">Открыть дашборд ↗</a>` : ''}
     </div>
     <label class="chk" style="margin-top:8px"><input type="checkbox" id="fresh"${S.fresh ? ' checked' : ''}><span class="hint">начать заново: закрыть браузеры прошлого запуска (без галочки живые браузеры подхватываются)</span></label>
-    <div class="sub row">${jobBtn('prepare', 'Подготовить профили (накануне)')}<span class="hint">страна, пустая корзина, цена в AED во всех браузерах — отчёт в выводе ниже</span></div>`;
+    <div class="sub row">${jobBtn('prepare', 'Подготовить профили (накануне)')}<span class="hint">страна, пустая корзина, цена в AED во всех браузерах — отчёт в выводе ниже</span></div>
+    <div class="sub row">${jobBtn('diag', 'Собрать логи')}<span class="hint">что-то пошло не так — zip на рабочий стол (карты, контакты и пароли замаскированы); перетащи его в чат разработчику</span></div>`;
 }
 
 function valListHtml() {
@@ -671,7 +672,7 @@ function tabAdvanced() {
 function tabResults() {
   const s = S.status || {};
   return `<section class="card"><div class="item-h"><h2 style="margin:0">Оформленные заказы</h2>
-      <div class="row"><button type="button" data-act="orders-refresh">Обновить</button>${jobBtn('report', 'Отчёт после дропа')}${s.dashUrl ? `<a class="btn" href="${esc(s.dashUrl)}" target="_blank" rel="noopener">Дашборд ↗</a>` : ''}</div></div>
+      <div class="row"><button type="button" data-act="orders-refresh">Обновить</button>${jobBtn('report', 'Отчёт после дропа')}${jobBtn('diag', 'Собрать логи')}${s.dashUrl ? `<a class="btn" href="${esc(s.dashUrl)}" target="_blank" rel="noopener">Дашборд ↗</a>` : ''}</div></div>
       <div class="hint" id="ordersPath" style="margin-bottom:6px"></div><pre id="ordersText" class="con">…</pre></section>
     ${consoleHtml()}
     <section class="card"><h2>После дропа</h2><p class="hint" style="margin:0">Удалить карты и профили: в Терминале <code>npm run bot -- wipe</code> (отчёт и список заказов останутся).</p></section>`;

@@ -27,7 +27,7 @@ function parseArgs(argv: string[]): Args {
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split('=');
       if (v !== undefined) opts[k] = v;
-      else if (argv[i + 1] && !argv[i + 1].startsWith('--') && ['config', 'secrets', 'runs', 'browsers', 'id', 'port', 'probe', 'down'].includes(k)) opts[k] = argv[++i];
+      else if (argv[i + 1] && !argv[i + 1].startsWith('--') && ['config', 'secrets', 'runs', 'browsers', 'id', 'port', 'probe', 'down', 'out'].includes(k)) opts[k] = argv[++i];
       else flags.add(k);
     } else if (!cmd) cmd = a;
   }
@@ -256,6 +256,7 @@ const HELP = `Apple Drop Bot (docs/BOT-SPEC.md)
   npm run bot -- bench [--runs 5] [--browsers 1,10,20]   замер скорости до Review (stopBeforePay)
   npm run bot -- wipe [--yes]     удалить секреты, профили и runtime/ (кроме отчёта и заказов)
   npm run bot -- install-chrome   поставить Chrome for Testing
+  npm run bot -- diag             собрать логи и снимки страниц в zip на рабочий стол (для разработчика)
 Опции: --config bot.config.json --secrets secrets.local.json`;
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
@@ -285,6 +286,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case 'wipe': return cmdWipe(a);
     case 'install-chrome': return cmdInstallChrome();
+    case 'diag': {
+      const cfg = normalizeBotConfig(readJsonc(resolve(a.config)));
+      let sec: Secrets | null = null;
+      try { sec = normalizeSecrets(readJsonc(resolve(a.secrets))); } catch { /* без секретов — маскируем только токены и карты по Луну */ }
+      const { buildDiag } = await import('./diag');
+      const out = buildDiag(cfg, sec, ROOT, { outDir: a.opts.out });
+      console.log(`Логи собраны: ${out}\nПришли этот файл разработчику (перетащи в чат). Карты, контакты, пароли прокси и токены в нём замаскированы.`);
+      if (process.platform === 'darwin' && process.env.BOT_TEST !== '1') spawnSync('open', ['-R', out]);
+      return;
+    }
     case 'ui': {
       const { runUi } = await import('./ui/server');
       await runUi({
