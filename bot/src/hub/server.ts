@@ -1146,7 +1146,7 @@ export class Hub {
       this.setStrategy([...this.browsers.values()].filter((b) => b.strategy === 'hold' && !b.admittedAt).map((b) => b.id), 'refresh', `holdMaxWaitSec ${this.cfg.fleet.holdMaxWaitSec} с вышло`);
     }
     if (this.cfg.fleet.adaptive && this.cfg.start.mode === 'drop') {
-      const fleet = [...this.browsers.values()].filter((b) => this.alive(b.id)).map((b) => ({ id: b.id, strategy: b.strategy, admittedAt: b.admittedAt, admittedStrategy: b.admittedStrategy }));
+      const fleet = [...this.browsers.values()].filter((b) => this.alive(b.id)).map((b) => ({ id: b.id, strategy: b.strategy, admittedAt: b.admittedAt, admittedStrategy: b.admittedStrategy, watcher: this.watchers.includes(b.id) }));
       const r = adaptTick(this.adapt, fleet, now, this.cfg.fleet.adaptiveWindowsSec[0], this.cfg.fleet.adaptiveWindowsSec[1]);
       if (r) for (const to of ['refresh', 'hold'] as Strategy[]) {
         const ids = r.switches.filter((s) => s.to === to).map((s) => s.id);

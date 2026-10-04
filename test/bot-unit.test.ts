@@ -107,6 +107,16 @@ test('H1: адаптация ступенями, два контрольных, 
   assert.equal(adaptTick(m, fleet, 47_000, 45, 30), null, 'ручная команда выключает автоматику');
   const tie = newAdapt();
   assert.equal(adaptTick(tie, [{ id: 'x', strategy: 'refresh', admittedAt: 1 }, { id: 'y', strategy: 'hold', admittedAt: 2 }], 50_000, 45, 30), null, 'обе пускают — не переключаем');
+  // наблюдатель refresh до открытия не перезагружается (как hold): его «пустили» не мешает выбрать hold
+  const w = newAdapt();
+  const fw = [
+    { id: 'w', strategy: 'refresh' as const, admittedAt: 500, admittedStrategy: 'refresh' as const, watcher: true },
+    { id: 'h1', strategy: 'hold' as const, admittedAt: 1000, admittedStrategy: 'hold' as const },
+    { id: 'h2', strategy: 'hold' as const, admittedAt: 2000, admittedStrategy: 'hold' as const },
+    { id: 'r1', strategy: 'refresh' as const }, { id: 'r2', strategy: 'refresh' as const },
+  ];
+  const rw = adaptTick(w, fw, 47_000, 45, 30)!;
+  assert.ok(rw && rw.switches.every((x) => x.to === 'hold'), 'наблюдатель не в счёт — победил hold');
 });
 
 test('стратегии при запуске: доли и обе группы (прямые и прокси)', () => {

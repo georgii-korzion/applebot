@@ -32,7 +32,8 @@ export function isStuck(state: string, since: number, now: number, thresholds: R
 }
 
 // ---------- адаптация H1 (§7) ----------
-export interface FleetView { id: string; strategy: Strategy; admittedAt?: number; admittedStrategy?: Strategy }
+/** watcher — наблюдатель JSON: до открытия не перезагружается (ведёт себя как hold), его «пустили» стратегию не доказывает. */
+export interface FleetView { id: string; strategy: Strategy; admittedAt?: number; admittedStrategy?: Strategy; watcher?: boolean }
 
 export interface AdaptState { firstAdmittedAt?: number; step: 0 | 1 | 2; nextAt?: number; manual: boolean; winner?: Strategy }
 
@@ -52,9 +53,12 @@ export function adaptTick(st: AdaptState, fleet: FleetView[], now: number, w1: n
   st.firstAdmittedAt ??= firstAdm;
   st.nextAt ??= st.firstAdmittedAt + w1 * 1000;
   if (now < st.nextAt) return null;
-  const adm = (s: Strategy) => fleet.filter((b) => b.admittedAt && (b.admittedStrategy ?? b.strategy) === s).length;
-  const r = adm('refresh'), h = adm('hold');
-  const winner: Strategy | null = r >= 2 && h === 0 ? 'refresh' : h >= 2 && r === 0 ? 'hold' : null;
+  const adm = (s: Strategy, watchers: boolean) => fleet.filter((b) => b.admittedAt && (watchers || !b.watcher) && (b.admittedStrategy ?? b.strategy) === s).length;
+  // наблюдатель до открытия стоит (как hold), а в момент OPEN перезагружается (как refresh): в общий счёт он идёт,
+  // но сам по себе не перечёркивает победу другой стратегии
+  const rAll = adm('refresh', true), hAll = adm('hold', true);
+  const r = adm('refresh', false), h = adm('hold', false);
+  const winner: Strategy | null = rAll >= 2 && r >= 1 && h === 0 ? 'refresh' : hAll >= 2 && h >= 1 && r === 0 ? 'hold' : null;
   st.nextAt = now + w2 * 1000;
   if (!winner || (st.winner && st.winner !== winner)) return null;
   const loser: Strategy = winner === 'refresh' ? 'hold' : 'refresh';
@@ -65,7 +69,7 @@ export function adaptTick(st: AdaptState, fleet: FleetView[], now: number, w1: n
   if (n <= 0) return null;
   return {
     switches: losers.slice(0, n).map((b) => ({ id: b.id, to: winner })),
-    reason: `пущено: refresh ${r}, hold ${h} → ${n} браузер(а) ${loser} → ${winner}${st.step === 2 ? ' (кроме 2 контрольных)' : ''}`,
+    reason: `пущено: refresh ${rAll}, hold ${hAll} → ${n} браузер(а) ${loser} → ${winner}${st.step === 2 ? ' (кроме 2 контрольных)' : ''}`,
   };
 }
 

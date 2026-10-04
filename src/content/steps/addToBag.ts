@@ -6,7 +6,7 @@ import type { AtbDiag, AtbOutcome } from '../../shared/messages';
 import type { Ctl } from '../ctl';
 import { navStatus, type PageInfo } from '../classify';
 import { assistClick } from '../assist';
-import { cookieNames, isChecked, isEnabled, pickRadio, q, waitForResource } from '../dom';
+import { cookieNames, isChecked, isEnabled, pickRadio, q, sleep, waitForResource } from '../dom';
 import { findEl, waitEl, waitEnabled } from '../find';
 import { scheduleByPhase } from './preopen';
 import { becomeStopped, busyMs } from './common';
@@ -33,16 +33,33 @@ export async function atbFlow(c: Ctl): Promise<void> {
     pickRadio(trade);
     if (!(await waitForResource(/\/shop\/updateSummary/, t0, 5000, sig, net, false, e0))) c.log('нет ответа updateSummary после trade-in (5 с)', 'warn');
   } else if (!trade) c.log('нет choose-noTradeIn — пропускаю', 'warn');
-  // 4. No AppleCare → updateSummary с acpart=none
+  // 4. No AppleCare → updateSummary с acpart=none. Без него Apple отвечает на Add to Bag «Page Not Found» (§7.4).
+  //    На медленной (свежий профиль, нагрузка) странице блок AppleCare появляется через секунды после trade-in —
+  //    ждём до 20 с и не жмём Add to Bag, пока выбор не подтвердился (живой сайт 04.10: 5 с не хватало → 404 по кругу).
   let sawAcpart = false;
-  const ac = await waitEl('noAppleCare', 5000, sig);
-  if (ac && !isChecked(ac)) {
+  const ac = await waitEl('noAppleCare', 20_000, sig);
+  if (ac && isChecked(ac)) sawAcpart = true;
+  for (let i = 0; ac && !sawAcpart && i < 3; i++) {
+    const el = findEl('noAppleCare') ?? ac;
     const t1 = performance.now(), e1 = Date.now();
-    pickRadio(ac);
+    pickRadio(el);
     sawAcpart = await waitForResource(/\/shop\/updateSummary\?[^#]*acpart=none/, t1, 5000, sig, net, true, e1);
-    if (!sawAcpart) c.log('нет updateSummary с acpart=none (5 с)', 'warn');
-  } else if (ac) sawAcpart = true;
-  else c.log('нет noapplecare — пропускаю', 'warn');
+    if (!sawAcpart) c.log(`нет updateSummary с acpart=none после выбора «No AppleCare+» (попытка ${i + 1}/3)`, 'warn');
+  }
+  // запрос не увидели, но выбор стоит (ответ мог прийти из кэша) — ещё секунда на ответ сайта и дальше
+  if (ac && !sawAcpart && isChecked(findEl('noAppleCare'))) { await sleep(1000, sig); sawAcpart = true; }
+  if (!sawAcpart) {
+    const n = (c.ts.fails.noAppleCare = (c.ts.fails.noAppleCare ?? 0) + 1);
+    // страховка от вечного цикла на странице совсем без AppleCare: после 3 перезагрузок — как раньше, без него
+    if (n <= 3) {
+      c.log(ac ? '«No AppleCare+» не подтвердился — перезагрузка вместо гарантированной 404' : 'блок AppleCare не появился за 20 с — перезагрузка вместо гарантированной 404', 'warn');
+      c.setState('FAST_RELOAD', `«No AppleCare+» не выбран (${n}/3) — перезагрузка, Add to Bag без него Apple отклонит`);
+      c.scheduleReload(c.jit(c.t.postOpenReloadMs), 'no-acpart');
+      return;
+    }
+    c.log('блока AppleCare нет 3 раза подряд — жму Add to Bag без него', 'warn');
+  }
+  c.ts.fails.noAppleCare = 0;
   // 5. кнопка активируется сама (disabled руками не снимаем)
   btn = await waitEnabled('addToBag', 12000, sig);
   if (!btn) {

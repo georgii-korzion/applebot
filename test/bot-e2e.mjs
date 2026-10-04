@@ -881,6 +881,17 @@ scenarios['stock-rearm'] = async () => {
   assert.equal((await mockState()).orders.length, 1, 'один заказ');
 };
 
+/** Живой сайт 04.10: AppleCare появляется поздно, Add to Bag активна и без него — нажать без «No AppleCare+» = 404 от Apple. */
+scenarios['applecare-slow'] = async () => {
+  await startMock({ OPEN_AFTER: '5', APPLECARE_DELAY_MS: '7000', ATB_EARLY: '1', THREEDS_MS: '500' });
+  const h = await startBot('acslow', botConfig('acslow', 5, { notify: { telegram: { enabled: false }, webhooks: { enabled: false } } }), botSecrets());
+  const s = await waitFor(async () => { const x = await h.state(); return x.orders[0].state === 'ORDERED' ? x : null; }, 90000, 'ORDERED', 500);
+  const ms = await mockState();
+  const a404 = ms.sessions.reduce((a, x) => a + x.atb404, 0);
+  say(`applecare-slow: ${s.orders[0].orderNo} (+${s.orders[0].orderedSec} с от OPEN) · 404 на Add to Bag: ${a404}`);
+  assert.equal(a404, 0, 'Add to Bag не нажимается без «No AppleCare+» (иначе Apple отвечает Page Not Found)');
+};
+
 /** Пульт (npm run bot -- ui): заполнить получателя и карту в форме, сохранить, запустить кнопкой, заказ, остановить. */
 scenarios.ui = async () => {
   await startMock({ OPEN_AFTER: '25', THREEDS_MS: '800' });
@@ -975,7 +986,7 @@ scenarios.ui = async () => {
 
 // ---------- запуск ----------
 const want = process.argv.slice(2);
-const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup', 'no-connect', 'stale-404', 'atb-heal', 'diag', 'stock-start', 'stock-rearm', 'ui'];
+const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup', 'no-connect', 'stale-404', 'atb-heal', 'diag', 'stock-start', 'stock-rearm', 'applecare-slow', 'ui'];
 if (!existsSync(BOT)) { console.error('нет bot/dist/bot.mjs — npm run test:bot собирает его сам'); process.exit(1); }
 let failed = 0;
 for (const name of list) {

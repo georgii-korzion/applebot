@@ -115,7 +115,7 @@ export interface Secrets {
 }
 
 export const DEFAULT_THRESHOLDS: Record<string, number> = {
-  ATB_PREP: 45, ATB_WAIT_LOCK: 30, ATB_PENDING: 20, STUCK: 3,
+  ATB_PREP: 75, ATB_WAIT_LOCK: 30, ATB_PENDING: 20, STUCK: 3,
   IN_BAG: 20, CHECKOUT: 20, GUEST: 20, FULFILLMENT: 40, CONTACT: 25, BILLING: 30, REVIEW: 20,
 };
 
@@ -198,6 +198,8 @@ export function normalizeBotConfig(raw: unknown): BotConfig {
   }));
   const thresholds = { ...DEFAULT_THRESHOLDS };
   for (const [k, v] of Object.entries(obj(w.thresholds))) thresholds[k] = num(v, thresholds[k] ?? 30);
+  // подготовка опций честно длится до ~60 с (AppleCare на медленной странице) — сторож не должен её прерывать
+  thresholds.ATB_PREP = Math.max(thresholds.ATB_PREP, 75);
   const aw = Array.isArray(f.adaptiveWindowsSec) ? f.adaptiveWindowsSec : [45, 30];
   return {
     machine: str(r.machine, hostname().split('.')[0] || 'mac'),

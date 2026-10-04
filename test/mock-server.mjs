@@ -12,6 +12,8 @@
 //   UNAVAILABLE_STORES=R597  магазины без наличия
 //   TAKEN_FIRST_SLOT=1     первое окно каждой даты «уже занято»
 //   HYDRATE_MS=250         задержка «гидратации» страницы конфигурации
+//   APPLECARE_DELAY_MS=0   блок AppleCare появляется через N мс после выбора trade-in (медленная страница)
+//   ATB_EARLY=0            Add to Bag активна без выбора AppleCare (как на живом сайте; без acpart=none → 404)
 //   ATTACH_DELAY_MS=900    200 → beacon/atb → step=attach
 //   THREEDS_MS=0           после Place Order — «подтверди в приложении банка» N мс, потом thank-you (3-D Secure)
 //   CARD_DELAY_MS=0        блок карты на Billing появляется через N мс после выбора «Credit or Debit Card» (Apple 30.09: несколько секунд)
@@ -61,6 +63,8 @@ const S = {
   stockGoneOnce: env.STOCK_GONE_ONCE === '1',
   takenFirstSlot: env.TAKEN_FIRST_SLOT !== '0',
   hydrateMs: num(env.HYDRATE_MS, 250),
+  appleCareDelayMs: num(env.APPLECARE_DELAY_MS, 0),
+  atbEarly: env.ATB_EARLY === '1',
   attachDelayMs: num(env.ATTACH_DELAY_MS, 900),
   cardDelayMs: num(env.CARD_DELAY_MS, 0),
   threeDsMs: num(env.THREEDS_MS, 0),
@@ -182,7 +186,7 @@ const captchaPage = (s, what) => page(s, 'Apple - Verify', `<div id="captcha" ro
 
 function productPage(s, p) {
   const open = isOpen(p);
-  const boot = { part: p.part, family: p.family, node: `home/shop_iphone/family/${p.family.replace(/-/g, '_')}`, hydrateMs: S.hydrateMs, open };
+  const boot = { part: p.part, family: p.family, node: `home/shop_iphone/family/${p.family.replace(/-/g, '_')}`, hydrateMs: S.hydrateMs, open, acDelay: S.appleCareDelayMs, atbEarly: S.atbEarly };
   const colors = Object.values(PARTS).filter((x) => x.family === p.family && x.model === p.model && x.capacity === p.capacity);
   const caps = Object.values(PARTS).filter((x) => x.family === p.family && x.model === p.model && x.color === p.color);
   const body = `<h1>Buy ${esc(p.model)}</h1>
@@ -209,16 +213,23 @@ function productClient(name, price) {
       + '<fieldset><legend>Do you have a smartphone to trade in?</legend>'
       + '<input class="vh" type="radio" id="ti-no" name="tradein" value="noTradeIn"><label for="ti-no" data-autom="choose-noTradeIn">No trade-in</label>'
       + '<input class="vh" type="radio" id="ti-yes" name="tradein" value="tradeIn"><label for="ti-yes" data-autom="choose-tradeIn">Select a smartphone</label></fieldset>'
-      + '<fieldset><legend>AppleCare+ coverage</legend>'
-      + '<input class="vh" type="radio" id="ac-no" name="applecare" value="none" data-autom="noapplecare"><label for="ac-no">No AppleCare+ coverage</label>'
-      + '<input class="vh" type="radio" id="ac-yes" name="applecare" value="AC" data-autom="applecare"><label for="ac-yes">AppleCare+</label></fieldset>'
+      + '<fieldset id="acf"></fieldset>'
       + '<form id="atb" method="GET" action="#"><input type="hidden" name="product" value="' + B.part + '"><input type="hidden" name="purchaseOption" value="fullPrice"><input type="hidden" name="step" value="select"><input type="hidden" name="hx" value="">'
       + '<button type="submit" name="add-to-cart" value="add-to-cart" data-autom="add-to-cart" disabled>Add to Bag</button></form>';
     var trade = false, acpart = null, btn = app.querySelector('[data-autom="add-to-cart"]'), form = document.getElementById('atb');
-    function upd() { btn.disabled = !(trade && acpart); }
+    // ATB_EARLY: как на живом сайте — кнопка активна уже после trade-in, без выбора AppleCare (тогда Add to Bag → 404)
+    function upd() { btn.disabled = !(trade && (acpart || B.atbEarly)); }
     function summary(extra) { return fetch('/ae/shop/updateSummary?fae=true&node=' + B.node + '&step=select&product=' + B.part + extra + '&igt=true', { credentials: 'include' }); }
-    app.querySelectorAll('input[name=tradein]').forEach(function (i) { i.addEventListener('change', function () { summary('').then(function () { trade = true; upd(); }); }); });
-    app.querySelectorAll('input[name=applecare]').forEach(function (i) { i.addEventListener('change', function () { var v = i.value === 'none' ? 'none' : 'AC1'; summary('&acpart=' + v).then(function () { acpart = v; upd(); }); }); });
+    // APPLECARE_DELAY_MS: блок AppleCare появляется не сразу, а после выбора trade-in и задержки (медленная страница)
+    function showAc() {
+      var f = document.getElementById('acf');
+      f.innerHTML = '<legend>AppleCare+ coverage</legend>'
+        + '<input class="vh" type="radio" id="ac-no" name="applecare" value="none" data-autom="noapplecare"><label for="ac-no">No AppleCare+ coverage</label>'
+        + '<input class="vh" type="radio" id="ac-yes" name="applecare" value="AC" data-autom="applecare"><label for="ac-yes">AppleCare+</label>';
+      f.querySelectorAll('input[name=applecare]').forEach(function (i) { i.addEventListener('change', function () { var v = i.value === 'none' ? 'none' : 'AC1'; summary('&acpart=' + v).then(function () { acpart = v; upd(); }); }); });
+    }
+    if (!B.acDelay) showAc();
+    app.querySelectorAll('input[name=tradein]').forEach(function (i) { i.addEventListener('change', function () { summary('').then(function () { trade = true; upd(); if (B.acDelay && !document.getElementById('ac-no')) setTimeout(showAc, B.acDelay); }); }); });
     btn.addEventListener('pointerdown', function () { form.hx.value = '1'; });
     form.addEventListener('submit', function (e) {
       e.preventDefault();
