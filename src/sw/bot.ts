@@ -153,6 +153,33 @@ export async function release(o: Orchestrator, tabId: number | undefined, reason
   }
 }
 
+/**
+ * Режим stock: сток кончился раньше оплаты — снова ждать сток. Сигнал OPEN сбрасывается (наблюдатели
+ * возобновляют опрос), заказ отпускается, вкладка — на страницу товара в ожидание. Кто уже на оплате — не трогаем.
+ */
+export async function rearm(o: Orchestrator, reason: string, cooldownMs = 0): Promise<void> {
+  const tab = mainTab(o);
+  if (o.os.placedAt || o.os.billingReadyAt || o.os.orderNo || ['BILLING', 'PAY_READY', 'PLACED', 'WAIT_3DS', 'WAIT_APPLEPAY', 'REVIEW', 'ORDERED'].includes(tab?.state ?? '')) {
+    o.log('sw', 'REARM', `пропускаю (${tab?.state ?? '—'}): этот браузер уже на оплате`);
+    return;
+  }
+  o.order = lobbyOrder(o.cfg);
+  o.cfg.orders = [o.order];
+  await chrome.storage.session.remove(K_ORDER);
+  const k = o.os;
+  o.os = {
+    ...newOrderState(), armed: k.armed, startedAt: k.startedAt, watchTargets: k.watchTargets, watchStores: k.watchStores,
+    raceTabs: k.raceTabs, activeTarget: o.order.targets[0], timestamps: { ...k.timestamps, rearmed: Date.now() },
+    stockCooldownUntil: Date.now() + cooldownMs,
+  };
+  await o.saveOs(true);
+  o.broadcast({ t: 'CONFIG', cfg: o.cfg, order: o.order }, (t) => !!t.port);
+  o.log('sw', 'REARM', `${reason} — снова ждём сток${cooldownMs ? ` (сигнал не раньше чем через ${Math.round(cooldownMs / 1000)} с)` : ''}`);
+  if (tab && o.os.armed) o.sendTab(tab.tabId, { t: 'MODE', mode: 'race', reset: true, extra: { target: o.os.activeTarget } });
+  assignRoles(o);
+  o.ensureSwWatch();
+}
+
 /** Старт гонки бота: рабочая вкладка — та, что открыл лаунчер (одна вкладка на браузер, §3.1). */
 export async function startBot(o: Orchestrator): Promise<void> {
   if (o.os.armed) return;
@@ -220,6 +247,10 @@ export function onBotTabMsg(o: Orchestrator, tabId: number, t: TabInfo, m: C2S):
   const me = o.cfg.profileId;
   const oid = assignedId(o);
   switch (m.t) {
+    case 'NO_STOCK':
+      o.log(tabId, 'NO_STOCK', m.detail);
+      o.hub.send({ t: 'NO_STOCK', profile: me, orderId: oid, detail: m.detail });
+      return true;
     case 'ADMITTED':
       o.os.admittedAt ??= m.at;
       o.os.spare = false;
@@ -300,6 +331,9 @@ export function onBotHub(o: Orchestrator, m: Hub2S): boolean {
   switch (m.t) {
     case 'CONFIG':
       void applyConfig(o, m.cfg);
+      return true;
+    case 'REARM':
+      void rearm(o, m.reason, m.cooldownMs ?? 0);
       return true;
     case 'ASSIGN':
       void assign(o, m.order);

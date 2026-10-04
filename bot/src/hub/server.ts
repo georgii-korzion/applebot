@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Strategy, ClickTarget, HumanReason } from '../../../src/shared/bot';
 import type { Hub2S, OrderRecord, S2Hub } from '../../../src/shared/messages';
+import type { StockHit } from '../../../src/shared/watch';
 import { partLabel, storeName } from '../../../src/shared/parts';
 import { scrub } from '../../../src/shared/log';
 import { botRuntime, last4, toExtConfig, toExtOrder, type BotConfig, type BotOrder, type PayMethod, type Secrets } from '../config';
@@ -116,6 +117,8 @@ interface Persisted {
   dashToken: string;
   openedAt: number | null;
   openSource: string | null;
+  stock?: StockHit[];
+  rearms?: number;
   browsers: Record<string, Partial<BrowserRt>>;
   orders: Record<string, Partial<OrderRt>>;
   cards: ReturnType<CardPool['snapshot']>;
@@ -136,6 +139,10 @@ export class Hub {
   adapt: AdaptState = newAdapt();
   openedAt: number | null = null;
   openSource: string | null = null;
+  /** Режим stock: где и что появилось при последнем OPEN. */
+  stock: StockHit[] = [];
+  /** Сколько раз сток кончался раньше оплаты (флот возвращался в ожидание). */
+  rearms = 0;
   dashToken: string;
   runId: string;
   startedAt = Date.now();
@@ -177,6 +184,8 @@ export class Hub {
     if (saved) {
       this.openedAt = saved.openedAt;
       this.openSource = saved.openSource;
+      this.stock = saved.stock ?? [];
+      this.rearms = saved.rearms ?? 0;
       this.startedAt = saved.startedAt;
       this.adapt = saved.adapt ?? newAdapt();
       this.nextBrowserNo = saved.nextBrowserNo ?? 1;
@@ -238,7 +247,7 @@ export class Hub {
     for (const [id, o] of this.orders) { const { cfg: _c, ...rest } = o; orders[id] = rest; }
     const p: Persisted = {
       version: 1, runId: this.runId, machine: this.cfg.machine, startedAt: this.startedAt, dashToken: this.dashToken,
-      openedAt: this.openedAt, openSource: this.openSource, browsers, orders, cards: this.cards.snapshot(), adapt: this.adapt,
+      openedAt: this.openedAt, openSource: this.openSource, stock: this.stock, rearms: this.rearms, browsers, orders, cards: this.cards.snapshot(), adapt: this.adapt,
       nextBrowserNo: this.nextBrowserNo, summarySent: this.summarySent, holdExpired: this.holdExpired, forwarders: this.forwarders,
     };
     this.store.save(p);
@@ -353,7 +362,7 @@ export class Hub {
     if (this.mode === 'prepare' && !b.prepared) { this.send(b.id, { t: 'COMMAND', cmd: 'prepare' }); return this.persistAnd(b.id); }
     if (b.orderId) this.sendAssign(b);
     this.pickWatchers();
-    if (this.openedAt) this.send(b.id, { t: 'OPEN', at: this.openedAt, buyable: [], source: `hub:${this.openSource}` });
+    if (this.openedAt) this.send(b.id, { t: 'OPEN', at: this.openedAt, buyable: [...new Set(this.stock.map((h) => h.part))], source: `hub:${this.openSource}`, stock: this.stock });
     this.persist();
     return b.id;
   }
@@ -410,7 +419,8 @@ export class Hub {
       case 'LOG': this.onLog(b, m.line); break;
       case 'STATUS': break; // старый протокол (вкладки профиля) — в режиме бота пульс идёт через STATE
       case 'STATE': this.onState(b, m); break;
-      case 'OPEN': this.onOpen(b, m.source, m.buyable); break;
+      case 'OPEN': this.onOpen(b, m.source, m.buyable, m.stock); break;
+      case 'NO_STOCK': this.onNoStock(b, m.detail); break;
       case 'ADMITTED': this.onAdmitted(b, m.at); break;
       case 'WIN_REQ': this.onWinReq(b, m.orderId); break;
       case 'FAILED': this.onFailed(b, m.orderId, m.reason); break;
@@ -476,13 +486,51 @@ export class Hub {
     if (changed || !this.attn.active) this.processAttention();
   }
 
-  private onOpen(b: BrowserRt, source: string, buyable: string[]): void {
+  private onOpen(b: BrowserRt, source: string, buyable: string[], stock?: StockHit[]): void {
     if (this.openedAt) return;
     this.openedAt = Date.now();
     this.openSource = `${b.id}/${source}`;
-    this.log(`OPEN от ${b.id} (${source}), buyable: ${buyable.join(',') || '—'}`);
-    this.broadcast({ t: 'OPEN', at: this.openedAt, buyable, source });
-    this.notify('store.opened', { browser: b.id, reason: source });
+    this.stock = stock ?? [];
+    const st = this.stock.length ? ` · сток: ${this.stock.map((h) => `${storeName(h.store).replace(/^Apple /, '')} ${h.part}`).join(', ')}` : '';
+    this.log(`OPEN от ${b.id} (${source}), buyable: ${buyable.join(',') || '—'}${st}`);
+    this.broadcast({ t: 'OPEN', at: this.openedAt, buyable, source, stock: this.stock });
+    this.notify('store.opened', { browser: b.id, reason: this.stock.length ? `появился сток${st.replace(' · сток', '')}` : source });
+    this.persist();
+  }
+
+  /**
+   * Режим stock: на Fulfillment самовывоза уже нет — сток кончился раньше оплаты. Флот (кроме тех, кто на оплате)
+   * снова ждёт сток: OPEN сбрасывается, заказы без оплаты возвращаются в пул, наблюдатели опрашивают дальше.
+   */
+  private onNoStock(b: BrowserRt, detail: string): void {
+    if (this.cfg.start.mode !== 'stock') { this.onNeedHuman(b, 'stuck', detail, 'FULFILLMENT'); return; }
+    if (!this.openedAt) return; // уже вернулись в ожидание
+    const took = Math.round((Date.now() - this.openedAt) / 1000);
+    this.rearms++;
+    this.log(`сток кончился через ${took} с (${b.id}: ${detail}) — все без оплаты снова ждут сток (${this.rearms}-й раз, новый сигнал не раньше чем через ${Math.min(10 * 2 ** (this.rearms - 1), 120)} с)`, 'warn');
+    // JSON Apple может показывать сток, которого уже нет: пауза перед следующим сигналом растёт (10, 20, 40… ≤120 с)
+    const cooldownMs = Math.min(10_000 * 2 ** (this.rearms - 1), 120_000);
+    this.notify('stock.gone', { browser: b.id, detail, afterSec: took, rearms: this.rearms, cooldownSec: cooldownMs / 1000 });
+    this.openedAt = null;
+    this.openSource = null;
+    this.stock = [];
+    const paying = new Set(['PAY_READY', 'PLACED', 'ORDERED', 'NEED_HUMAN']);
+    for (const o of this.orders.values()) {
+      if (paying.has(o.state)) continue;
+      o.state = 'OPEN';
+      o.leader = null;
+      o.claimers = [];
+      o.failed = [];
+    }
+    for (const x of this.browsers.values()) {
+      const o = x.orderId ? this.orders.get(x.orderId) : undefined;
+      if (x.placed || (o && paying.has(o.state))) continue;
+      x.orderId = null;
+      x.role = null;
+      x.admittedAt = undefined;
+      x.admittedStrategy = undefined;
+    }
+    this.broadcast({ t: 'REARM', reason: `сток кончился (${detail})`, cooldownMs });
     this.persist();
   }
 
@@ -506,7 +554,7 @@ export class Hub {
   }
 
   private assignTo(b: BrowserRt): void {
-    const views = [...this.orders.values()].map((o) => ({ id: o.id, priority: o.cfg.priority, state: o.state, claimers: o.claimers, failed: o.failed }));
+    const views = [...this.orders.values()].filter((o) => this.hasStock(o)).map((o) => ({ id: o.id, priority: o.cfg.priority, state: o.state, claimers: o.claimers, failed: o.failed }));
     const pick = pickOrder(views, this.cfg.fleet.claimersPerOrder, b.id, this.alive);
     if (!pick) {
       b.role = 'spare';
@@ -546,7 +594,27 @@ export class Hub {
         this.log(`заказ ${o.id}: свободной карты нет — Apple Pay`, 'warn');
       }
     }
-    this.send(b.id, { t: 'ASSIGN', order: toExtOrder(this.cfg, o.cfg, rec, card, o.method, b.id) });
+    this.send(b.id, { t: 'ASSIGN', order: toExtOrder(this.cfg, this.stockFirst(o.cfg), rec, card, o.method, b.id) });
+  }
+
+  /** Режим stock: есть ли самовывоз по этому заказу (его модель в его магазине). До сигнала — да (не мешаем). */
+  private hasStock(o: OrderRt): boolean {
+    if (this.cfg.start.mode !== 'stock' || !this.stock.length) return true;
+    return this.stock.some((h) => o.cfg.targets.includes(h.part) && o.cfg.stores.includes(h.store));
+  }
+
+  /** Режим stock: модели и магазины со стоком — первыми (бот идёт туда, где есть, а не по общему приоритету). */
+  private stockFirst(o: BotOrder): BotOrder {
+    if (this.cfg.start.mode !== 'stock' || !this.stock.length) return o;
+    const hits = this.stock.filter((h) => o.targets.includes(h.part) && o.stores.includes(h.store));
+    if (!hits.length) return o;
+    const parts = new Set(hits.map((h) => h.part));
+    const stores = new Set(hits.map((h) => h.store));
+    return {
+      ...o,
+      targets: [...o.targets.filter((p) => parts.has(p)), ...o.targets.filter((p) => !parts.has(p))],
+      stores: [...o.stores.filter((x) => stores.has(x)), ...o.stores.filter((x) => !stores.has(x))],
+    };
   }
 
   /** Снять браузер с заказа (освободить место претендента). */
@@ -1020,9 +1088,10 @@ export class Hub {
     }
     if (out.length < 2) for (const b of online) { if (out.length >= 2) break; if (!out.includes(b.id)) out.push(b.id); }
     const targets = [...new Set(this.cfg.orders.flatMap((o) => o.targets))];
+    const stores = [...new Set(this.cfg.orders.flatMap((o) => o.stores))];
     if (out.join() !== this.watchers.join()) this.log(`наблюдатели JSON: ${out.join(', ') || '—'}`);
     this.watchers = out;
-    this.broadcast({ t: 'WATCHER', profile: out[0] ?? null, profiles: out, targets });
+    this.broadcast({ t: 'WATCHER', profile: out[0] ?? null, profiles: out, targets, stores });
   }
 
   // ---------- стратегия H1 (§7) ----------
@@ -1076,7 +1145,7 @@ export class Hub {
       this.holdExpired = true;
       this.setStrategy([...this.browsers.values()].filter((b) => b.strategy === 'hold' && !b.admittedAt).map((b) => b.id), 'refresh', `holdMaxWaitSec ${this.cfg.fleet.holdMaxWaitSec} с вышло`);
     }
-    if (this.cfg.fleet.adaptive) {
+    if (this.cfg.fleet.adaptive && this.cfg.start.mode === 'drop') {
       const fleet = [...this.browsers.values()].filter((b) => this.alive(b.id)).map((b) => ({ id: b.id, strategy: b.strategy, admittedAt: b.admittedAt, admittedStrategy: b.admittedStrategy }));
       const r = adaptTick(this.adapt, fleet, now, this.cfg.fleet.adaptiveWindowsSec[0], this.cfg.fleet.adaptiveWindowsSec[1]);
       if (r) for (const to of ['refresh', 'hold'] as Strategy[]) {
@@ -1280,6 +1349,7 @@ export class Hub {
     });
     return {
       now, machine: this.cfg.machine, runId: this.runId, openAt: this.cfg.openAt, openedAt: this.openedAt, openSource: this.openSource,
+      startMode: this.cfg.start.mode, stock: this.stock.map((h) => `${storeName(h.store).replace(/^Apple /, '')} ${h.part}`), rearms: this.rearms,
       stopBeforePay: this.cfg.payment.stopBeforePay, watchers: this.watchers, adapt: this.adapt,
       browsers, orders,
       cards: this.cards.cards.map((c) => ({ id: c.id, label: c.label, role: c.role, last4: c.last4, status: c.status, orders: c.orders, paid: c.paid.length, maxOrders: c.maxOrders, declines: c.declines })),

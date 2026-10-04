@@ -80,6 +80,7 @@ export function telegramText(e: NotifyEvent): string {
     case 'proxy.down': return `📡 Прокси ${e.proxy} не отвечает: ${e.error ?? ''}${(e.browsers as string[] | undefined)?.length ? ` · браузеры ${(e.browsers as string[]).join(', ')}` : ''}`;
     case 'browser.dead': return `💀 Браузер ${e.browser} упал${e.orderId ? ` · заказ ${e.orderId}` : ''}${e.placed ? ' · Place Order был нажат — к человеку' : e.relaunch ? ' → перезапуск' : ''}`;
     case 'run.summary': return `📊 Итог ${e.machine}: ${e.text ?? ''}`;
+    case 'stock.gone': return `⏪ Сток кончился через ${e.afterSec ?? '?'} с${b}: ${e.detail ?? ''} — все без оплаты снова ждут сток`;
     default: return `${e.event}${b}`;
   }
 }

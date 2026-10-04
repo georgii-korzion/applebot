@@ -101,6 +101,17 @@ npm run bot -- report         # какая стратегия сработала
 npm run bot -- wipe           # удалить secrets.local.json, профили и runtime/ (кроме report.md, orders.txt, orders.csv)
 ```
 
+### Старт по стоку (ресток) — без времени дропа
+
+Пульт → «Запуск» → **«Когда начинать»: «Как только появится сток»** (в конфиге `"start": {"mode": "stock", "stockPollSec": 5}`).
+
+- Браузеры открывают страницы товаров и ждут, ничего не кладя в корзину. Наблюдатели (2 браузера на разных IP) раз в ~5 с проверяют самовывоз во всех магазинах всех заказов (тот же JSON `fulfillment-messages`, что видит сайт).
+- Появился самовывоз модели заказа в его магазине — сразу гонка: заказ отдаётся только тем браузерам и только на те заказы, где есть сток; модель и магазин со стоком идут первыми.
+- Сток кончился, пока шли к чекауту (на выборе магазина «нет в наличии»), — все, кто ещё не на оплате, сами возвращаются в ожидание и ловят следующий. Пауза перед новым сигналом растёт: 10, 20, 40… до 120 с (JSON Apple бывает на шаг позади).
+- Время дропа в этом режиме не используется; стратегия ожидания — только refresh.
+
+В режиме «Во время дропа» бот тоже стартует сам, как только Apple откроет продажи (товар станет доступен к покупке) — openAt нужен только для частоты рефреша до старта.
+
 ### Если бот повёл себя странно — «Собрать логи»
 
 Пульт → «Запуск» (или «Результаты») → **«Собрать логи»**: на рабочем столе появится `applebot-logs-<машина>-<время>.zip` (логи каждого браузера, хаба, снимки страниц-заглушек и 404). Номера карт, имена, телефоны и почты получателей, пароли прокси и токены в архиве замаскированы; `secrets.local.json` и файла заказов в нём нет. Перетащи архив в чат разработчику. В Терминале: `npm run bot -- diag`.
@@ -157,12 +168,12 @@ bot/src/
 
 ```bash
 npm run typecheck
-npm test                 # 13 юнит-тестов расширения + 14 юнит-тестов бота
+npm test                 # 13 юнит-тестов расширения + 15 юнит-тестов бота
 npm run test:e2e         # 16 сценариев расширения (автономный режим)
-npm run test:bot         # 21 сценарий бота (§15) на моке
+npm run test:bot         # 23 сценария бота (§15) на моке
 ```
 
-Сценарии бота: `bot-single, bot-pool, h1-refresh, h1-queue, card-decline, card-pool-empty, place-generic-error, applepay-qr, stuck-human, proxy, blocked, captcha, direct-requests, hub-crash, notify, warmup, no-connect, stale-404, atb-heal, diag, ui`. Мок: `ADMIT_MODE, DECLINE_LAST4, PLACE_GENERIC_ERR, APPLEPAY_TRUSTED_ONLY, APPLEPAY_QR_EXPIRE_MS, BLOCK_AFTER_SESSIONS, CAPTCHA_AT, HANG_STORES` (описание — в шапке `test/mock-server.mjs`).
+Сценарии бота: `bot-single, bot-pool, h1-refresh, h1-queue, card-decline, card-pool-empty, place-generic-error, applepay-qr, stuck-human, proxy, blocked, captcha, direct-requests, hub-crash, notify, warmup, no-connect, stale-404, atb-heal, diag, stock-start, stock-rearm, ui`. Мок: `ADMIT_MODE, DECLINE_LAST4, PLACE_GENERIC_ERR, APPLEPAY_TRUSTED_ONLY, APPLEPAY_QR_EXPIRE_MS, BLOCK_AFTER_SESSIONS, CAPTCHA_AT, HANG_STORES, STOCK_AT, STOCK_GONE_ONCE` (описание — в шапке `test/mock-server.mjs`).
 
 ## 8. Что проверить вживую до 16.10 (§16)
 

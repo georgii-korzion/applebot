@@ -26,6 +26,11 @@ export interface BotConfig {
   /** Имя этой машины (несколько Mac работают независимо). */
   machine: string;
   openAt: string;
+  /**
+   * Когда начинать: drop — по открытию продаж (товар стал доступен; openAt — для фаз рефреша);
+   * stock — как только у наблюдателя появился самовывоз в магазине заказа (ресток), время не важно.
+   */
+  start: { mode: 'drop' | 'stock'; stockPollSec: number };
   baseUrl: string;
   runtimeDir: string;
   hub: { port: number };
@@ -115,7 +120,7 @@ export const DEFAULT_THRESHOLDS: Record<string, number> = {
 };
 
 /** Состояния ожидания — сторож их не трогает (§10). */
-export const WAIT_STATES = new Set(['ARMED', 'PRE_RELOAD', 'WATCHING', 'FAST_RELOAD', 'CLOSED', 'QUEUE', 'BUSY', 'SPARE', 'STANDBY', 'PAY_QUEUE', 'HOLD', 'ADMITTED', 'IDLE', 'INIT', 'STOPPED', 'ORDERED', 'MANUAL', 'WARMUP']);
+export const WAIT_STATES = new Set(['NO_STOCK', 'ARMED', 'PRE_RELOAD', 'WATCHING', 'FAST_RELOAD', 'CLOSED', 'QUEUE', 'BUSY', 'SPARE', 'STANDBY', 'PAY_QUEUE', 'HOLD', 'ADMITTED', 'IDLE', 'INIT', 'STOPPED', 'ORDERED', 'MANUAL', 'WARMUP']);
 
 // ---------- JSONC ----------
 /** JSON с комментариями и висячими запятыми. */
@@ -197,6 +202,7 @@ export function normalizeBotConfig(raw: unknown): BotConfig {
   return {
     machine: str(r.machine, hostname().split('.')[0] || 'mac'),
     openAt: str(r.openAt, '2026-10-16T16:00:00+04:00'),
+    start: { mode: obj(r.start).mode === 'stock' ? 'stock' : 'drop', stockPollSec: Math.max(2, num(obj(r.start).stockPollSec, 5)) },
     baseUrl: str(r.baseUrl, 'https://www.apple.com').replace(/\/$/, ''),
     runtimeDir: str(r.runtimeDir, 'runtime'),
     hub: { port: num(obj(r.hub).port, 8765) },
@@ -384,7 +390,8 @@ export function validateBot(cfg: BotConfig, sec: Secrets, opts: { devBuild?: boo
   // время и сайт
   errors.push(...timingErrors(cfg.timing));
   const openAt = Date.parse(cfg.openAt);
-  if (!Number.isFinite(openAt)) errors.push('openAt — не дата ISO');
+  if (cfg.start.mode === 'stock') warnings.push(`старт по стоку: бот ждёт самовывоз в магазинах заказов (проверка раз в ~${cfg.start.stockPollSec} с), время дропа не используется`);
+  else if (!Number.isFinite(openAt)) errors.push('openAt — не дата ISO');
   else if (openAt <= now) warnings.push('openAt в прошлом — старт сразу «после открытия» (нормально для тестов на живом товаре)');
   if (!/^https?:\/\//.test(cfg.baseUrl)) errors.push('baseUrl должен начинаться с http(s)://');
   const mock = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(cfg.baseUrl);
@@ -419,13 +426,18 @@ export function botRuntime(cfg: BotConfig, browserId: string, strategy: Strategy
     snapshots: cfg.fleet.snapshots,
     recordPages: cfg.fleet.recordPages,
     lobby: lobbyOf(cfg),
+    startMode: cfg.start.mode,
+    stockPollMs: cfg.start.stockPollSec * 1000,
     privacy: { ...cfg.privacy },
   };
 }
 
+/** Режим stock: расширению время дропа не нужно — фазы «задолго до старта» (без рефреша), гонка по сигналу о стоке. */
+export const STOCK_OPEN_AT = '2099-01-01T00:00:00Z';
+
 export function toExtConfig(cfg: BotConfig, browserId: string, hubUrl: string, rt: BotRuntime): Config {
   return {
-    profileId: browserId, hubUrl, openAt: cfg.openAt, mode: 'auto', orders: [],
+    profileId: browserId, hubUrl, openAt: cfg.start.mode === 'stock' ? STOCK_OPEN_AT : cfg.openAt, mode: 'auto', orders: [],
     timing: { ...cfg.timing }, retries: { checkout: 4, slotsPerStore: 4 }, limits: { maxTabsTotal: 1 }, baseUrl: cfg.baseUrl, bot: rt,
   };
 }

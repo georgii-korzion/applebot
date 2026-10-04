@@ -63,7 +63,8 @@ export class Launcher implements FleetOps {
     }
     const directIdx = proxies.map((p, i) => (p ? -1 : i)).filter((i) => i >= 0);
     const proxyIdx = proxies.map((p, i) => (p ? i : -1)).filter((i) => i >= 0);
-    const strategies = assignStrategies(n, this.cfg.fleet.strategyMix, [directIdx, proxyIdx]);
+    // по стоку ждать на заглушке незачем (товар уже продаётся) — все refresh
+    const strategies = assignStrategies(n, this.cfg.start.mode === 'stock' ? { refresh: 1, hold: 0 } : this.cfg.fleet.strategyMix, [directIdx, proxyIdx]);
     for (let i = 0; i < n; i++) {
       const id = `b${String(this.hub.nextBrowserNo++).padStart(2, '0')}`;
       const openJitter = this.cfg.fleet.openJitter === 'all' ? true : this.cfg.fleet.openJitter === 'none' ? false : i % 2 === 0;

@@ -120,7 +120,7 @@ function catalog() {
     parts: Object.values(PARTS).map((p) => ({ part: p.part, model: p.model, label: partLabel(p.part) })),
     stores: STORES,
     cities: ['Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman', 'Al Ain', 'Fujairah', 'Ras Al Khaimah', 'Umm Al Quwain'],
-    events: ['order.placed', 'human.needed', 'card.declined', 'card.swapped', 'cards.exhausted', 'applepay.qr', 'pay.3ds', 'order.in_bag', 'store.opened', 'store.closed', 'browser.admitted', 'browser.blocked', 'browser.dead', 'proxy.down', 'strategy.switched', 'run.started', 'run.summary'],
+    events: ['order.placed', 'human.needed', 'card.declined', 'stock.gone', 'card.swapped', 'cards.exhausted', 'applepay.qr', 'pay.3ds', 'order.in_bag', 'store.opened', 'store.closed', 'browser.admitted', 'browser.blocked', 'browser.dead', 'proxy.down', 'strategy.switched', 'run.started', 'run.summary'],
     timing: Object.keys(DEFAULT_TIMING),
   };
 }

@@ -842,6 +842,45 @@ scenarios.diag = async () => {
   say(`diag: ${zip.replace(root + '/', '')} · ${list.trim().split('\n').length} строк в оглавлении`);
 };
 
+/** Ресток (start.mode stock): товар продаётся, самовывоза нет — бот ждёт и в корзину не кладёт; появился сток — сразу заказ. */
+scenarios['stock-start'] = async () => {
+  const STOCK = 12;
+  await startMock({ OPEN_AFTER: '0', STOCK_AT: String(STOCK), THREEDS_MS: '500' });
+  const t0m = Date.now();
+  const cfg = botConfig('stock', 3600, { start: { mode: 'stock', stockPollSec: 2 }, fleet: { browsers: 2 }, notify: { telegram: { enabled: false }, webhooks: { enabled: false } } });
+  const h = await startBot('stock', cfg, botSecrets());
+  await sleep(8000);
+  const ms0 = await mockState();
+  const st0 = await h.state();
+  say(`stock-start: до стока ${st0.browsers.map((b) => `${b.id} ${b.state}`).join(', ')} · Add to Bag ${ms0.sessions.reduce((a, x) => a + x.atbAttempts + x.atb404, 0)}`);
+  assert.equal(st0.openedAt, null, 'OPEN до стока нет (товар продаётся, но самовывоза нет)');
+  assert.ok(st0.browsers.every((b) => b.state === 'ARMED'), 'браузеры ждут сток');
+  assert.equal(ms0.sessions.reduce((a, x) => a + x.atbAttempts + x.atb404, 0), 0, 'до стока в корзину не кладут');
+  const s = await waitFor(async () => { const x = await h.state(); return x.orders[0].state === 'ORDERED' ? x : null; }, 90000, 'ORDERED после появления стока', 500);
+  const opened = h.events().find((e) => e.type === 'store.opened');
+  say(`stock-start: OPEN ${s.openSource} через ${((opened.ts - t0m) / 1000).toFixed(1)} с от запуска мока · ${s.orders[0].orderNo} (+${s.orders[0].orderedSec} с от OPEN)`);
+  assert.match(s.openSource, /stock/);
+  assert.ok(opened.ts - t0m >= STOCK * 1000 - 500, 'OPEN — не раньше появления стока');
+  assert.match(h.file('hub.log'), /сток: /);
+  assert.equal((await mockState()).orders.length, 1);
+};
+
+/** Сток кончился, пока бот шёл к магазину: все снова ждут сток, следующий сток — заказ. */
+scenarios['stock-rearm'] = async () => {
+  await startMock({ OPEN_AFTER: '0', STOCK_AT: '6', STOCK_GONE_ONCE: '1', THREEDS_MS: '500' });
+  const cfg = botConfig('rearm', 3600, { start: { mode: 'stock', stockPollSec: 2 }, notify: { telegram: { enabled: false }, webhooks: { enabled: false } } });
+  const h = await startBot('rearm', cfg, botSecrets());
+  const s = await waitFor(async () => { const x = await h.state(); return x.orders[0].state === 'ORDERED' ? x : null; }, 120000, 'ORDERED после повторного стока', 500);
+  const ev = h.events();
+  const gone = ev.filter((e) => e.type === 'stock.gone');
+  say(`stock-rearm: сток кончался ${gone.length} раз · ${s.orders[0].orderNo} · OPEN ${ev.filter((e) => e.type === 'store.opened').length} раз`);
+  assert.equal(gone.length, 1, 'одно «сток кончился»');
+  assert.ok(ev.filter((e) => e.type === 'store.opened').length >= 2, 'второй OPEN по стоку');
+  assert.match(h.file('hub.log'), /сток кончился через \d+ с/);
+  assert.equal(s.attention.items.filter((x) => x.reason === 'stuck').length, 0, 'человека не звали');
+  assert.equal((await mockState()).orders.length, 1, 'один заказ');
+};
+
 /** Пульт (npm run bot -- ui): заполнить получателя и карту в форме, сохранить, запустить кнопкой, заказ, остановить. */
 scenarios.ui = async () => {
   await startMock({ OPEN_AFTER: '25', THREEDS_MS: '800' });
@@ -936,7 +975,7 @@ scenarios.ui = async () => {
 
 // ---------- запуск ----------
 const want = process.argv.slice(2);
-const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup', 'no-connect', 'stale-404', 'atb-heal', 'diag', 'ui'];
+const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup', 'no-connect', 'stale-404', 'atb-heal', 'diag', 'stock-start', 'stock-rearm', 'ui'];
 if (!existsSync(BOT)) { console.error('нет bot/dist/bot.mjs — npm run test:bot собирает его сам'); process.exit(1); }
 let failed = 0;
 for (const name of list) {

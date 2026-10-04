@@ -54,7 +54,7 @@ function render(s) {
   $('machine').textContent = '· ' + s.machine;
   const openAt = Date.parse(s.openAt), ref = s.openedAt || openAt, d = Math.round((s.now - ref) / 1000);
   const t = (d < 0 ? 'T-' : 'T+') + String(Math.floor(Math.abs(d) / 60)).padStart(2, '0') + ':' + String(Math.abs(d) % 60).padStart(2, '0');
-  $('head').innerHTML = '<b>' + t + '</b> ' + (s.openedAt ? '<span class="ok">OPEN</span> (' + esc(s.openSource) + ')' : 'ждём OPEN · старт ' + esc(new Date(openAt).toLocaleString())) + (s.stopBeforePay ? ' · <span class="warn">ПРОБНЫЙ ПРОГОН (стоп на Review)</span>' : '') + ' · наблюдатели: ' + esc(s.watchers.join(', ') || '—');
+  $('head').innerHTML = '<b>' + t + '</b> ' + (s.openedAt ? '<span class="ok">OPEN</span> (' + esc(s.openSource) + ')' + (s.stock && s.stock.length ? ' · сток: ' + esc(s.stock.join(', ')) : '') : s.startMode === 'stock' ? '<span class="warn">ждём сток</span> в магазинах заказов' + (s.rearms ? ' · сток кончался ' + s.rearms + ' раз' : '') : 'ждём OPEN · старт ' + esc(new Date(openAt).toLocaleString())) + (s.stopBeforePay ? ' · <span class="warn">ПРОБНЫЙ ПРОГОН (стоп на Review)</span>' : '') + ' · наблюдатели: ' + esc(s.watchers.join(', ') || '—');
   const by = {}; for (const b of s.browsers) { const k = b.status !== 'RUNNING' ? b.status : b.state; by[k] = (by[k] || 0) + 1; }
   const ord = (st) => s.orders.filter((o) => o.state === st).length;
   const kp = [

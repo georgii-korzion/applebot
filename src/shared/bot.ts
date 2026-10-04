@@ -31,6 +31,13 @@ export interface BotRuntime {
   lobby: { targets: string[]; stores: string[] };
   /** false — bot prepare: гонку не начинать, ждать команды (§4). */
   autoStart: boolean;
+  /**
+   * Когда начинать гонку: drop — по сигналу «продажи открыты» (товар стал доступен к покупке);
+   * stock — когда наблюдатель увидел самовывоз в одном из магазинов заказа (ресток), без привязки ко времени.
+   */
+  startMode: 'drop' | 'stock';
+  /** stock: как часто наблюдатель проверяет наличие (мс). */
+  stockPollMs: number;
   /** Маскирование в логах (§5). Карта в Telegram/вебхуках — всегда ****1234. */
   privacy: { maskContactsInLogs: boolean; maskCardInLogs: boolean; logTokens: boolean };
 }
@@ -42,6 +49,8 @@ export function defaultBotRuntime(browserId = 'b01'): BotRuntime {
     threeDsTimeoutSec: 300, directAtb: false, blockHeavy: false, warmupSec: 150, snapshots: true, recordPages: false,
     lobby: { targets: [], stores: [] },
     autoStart: true,
+    startMode: 'drop',
+    stockPollMs: 5000,
     privacy: { maskContactsInLogs: false, maskCardInLogs: true, logTokens: false },
   };
 }
@@ -77,6 +86,8 @@ export function normalizeBotRuntime(raw: unknown): BotRuntime | undefined {
       stores: Array.isArray(r.lobby?.stores) ? r.lobby.stores.map(String) : [],
     },
     autoStart: b(r.autoStart, true),
+    startMode: r.startMode === 'stock' ? 'stock' : 'drop',
+    stockPollMs: Math.max(2000, n(r.stockPollMs, d.stockPollMs)),
     privacy: {
       maskContactsInLogs: b(r.privacy?.maskContactsInLogs, d.privacy.maskContactsInLogs),
       maskCardInLogs: b(r.privacy?.maskCardInLogs, d.privacy.maskCardInLogs),

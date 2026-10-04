@@ -38,6 +38,8 @@
 //                          (адрес — заголовок x-test-exit-ip от тестового прокси, иначе 127.0.0.1)
 //   CAPTCHA_AT=<шаг>       product | bag | signin | checkout: проверка «я не робот», проходит только настоящий клик
 //   HANG_STORES=1          список магазинов на Fulfillment «ищется» бесконечно (зависание для сторожа)
+//   STOCK_AT=N             ресток: самовывоз во всех магазинах (кроме UNAVAILABLE_STORES) появляется через N с от запуска мока
+//   STOCK_GONE_ONCE=1      первый Fulfillment после появления стока — «уже раскупили» (сток кончился)
 //   ?stale404=1 на адресе товара — 404 «can’t be found» с фразой заглушки в подвале (ловушка классификации)
 // Служебное: GET /__state, POST /__reset, POST /__config, POST /__addr_sessions {addr, n}
 import http from 'node:http';
@@ -55,6 +57,8 @@ const S = {
   countryPicker: env.COUNTRY_PICKER === '1',
   requireTrusted: env.REQUIRE_TRUSTED === '1',
   unavailableStores: (env.UNAVAILABLE_STORES ?? 'R597').split(',').filter(Boolean),
+  stockAt: env.STOCK_AT === undefined ? null : num(env.STOCK_AT, 0),
+  stockGoneOnce: env.STOCK_GONE_ONCE === '1',
   takenFirstSlot: env.TAKEN_FIRST_SLOT !== '0',
   hydrateMs: num(env.HYDRATE_MS, 250),
   attachDelayMs: num(env.ATTACH_DELAY_MS, 900),
@@ -82,6 +86,10 @@ const addrSessions = new Map();
 // адрес клиента: x-test-exit-ip от тестового HTTP-прокси, иначе адрес сокета (SOCKS-прокси теста выходит с 127.0.0.2)
 const clientAddr = (req) => String(req.headers['x-test-exit-ip'] ?? String(req.socket.remoteAddress ?? '127.0.0.1').replace(/^::ffff:/, ''));
 let openAt = Date.now() + S.openAfter * 1000;
+const mockStartedAt = Date.now();
+// ресток: самовывоза нет ни в одном магазине до STOCK_AT с от запуска мока (товар при этом продаётся)
+const stockOn = () => S.stockAt === null || Date.now() >= mockStartedAt + S.stockAt * 1000;
+let stockGoneShown = 0;
 
 // ---------- каталог (как src/shared/parts.ts) ----------
 const PARTS = {};
@@ -290,7 +298,11 @@ function checkoutPage(s) {
     return { day: String(d.getDate()), label: d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }), iso: d.toISOString().slice(0, 10) };
   });
   const boot = {
-    stores: STORES.map((x, i) => ({ ...x, available: !S.unavailableStores.includes(x.id), dist: (2.1 + i * 7.3).toFixed(1) })),
+    stores: (() => {
+      // STOCK_GONE_ONCE: первый Fulfillment после появления стока — уже раскупили
+      const gone = S.stockGoneOnce && stockOn() && stockGoneShown++ === 0;
+      return STORES.map((x, i) => ({ ...x, available: !gone && stockOn() && !S.unavailableStores.includes(x.id), dist: (2.1 + i * 7.3).toFixed(1) }));
+    })(),
     cities: CITIES, defaultCity: S.defaultCity, dates, slots: Object.fromEntries(dates.map((d, i) => [d.day, slotsFor(i, d.day)])),
     items: bagJson(s).items, cardDelayMs: S.cardDelayMs, threeDsMs: S.threeDsMs,
     hangStores: S.hangStores, applePayTrustedOnly: S.applePayTrustedOnly, applePayQrExpireMs: S.applePayQrExpireMs,
@@ -565,7 +577,7 @@ function fulfillmentMessages(q) {
     storeNumber: st.id, storeName: st.name.replace(/^Apple /, ''),
     partsAvailability: Object.fromEntries(parts.map((p) => {
       const open = PARTS[p] ? isOpen(PARTS[p]) : false;
-      const av = open && !S.unavailableStores.includes(st.id);
+      const av = open && stockOn() && !S.unavailableStores.includes(st.id);
       return [p, { pickupDisplay: !open ? 'ineligible' : av ? 'available' : 'unavailable', pickupSearchQuote: !open ? 'Currently unavailable' : av ? 'Available Today' : 'Currently unavailable' }];
     })),
   }));
@@ -684,7 +696,7 @@ const server = http.createServer(async (req, res) => {
       if (a === 'continueFromFulfillmentToPickupContact') {
         const slot = body['checkout.fulfillment.pickupTab.pickup.timeSlot.dateTimeSlots.timeSlotValue'] ?? '';
         const store = body['checkout.fulfillment.pickupTab.pickup.storeLocator.selectStore'];
-        if (S.unavailableStores.includes(store)) return json(res, { ok: false, error: 'This store is not available for pickup.' });
+        if (S.unavailableStores.includes(store) || !stockOn()) return json(res, { ok: false, error: 'This store is not available for pickup.' });
         if (S.checkoutErrFirst && s.fulfillErr++ === 0) return json(res, { ok: false, generic: true, error: 'We’re sorry, something went wrong. Please try again.' });
         const firstOfDay = /-16:15-16:30$/.test(slot);
         if (S.takenFirstSlot && firstOfDay) return json(res, { ok: false, error: 'The pickup time you selected is no longer available. Please choose another time.' });

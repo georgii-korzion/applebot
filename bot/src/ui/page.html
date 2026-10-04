@@ -370,13 +370,18 @@ function renderStartLive() {
 
 function tabStart() {
   return (S.notes.length ? `<div class="notes">${S.notes.map(esc).join('<br>')}</div>` : '')
-    + `<section class="card"><h2>Эта машина и старт продаж</h2>
+    + `<section class="card"><h2>Эта машина и когда начинать</h2>
       <div class="grid">
         ${F('config.machine', 'Имя этой машины', 'text', { hint: 'на каждом Mac своё: mac1, mac2… Mac работают независимо', rerender: true })}
-        ${F('config.openAt', 'Старт продаж — время Дубая', 'dubai', { hint: 'дроп: 16.10.2026 16:00' })}
+        ${F('config.start.mode', 'Когда начинать покупку', 'select', { options: [['drop', 'Во время дропа'], ['stock', 'Как только появится сток']], rerender: true,
+          hint: S.form.config.start.mode === 'stock' ? 'наблюдатели всё время проверяют самовывоз в магазинах заказов; появился — бот сразу покупает эту модель в этом магазине' : 'гонка — когда Apple откроет продажи (товар станет доступен к покупке)' })}
+        ${S.form.config.start.mode === 'stock'
+          ? F('config.start.stockPollSec', 'Проверять наличие раз в … с', 'num', { min: 2, step: 1, hint: '5 — разумно; чаще — больше запросов к Apple' })
+          : F('config.openAt', 'Старт продаж — время Дубая', 'dubai', { hint: 'дроп: 16.10.2026 16:00' })}
       </div>
-      <div class="row"><button type="button" data-act="openAt-drop">16.10.2026 16:00</button><button type="button" data-act="openAt-now">Сейчас — для пробы на модели, которая уже продаётся</button></div>
-      <div class="hint" style="margin-top:6px">Для пробы: поставь «Сейчас», включи «Пробный прогон» и в заказе выбери модель, которая уже в продаже (например iPhone 18 Pro 256GB Black — MJR54AH/A).</div>
+      ${S.form.config.start.mode === 'stock'
+        ? '<div class="hint">Время дропа в этом режиме не важно. Если сток кончится раньше оплаты, браузеры сами вернутся в ожидание и поймают следующий.</div>'
+        : '<div class="row"><button type="button" data-act="openAt-drop">16.10.2026 16:00</button><button type="button" data-act="openAt-now">Сейчас — для пробы на модели, которая уже продаётся</button></div><div class="hint" style="margin-top:6px">Для пробы: поставь «Сейчас», включи «Пробный прогон» и в заказе выбери модель, которая уже в продаже (например iPhone 18 Pro 256GB Black — MJR54AH/A).</div>'}
     </section>
     <section class="card"><h2>Подготовка</h2><ul class="checks" id="checks">${checksHtml()}</ul></section>
     <section class="card"><h2>Запуск</h2><div id="runbox">${runHtml()}</div></section>

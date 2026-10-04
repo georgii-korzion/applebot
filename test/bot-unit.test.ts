@@ -15,6 +15,7 @@ import { leaksSecrets, orderFileBlock, recipientOut, telegramText } from '../bot
 import { sign } from '../bot/src/notify';
 import { Forwarder, openTunnel, parseProxyUrl, redactProxy } from '../bot/src/proxy/forwarder';
 import { scrubHtml } from '../bot/src/hub/server';
+import { parseFm, stockParts } from '../src/shared/watch';
 import { fromForm, loadForm, saveForm, toForm, validateForm } from '../bot/src/ui/server';
 import { isDeclineText, THREEDS_RE } from '../src/shared/bot';
 import { scrub } from '../src/shared/log';
@@ -344,4 +345,23 @@ test('пульт: первый запуск из примера, сохране�
   assert.ok(existsSync(o.secretsPath + '.broken'));
   assert.equal(statSync(o.secretsPath + '.broken').mode & 0o777, 0o600);
   assert.doesNotThrow(() => JSON.parse(readFileSync(o.secretsPath, 'utf8')));
+});
+
+test('сток: самовывоз available в магазинах заказа, порядок — по targets; режим старта в конфиге', () => {
+  const j = { body: { content: {
+    deliveryMessage: { 'MJR54AH/A': { compact: { buyability: { isBuyable: true } } }, 'MJR64AH/A': { compact: { buyability: { isBuyable: true } } } },
+    pickupMessage: { stores: [
+      { storeNumber: 'R597', partsAvailability: { 'MJR54AH/A': { pickupDisplay: 'unavailable' }, 'MJR64AH/A': { pickupDisplay: 'available' } } },
+      { storeNumber: 'R596', partsAvailability: { 'MJR54AH/A': { pickupDisplay: 'available' } } },
+      { storeNumber: 'R706', partsAvailability: { 'MJR54AH/A': { pickupDisplay: 'available' } } },
+    ] },
+  } } };
+  const r = parseFm(j, ['MJR54AH/A', 'MJR64AH/A'], ['R597', 'R596']);
+  assert.deepEqual(r.stock, [{ store: 'R597', part: 'MJR64AH/A' }, { store: 'R596', part: 'MJR54AH/A' }], 'R706 не в списке магазинов — не считается');
+  assert.deepEqual(stockParts(r.stock, ['MJR54AH/A', 'MJR64AH/A']), ['MJR54AH/A', 'MJR64AH/A'], 'порядок приоритета заказа');
+  assert.deepEqual(parseFm({ body: { content: { pickupMessage: { stores: [] } } } }, ['MJR54AH/A'], ['R597']).stock, []);
+  const drop = normalizeBotConfig({});
+  assert.equal(drop.start.mode, 'drop');
+  const stock = normalizeBotConfig({ start: { mode: 'stock', stockPollSec: 1 } });
+  assert.deepEqual(stock.start, { mode: 'stock', stockPollSec: 2 }, 'не чаще раза в 2 с');
 });

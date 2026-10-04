@@ -1,4 +1,5 @@
 // Типы сообщений SW ↔ content ↔ hub (§5.4).
+import type { StockHit } from './watch';
 import type { Config, OrderCfg } from './config';
 import type { BotCommand, ClickTarget, HumanReason, PayWaitKind, StepPerf, Strategy } from './bot';
 
@@ -94,6 +95,10 @@ export interface OrderState {
   openSource?: string;
   activeTarget?: string;
   watchTargets?: string[];
+  /** режим stock: магазины всех заказов (наблюдатель ищет самовывоз во всех) */
+  watchStores?: string[];
+  /** режим stock: после «сток кончился» новый сигнал не раньше этого времени (JSON Apple может отставать) */
+  stockCooldownUntil?: number;
   watcherTabId?: number;
   raceTabs: number[];
   lock?: { tabId: number; until: number };
@@ -143,7 +148,9 @@ export interface AtbDiag {
 export type C2S =
   | { t: 'HELLO'; url: string; kind: string; mode?: Mode; state?: string }
   | { t: 'STATE'; state: string; mode: Mode; detail?: string; outcome?: string; counters?: { reloads: number; atb404: number }; page?: string; step?: string; since?: number; perf?: StepPerf }
-  | { t: 'OPEN'; source: string; buyable: string[] }
+  | { t: 'OPEN'; source: string; buyable: string[]; stock?: StockHit[] }
+  /** режим stock: на Fulfillment ни в одном магазине заказа нет самовывоза — сток кончился */
+  | { t: 'NO_STOCK'; detail: string }
   | { t: 'WATCH'; statuses: Record<string, { isBuyable: boolean; reason?: string; quote?: string }>; pickup?: string }
   | { t: 'WATCH_TICK'; ok: boolean }
   | { t: 'ATB_LOCK_REQ'; ttl: number }
@@ -203,8 +210,10 @@ export type S2C =
 
 // SW ↔ hub
 export type Hub2S =
-  | { t: 'WATCHER'; profile: string | null; targets?: string[]; profiles?: string[] }
-  | { t: 'OPEN'; at: number; buyable: string[]; source: string }
+  | { t: 'WATCHER'; profile: string | null; targets?: string[]; profiles?: string[]; stores?: string[] }
+  | { t: 'OPEN'; at: number; buyable: string[]; source: string; stock?: StockHit[] }
+  /** режим stock: сток кончился раньше оплаты — все без оплаты назад в ожидание */
+  | { t: 'REARM'; reason: string; cooldownMs?: number }
   | { t: 'WIN'; orderId: string; profile: string; takeover?: boolean }
   | { t: 'LOSE'; orderId: string }
   | { t: 'CLEAN'; orderId: string }
@@ -225,7 +234,8 @@ export type Hub2S =
 
 export type S2Hub =
   | { t: 'REGISTER'; profile: string; orderId: string | null; priority: number; tabs: number; targets: string[]; bot?: BotRegister }
-  | { t: 'OPEN'; profile: string; buyable: string[]; source: string }
+  | { t: 'OPEN'; profile: string; buyable: string[]; source: string; stock?: StockHit[] }
+  | { t: 'NO_STOCK'; profile: string; orderId: string | null; detail: string }
   | { t: 'WIN_REQ'; orderId: string; profile: string }
   | { t: 'FAILED'; orderId: string; profile: string; reason: string }
   | { t: 'PAY_READY'; orderId: string; profile: string; priority: number; store: string; slotLabel: string; readyAt: number; record?: OrderRecord; method?: string }

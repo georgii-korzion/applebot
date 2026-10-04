@@ -2,7 +2,7 @@
 import { SEL } from '../../shared/selectors';
 import { phaseOf } from '../../shared/config';
 import { normPart, partUrl } from '../../shared/parts';
-import { pollFm } from '../../shared/watch';
+import { pollFm, stockParts } from '../../shared/watch';
 import type { Ctl } from '../ctl';
 import type { PageInfo } from '../classify';
 import { Aborted, sleep, waitUntil, yieldTask } from '../dom';
@@ -31,6 +31,8 @@ export async function productStep(c: Ctl, page: PageInfo): Promise<void> {
     () => (findEl('addToBag') ? 'atb' : findEl('continueDisabled') || page.preorder ? 'pre' : null),
     wait, c.signal,
   );
+  // режим stock: кнопка Add to Bag есть (товар продаётся), но самовывоза ещё нет — ждём сигнала наблюдателя
+  if (what === 'atb' && stockWait(c)) { reportStore(c, false, 'Add to Bag (ждём сток)'); scheduleByPhase(c); return; }
   if (what === 'atb') {
     reportStore(c, false, 'Add to Bag');
     // режим бота: пустили к покупке, но заказа ещё нет — сообщить хабу и ждать ASSIGN, в корзину не класть (§6)
@@ -43,7 +45,20 @@ export async function productStep(c: Ctl, page: PageInfo): Promise<void> {
 }
 
 /** Рефреш по фазам §7.3: ARMED → PRE_RELOAD → FAST_RELOAD. */
+/** Режим stock и сигнала о стоке ещё не было: гонку не начинаем, время дропа не важно. */
+export function stockWait(c: Ctl): boolean {
+  return !!c.bot && c.b?.startMode === 'stock' && !c.os.openedAt;
+}
+
 export function scheduleByPhase(c: Ctl): void {
+  if (stockWait(c)) {
+    const sec = Math.round((c.b?.stockPollMs ?? 5000) / 1000);
+    c.setState('ARMED', c.role === 'watcher' ? `ждём сток: проверяю самовывоз в магазинах заказов раз в ~${sec} с` : 'ждём сток: наблюдатели проверяют самовывоз — страницу не трогаю');
+    c.renderOverlay({ countdownTo: undefined, timerSince: undefined });
+    // долго на одной странице — раз в ~15 мин обновить (свежая сессия и токены страницы к моменту стока)
+    c.scheduleReload(c.jit(15 * 60_000), 'stock-keepalive');
+    return;
+  }
   const now = Date.now();
   const openAt = Date.parse(c.cfg.openAt);
   const open = !!c.os.openedAt;
@@ -121,7 +136,8 @@ export function ensureWatcher(c: Ctl): void {
 function pollJson(c: Ctl) {
   const own = c.order?.targets ?? [];
   const targets = [...new Set([...own, ...(c.os.watchTargets ?? [])])];
-  return pollFm(c.base, targets, c.order?.stores ?? []);
+  const stores = [...new Set([...(c.order?.stores ?? []), ...(c.os.watchStores ?? [])])];
+  return pollFm(c.base, targets, stores);
 }
 
 /**
@@ -151,7 +167,7 @@ async function watchLoop(c: Ctl, signal: AbortSignal): Promise<void> {
     const swFresh = Date.now() - c.swWatchAt < SW_TICK_FRESH_MS;
     if (!swFresh) {
       try {
-        const { statuses, pickup, buyable } = await pollJson(c);
+        const { statuses, pickup, buyable, stock } = await pollJson(c);
         errors = 0;
         c.send({ t: 'WATCH_TICK', ok: true });
         const sig = JSON.stringify(statuses) + pickup;
@@ -159,7 +175,14 @@ async function watchLoop(c: Ctl, signal: AbortSignal): Promise<void> {
           last = sig;
           c.send({ t: 'WATCH', statuses, pickup });
         }
-        if (buyable.length) {
+        if (c.b?.startMode === 'stock') {
+          // ресток: сигнал — самовывоз в магазине заказа, а не «можно купить» (товар и так продаётся)
+          if (stock.length && Date.now() >= (c.os.stockCooldownUntil ?? 0)) {
+            const targets = [...new Set([...(c.order?.targets ?? []), ...(c.os.watchTargets ?? [])])];
+            c.send({ t: 'OPEN', source: 'stock', buyable: stockParts(stock, targets), stock });
+            break;
+          }
+        } else if (buyable.length) {
           c.send({ t: 'OPEN', source: 'json', buyable });
           break;
         }
@@ -169,7 +192,7 @@ async function watchLoop(c: Ctl, signal: AbortSignal): Promise<void> {
         if (errors === 1 || errors % 10 === 0) c.log(`наблюдатель: ошибка опроса (${errors}): ${e}`, 'warn');
       }
       // HTML страницы товара тяжёлый: задолго до старта — раз в ~30 с, в последнюю минуту и после — раз в ~6 с
-      if (cycle % (phaseOf(c.cfg, c.os.openedAt) === 'armed' ? 25 : 5) === 0) {
+      if (c.b?.startMode !== 'stock' && cycle % (phaseOf(c.cfg, c.os.openedAt) === 'armed' ? 25 : 5) === 0) {
         try {
           if (await pollHtml(c)) {
             c.send({ t: 'OPEN', source: 'html', buyable: [] });
@@ -180,6 +203,6 @@ async function watchLoop(c: Ctl, signal: AbortSignal): Promise<void> {
     }
     // разорвать цепочку таймеров: у скрытой вкладки Chrome через 5 минут режет цепочки setTimeout до 1 раза в минуту
     await yieldTask();
-    await sleep(Math.max(1000, c.jit(c.t.pollMs)), signal);
+    await sleep(Math.max(1000, c.jit(c.b?.startMode === 'stock' ? Math.max(c.t.pollMs, c.b.stockPollMs) : c.t.pollMs)), signal);
   }
 }

@@ -52,6 +52,12 @@ export async function fulfillmentStep(c: Ctl): Promise<void> {
     await c.navigate(c.bagUrl(), 'нет самовывоза → Apple Pay Express из корзины');
     return;
   }
+  // режим stock: самовывоза нет — сток кончился, пока шли к чекауту; хаб вернёт флот в ожидание
+  if (c.bot && c.b?.startMode === 'stock') {
+    c.setState('NO_STOCK', `сток кончился: нет самовывоза в ${o.stores.join(', ')} — назад в ожидание`);
+    c.send({ t: 'NO_STOCK', detail: `нет самовывоза в ${o.stores.join(', ')}` });
+    return;
+  }
   c.setState('STUCK', 'нет самовывоза ни в одном магазине из списка');
   c.alert(`Заказ ${o.id}: нет самовывоза`, `Магазины ${o.stores.join(', ')}: нет свободных окон`);
 }

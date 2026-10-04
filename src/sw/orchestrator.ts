@@ -6,7 +6,7 @@ import {
   type C2S, type Cmd, type Hub2S, type Mode, type OrderRecord, type OrderState, type Role, type S2C, type TabRow, type TabState,
 } from '../shared/messages';
 import { partLabel, partUrl, storeName } from '../shared/parts';
-import { pollFm } from '../shared/watch';
+import { pollFm, stockParts, type StockHit } from '../shared/watch';
 import { HubClient } from './hubClient';
 import { notify, playSound } from './notify';
 import { focusTab } from './windows';
@@ -204,7 +204,7 @@ export class Orchestrator {
         if (m.level !== 'info' && m.msg) t.lastError = m.msg.slice(0, 200);
         break;
       case 'OPEN':
-        await this.onOpen(m.source, m.buyable, false);
+        await this.onOpen(m.source, m.buyable, false, m.stock);
         break;
       case 'WATCH':
         this.recordWatch(tabId, m.statuses, m.pickup, 'tab');
@@ -449,17 +449,20 @@ export class Orchestrator {
   private async swWatchTick(): Promise<void> {
     if (this.swWatchBusy) return;
     this.swWatchBusy = true;
-    let delay = this.cfg.timing.pollMs;
+    let delay = this.cfg.bot?.startMode === 'stock' ? Math.max(this.cfg.timing.pollMs, this.cfg.bot.stockPollMs) : this.cfg.timing.pollMs;
     try {
       const tabFresh = Date.now() - this.tabTickAt < 3500;
       if (!tabFresh && this.order) {
         const targets = [...new Set([...this.order.targets, ...(this.os.watchTargets ?? [])])];
+        const stores = [...new Set([...this.order.stores, ...(this.os.watchStores ?? [])])];
         try {
-          const r = await pollFm(this.cfg.baseUrl, targets, this.order.stores);
+          const r = await pollFm(this.cfg.baseUrl, targets, stores);
           this.swWatchErrors = 0;
           this.recordWatch('sw', r.statuses, r.pickup, 'sw');
           if (this.os.watcherTabId !== undefined) this.sendTab(this.os.watcherTabId, { t: 'SW_WATCH', at: Date.now(), ok: true }, false);
-          if (r.buyable.length) await this.onOpen('sw-json', r.buyable, false);
+          if (this.cfg.bot?.startMode === 'stock') {
+            if (r.stock.length && Date.now() >= (this.os.stockCooldownUntil ?? 0)) await this.onOpen('sw-stock', stockParts(r.stock, targets), false, r.stock);
+          } else if (r.buyable.length) await this.onOpen('sw-json', r.buyable, false);
         } catch (e) {
           this.swWatchErrors++;
           if (this.swWatchErrors === 1 || this.swWatchErrors % 20 === 0) this.log('sw', 'WATCH', `[sw] ошибка опроса (${this.swWatchErrors}): ${e}`, 'warn');
@@ -473,7 +476,7 @@ export class Orchestrator {
   }
 
   // ---------- OPEN ----------
-  async onOpen(source: string, buyable: string[], fromHub: boolean): Promise<void> {
+  async onOpen(source: string, buyable: string[], fromHub: boolean, stock?: StockHit[]): Promise<void> {
     if (this.os.openedAt) return;
     this.os.openedAt = Date.now();
     this.os.openSource = source;
@@ -484,7 +487,7 @@ export class Orchestrator {
     this.log('sw', 'OPEN', `продажи открыты (${source}${fromHub ? ' via hub' : ''}), buyable: ${buyable.join(',') || '—'} → цель ${first ? partLabel(first) : '—'}`);
     await this.saveOs();
     this.broadcast({ t: 'OPEN', activeTarget: first });
-    if (!fromHub) this.hub.send({ t: 'OPEN', profile: this.cfg.profileId, buyable, source });
+    if (!fromHub) this.hub.send({ t: 'OPEN', profile: this.cfg.profileId, buyable, source, stock });
     assignRoles(this);
     this.ensureSwWatch();
     if (this.os.armed) void playSound('open');
@@ -680,6 +683,7 @@ export class Orchestrator {
       case 'WATCHER':
         this.watcherProfile = m.profile;
         this.watcherProfiles = m.profiles ?? (m.profile ? [m.profile] : []);
+        if (m.stores) this.os.watchStores = m.stores;
         if (m.profiles?.includes(me) && m.targets) { this.os.watchTargets = m.targets; void this.saveOs(true); }
         if (m.profile === me && m.targets) { this.os.watchTargets = m.targets; void this.saveOs(true); }
         assignRoles(this);
