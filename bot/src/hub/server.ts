@@ -42,6 +42,8 @@ export interface BrowserRt {
   launchedAt?: number;
   /** Сторож запуска уже объяснил, почему браузер не подключился. */
   noConnectAt?: number;
+  /** Последнее подключение расширения к хабу (REGISTER). */
+  connectedAt?: number;
   relaunches: number;
   retiredReason?: string;
   // живое
@@ -332,6 +334,7 @@ export class Hub {
     b.online = true;
     b.lastBeat = Date.now();
     if (b.status === 'STARTING' || b.status === 'PROXY_DOWN') b.status = 'RUNNING';
+    b.connectedAt = Date.now();
     if (b.noConnectAt) { b.noConnectAt = undefined; b.lastError = undefined; }
     b.ext = m.bot.ext;
     if (m.bot.state && m.bot.state !== b.state) { b.state = m.bot.state; b.stateSince = Date.now(); }

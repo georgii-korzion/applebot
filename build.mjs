@@ -3,6 +3,7 @@
 //   node build.mjs --dev      → dist-dev/
 //   node build.mjs --dev --watch
 //   node build.mjs --unit     → dist-test/ (юнит-тесты для node --test)
+import { execSync } from 'node:child_process';
 import * as esbuild from 'esbuild';
 import { mkdirSync, readFileSync, writeFileSync, copyFileSync, rmSync, existsSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
@@ -15,13 +16,18 @@ const dev = args.has('--dev');
 const watch = args.has('--watch');
 const MOCK_ORIGIN = 'http://127.0.0.1:4777';
 
+// версия бота: коммит папки (ZIP без .git — 'zip')
+const botVersion = (() => {
+  try { return execSync('git rev-parse --short=7 HEAD', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || 'zip'; } catch { return 'zip'; }
+})();
+
 if (args.has('--bot')) {
   // оркестратор бота (BOT-SPEC): bot/src → bot/dist/bot.mjs (Node 20+)
   await esbuild.build({
     entryPoints: [join(root, 'bot/src/main.ts')],
     outfile: join(root, 'bot/dist/bot.mjs'),
     bundle: true, platform: 'node', format: 'esm', target: 'node20', packages: 'external',
-    define: { __DEV__: 'false', __DEFAULT_BASE_URL__: JSON.stringify('https://www.apple.com') },
+    define: { __DEV__: 'false', __DEFAULT_BASE_URL__: JSON.stringify('https://www.apple.com'), __BOT_VERSION__: JSON.stringify(botVersion) },
     banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
     loader: { '.html': 'text' },
     logLevel: 'warning', sourcemap: 'inline',
@@ -37,7 +43,7 @@ if (args.has('--unit')) {
       entryPoints: [join(root, `test/${name}.ts`)],
       outfile: join(out, `${name}.mjs`),
       bundle: true, platform: 'node', format: 'esm', target: 'node20', packages: 'external',
-      define: { __DEV__: 'true', __DEFAULT_BASE_URL__: JSON.stringify(MOCK_ORIGIN) },
+      define: { __DEV__: 'true', __DEFAULT_BASE_URL__: JSON.stringify(MOCK_ORIGIN), __BOT_VERSION__: JSON.stringify(botVersion) },
       loader: { '.html': 'text' },
       logLevel: 'warning',
     });

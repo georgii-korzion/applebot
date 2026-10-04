@@ -94,12 +94,13 @@ input[type=range] { width:100%; }
 </head>
 <body>
 <header class="top">
-  <h1>Apple Drop Bot <span id="machineLbl" class="muted"></span></h1>
+  <h1>Apple Drop Bot <span id="machineLbl" class="muted"></span> <span id="verLbl" class="tag muted" title="версия бота (коммит)"></span></h1>
   <div id="runPill" class="pill"><span class="dot"></span> …</div>
   <div class="grow"></div>
   <span id="dirty" class="warn" hidden>есть несохранённые изменения</span>
   <button id="saveBtn" class="primary" data-act="save">Сохранить</button>
 </header>
+<div id="staleBar" class="valbar" hidden></div>
 <div id="valbar" class="valbar"></div>
 <div class="layout">
   <nav id="tabs"></nav>
@@ -818,6 +819,10 @@ function renderStatus() {
   const s = S.status;
   const pill = $('#runPill');
   if (!s) return;
+  $('#verLbl').textContent = s.version ? 'версия ' + s.version : '';
+  const sb = $('#staleBar');
+  sb.hidden = !s.stale;
+  if (s.stale) sb.innerHTML = `<div class="notes" style="margin:0;background:rgba(215,0,21,.12)"><b class="bad">Код бота обновился</b> (${esc(s.version)} → ${esc(s.head)}), а пульт работает со старой версией. Закрой окно Терминала с пультом и снова дважды кликни <b>Apple Drop Bot.command</b> — он всё пересоберёт.</div>`;
   if (s.running) pill.innerHTML = `<span class="dot on"></span> бот работает · браузеров ${s.liveBrowsers}` + (s.dashUrl ? ` · <a href="${esc(s.dashUrl)}" target="_blank" rel="noopener">дашборд ↗</a>` : '');
   else if (s.orchestratorAlive) pill.innerHTML = '<span class="dot warn"></span> бот запускается…';
   else if (s.liveBrowsers) pill.innerHTML = `<span class="dot warn"></span> открыто браузеров: ${s.liveBrowsers}, бот не запущен — «Запустить» подхватит их`;

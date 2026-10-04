@@ -14,6 +14,7 @@ import { DEFAULT_TIMING } from '../../../src/shared/config';
 import { findChrome, chromeProblem, chromeVersion } from '../chrome';
 import { pidAlive } from '../launcher';
 import { Store } from '../store';
+import { BOT_VERSION, headVersion } from '../version';
 
 export interface UiOpts {
   root: string;
@@ -147,6 +148,7 @@ export class UiServer {
   private jobs: Job[] = [];
   private nextId = 1;
   private orch: { pid: number; startedAt: number; log: string } | null = null;
+  private head: { at: number; v: string | null } | null = null;
   private chrome: { at: number; path: string; version: string | null; kind: string; problem: string | null } | null = null;
 
   constructor(readonly o: UiOpts) {}
@@ -189,9 +191,13 @@ export class UiServer {
     const live = Object.values(st?.browsers ?? {}).filter((b) => b.status !== 'RETIRED' && pidAlive(b.pid)).length;
     const extDir = resolve(this.o.root, cfg.fleet.extensionDir);
     const busy = this.jobs.filter((j) => j.code === null).map((j) => j.kind);
+    if (!this.head || Date.now() - this.head.at > 10_000) this.head = { at: Date.now(), v: headVersion(this.o.root) };
     return {
       platform: process.platform,
       node: process.version,
+      version: BOT_VERSION,
+      head: this.head.v,
+      stale: this.stale(),
       configExists: existsSync(this.o.configPath),
       secretsExists: existsSync(this.o.secretsPath),
       ext: { dir: cfg.fleet.extensionDir, built: existsSync(join(extDir, 'manifest.json')) },
@@ -270,6 +276,7 @@ export class UiServer {
     const v = validateBot(cfg, sec, { devBuild: devBuild(this.o.root, cfg) });
     if (v.errors.length) return { ok: false, error: 'в настройках есть ошибки', errors: v.errors };
     const s = await this.status();
+    if (s.stale) return { ok: false, error: `код бота обновился (${BOT_VERSION} → ${s.head}) — закрой окно Терминала с пультом и снова дважды кликни «Apple Drop Bot.command»` };
     if (s.running) return { ok: false, error: 'бот уже запущен' };
     if ((s.busy as string[]).some((k) => FLEET_JOBS.has(k))) return { ok: false, error: 'идёт prepare или bench — дождись конца' };
     if (!(s.ext as { built: boolean }).built) return { ok: false, error: `расширение не собрано (${cfg.fleet.extensionDir}/) — кнопка «Собрать расширение»` };
@@ -295,6 +302,12 @@ export class UiServer {
       caf.unref();
     }
     return { ok: true, pid: ch.pid };
+  }
+
+  /** После git pull пульт и бандл бота старые: запускать с ними нельзя — перезапустить пульт (он всё пересоберёт). */
+  private stale(): boolean {
+    const h = this.head?.v;
+    return !!h && BOT_VERSION !== 'dev' && BOT_VERSION !== 'zip' && h !== BOT_VERSION;
   }
 
   orchestratorLog(): string {

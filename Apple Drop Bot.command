@@ -27,5 +27,11 @@ fi
 echo "Собираю расширение…"
 npm run build --silent >/dev/null || { echo "Сборка не прошла: npm run build"; pause; exit 1; }
 
+# отдельный Chrome для бота: обычный Google Chrome не загружает расширение бота
+if [ ! -d runtime/chrome ] && [ ! -d "/Applications/Google Chrome for Testing.app" ] && [ ! -d "$HOME/Applications/Google Chrome for Testing.app" ]; then
+  echo "Ставлю Chrome for Testing для бота (≈200 МБ, один раз)…"
+  npm run bot -- install-chrome || echo "Chrome for Testing не установился — позже кнопкой «Установить» в пульте."
+fi
+
 npm run bot -- ui
 pause

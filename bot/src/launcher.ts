@@ -185,6 +185,9 @@ export class Launcher implements FleetOps {
     for (const b of list) {
       if (pidAlive(b.pid) && b.cdpPort && (await Cdp.version(b.cdpPort, 1500))) {
         b.status = 'RUNNING';
+        // подхваченный браузер тоже должен подключиться — иначе сторож запуска объяснит почему
+        b.launchedAt = Date.now();
+        b.noConnectAt = undefined;
         this.log(`${b.id}: уже работает (PID ${b.pid}) — подхватываю`);
         if (b.proxyId) await this.forwarder(b.proxyId);
         continue;
@@ -255,11 +258,17 @@ export class Launcher implements FleetOps {
     for (const b of this.hub.browsers.values()) {
       if (!b.pid || b.status === 'DEAD' || b.status === 'RETIRED' || b.status === 'STOPPED') continue;
       if (!this.procs.has(b.id) && !pidAlive(b.pid)) { this.hub.onDead(b.id, null); continue; }
-      if (b.status === 'STARTING' && b.launchedAt && !b.noConnectAt && now - b.launchedAt > this.cfg.fleet.connectTimeoutSec * 1000) void this.noConnect(b);
+      if (this.waitingConnect(b) && now - b.launchedAt! > this.cfg.fleet.connectTimeoutSec * 1000) void this.noConnect(b);
     }
   }
 
   private diagnosing = new Set<string>();
+
+  /** Запущен или подхвачен, а расширение с тех пор так и не подключилось к хабу. */
+  private waitingConnect(b: BrowserRt): boolean {
+    if (!b.launchedAt || b.noConnectAt || b.online || b.status === 'PROXY_DOWN') return false;
+    return !(b.connectedAt && b.connectedAt >= b.launchedAt);
+  }
 
   /** Браузер открылся, но расширение не подключилось к хабу — один раз объяснить почему (лог, дашборд, уведомление). */
   private async noConnect(b: BrowserRt): Promise<void> {
@@ -267,7 +276,7 @@ export class Launcher implements FleetOps {
     this.diagnosing.add(b.id);
     try {
       const why = await this.diagnoseNoConnect(b);
-      if (b.status !== 'STARTING' || b.noConnectAt) return;
+      if (!this.waitingConnect(b)) return;
       b.noConnectAt = Date.now();
       b.lastError = why;
       this.log(`${b.id}: не подключился к боту за ${this.cfg.fleet.connectTimeoutSec} с — ${why}`, 'error');
@@ -293,6 +302,8 @@ export class Launcher implements FleetOps {
     const targets = await fetch(`http://127.0.0.1:${b.cdpPort}/json/list`, { signal: AbortSignal.timeout(2500) }).then((r) => r.json() as Promise<{ type?: string; url?: string }[]>).catch(() => null);
     if (!targets) return `Chrome не отвечает на порту отладки :${b.cdpPort} — окно зависло или порт занят (лог Chrome: ${rel})`;
     if (!targets.some((t) => String(t.url ?? '').startsWith('chrome-extension://'))) {
+      // подхваченное окно прошлого запуска (не наш дочерний процесс) — скорее всего открыто не тем Chrome
+      if (!this.procs.has(b.id)) return `в окне ${b.id} (открыто прошлым запуском) расширение не работает — нажми «■ Остановить всё», потом «▶ Запустить»: окна откроются заново в ${this.chrome?.kind === 'cft' ? 'Chrome for Testing' : 'нужном Chrome'}`;
       return `расширение не загрузилось — в окне ${b.id} открой chrome://extensions: там будет ошибка (лог Chrome: ${rel}). Сборка: ${this.cfg.fleet.extensionDir}/ — в пульте «Пересобрать»`;
     }
     return `расширение загрузилось, но не подключилось к боту (${this.hub.hubUrl.replace(/\?.*$/, '')}) — в окне ${b.id}: chrome://extensions → Apple Drop Assistant → «service worker» → Console`;

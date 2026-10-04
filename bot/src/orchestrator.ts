@@ -1,4 +1,5 @@
 // Сборка оркестратора: хаб + лаунчер + форвардеры + уведомления (BOT-SPEC §3). Используется bot start, prepare, bench.
+import { BOT_VERSION } from './version';
 import { existsSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { BotConfig, Secrets } from './config';
@@ -55,6 +56,8 @@ export async function startOrchestrator(cfg: BotConfig, sec: Secrets, root: stri
   hub.fleet = launcher;
   hub.proxyStats = () => launcher.stats();
   await hub.listen();
+  const kind = { cft: 'Chrome for Testing', chromium: 'Chromium', chrome: 'обычный Google Chrome', custom: 'Chrome' };
+  log(`Apple Drop Bot ${BOT_VERSION} · ${launcher.chrome ? `${launcher.chromeVer ?? kind[launcher.chrome.kind]} — ${launcher.chrome.path}` : 'Chrome не найден'}`);
   notifier.start(() => hub.statusText());
   if (resume) log(`перезапуск оркестратора: подхватываю запуск ${hub.runId} (живые браузеры не трогаю)`);
   if (opts.launch !== false) {
