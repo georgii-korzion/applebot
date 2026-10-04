@@ -1,6 +1,6 @@
 // Поиск Chrome и аргументы запуска (BOT-SPEC §4).
 // Фирменный Google Chrome с ~137 не принимает --load-extension — нужен Chrome for Testing (или Chromium) той же версии.
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -13,24 +13,30 @@ function globDeep(dir: string, name: string, depth = 6): string | null {
   try { entries = readdirSync(dir).sort().reverse(); } catch { return null; }
   for (const e of entries) {
     const p = join(dir, e);
-    if (e === name && existsSync(p)) return p;
+    try { if (e === name && statSync(p).isFile()) return p; } catch { /* */ }
   }
   for (const e of entries) {
     const p = join(dir, e);
     let sub: string | null = null;
-    try { if (!e.startsWith('.')) sub = globDeep(p, name, depth - 1); } catch { /* */ }
+    // .part — недораспакованная установка (install-chrome распаковывает туда, потом переименовывает)
+    try { if (!e.startsWith('.') && !e.endsWith('.part')) sub = globDeep(p, name, depth - 1); } catch { /* */ }
     if (sub) return sub;
   }
   return null;
 }
 
-export function findChrome(configured: string, root: string): ChromeBin | null {
-  if (configured) return existsSync(configured) ? { path: configured, kind: /for Testing/i.test(configured) ? 'cft' : /chromium/i.test(configured) ? 'chromium' : 'custom' } : null;
+export function findChrome(configured: string, root: string, opts: { cftOnly?: boolean } = {}): ChromeBin | null {
+  if (configured && !opts.cftOnly) return existsSync(configured) ? { path: configured, kind: /for Testing/i.test(configured) ? 'cft' : /chromium/i.test(configured) ? 'chromium' : 'custom' } : null;
   const mac = platform() === 'darwin';
   const cft = mac ? 'Google Chrome for Testing' : 'chrome';
   // npx @puppeteer/browsers install chrome@stable --path runtime/chrome
   const local = globDeep(join(root, 'runtime', 'chrome'), cft);
   if (local) return { path: local, kind: 'cft' };
+  if (opts.cftOnly) {
+    if (!mac) return null;
+    const app = ['/Applications', join(homedir(), 'Applications')].map((d) => join(d, 'Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing')).find((p) => existsSync(p));
+    return app ? { path: app, kind: 'cft' } : null;
+  }
   const cands: [string, ChromeBin['kind']][] = mac ? [
     ['/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing', 'cft'],
     [join(homedir(), 'Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'), 'cft'],

@@ -27,10 +27,15 @@ fi
 echo "Собираю расширение…"
 npm run build --silent >/dev/null || { echo "Сборка не прошла: npm run build"; pause; exit 1; }
 
-# отдельный Chrome для бота: обычный Google Chrome не загружает расширение бота
-if [ ! -d runtime/chrome ] && [ ! -d "/Applications/Google Chrome for Testing.app" ] && [ ! -d "$HOME/Applications/Google Chrome for Testing.app" ]; then
-  echo "Ставлю Chrome for Testing для бота (≈200 МБ, один раз)…"
-  npm run bot -- install-chrome || echo "Chrome for Testing не установился — позже кнопкой «Установить» в пульте."
+# отдельный Chrome для бота: обычный Google Chrome не загружает расширение бота.
+# Проверяем сам браузер, а не папку: после прерванной загрузки папка есть, а Chrome нет (докачка продолжит с места обрыва).
+has_cft() {
+  if [ -d "/Applications/Google Chrome for Testing.app" ] || [ -d "$HOME/Applications/Google Chrome for Testing.app" ]; then return 0; fi
+  find runtime/chrome -maxdepth 7 -type f -name "Google Chrome for Testing" -not -path "*.part/*" 2>/dev/null | grep -q .
+}
+if ! has_cft; then
+  echo "Ставлю Chrome for Testing для бота (один раз; при медленной связи — несколько минут)…"
+  npm run bot -- install-chrome || echo "Chrome for Testing не установился — запусти этот файл ещё раз или «Установить» в пульте: скачанное не пропадёт."
 fi
 
 npm run bot -- ui

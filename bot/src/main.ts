@@ -1,6 +1,6 @@
 // CLI бота (BOT-SPEC §3): ui | check | prepare | start | status | stop | report | bench | wipe | install-chrome
 //   npm run bot -- start [--config bot.config.json] [--secrets secrets.local.json] [--fresh]
-import { existsSync, readFileSync, rmSync, writeFileSync, readdirSync, statSync, chmodSync, mkdirSync, lstatSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync, readdirSync, statSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
@@ -143,41 +143,105 @@ async function cmdWipe(a: Args): Promise<void> {
   console.log(`Удалено: ${a.secrets}, профили, расширения, снимки, состояние. Остались: ${[...keep].join(', ')}.`);
 }
 
-/** Размер папки в байтах (для прогресса установки; симлинки не раскрываем). */
-function dirSize(p: string): number {
-  let n = 0;
+// ---------- Chrome for Testing ----------
+const CFT_JSON = process.env.BOT_CFT_JSON || 'https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json';
+const mb = (n: number) => `${(n / 1048576).toFixed(0)} МБ`;
+
+function cftPlatform(): string | null {
+  if (process.platform === 'darwin') return process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64';
+  if (process.platform === 'linux' && process.arch === 'x64') return 'linux64';
+  if (process.platform === 'win32') return process.arch === 'ia32' ? 'win32' : 'win64';
+  return null;
+}
+
+/** Запустить и дождаться кода выхода; -1 — программы нет. */
+function runCmd(cmd: string, args: string[]): Promise<number> {
+  return new Promise((res) => {
+    const ch = spawn(cmd, args, { cwd: ROOT, stdio: ['ignore', 'inherit', 'inherit'] });
+    ch.on('error', () => res(-1));
+    ch.on('close', (c) => res(c ?? 1));
+  });
+}
+
+/**
+ * Скачать curl'ом с докачкой: медленная или зависшая связь (меньше 10 КБ/с дольше 30 с) — обрыв и продолжение
+ * с того же места; недокачанный архив остаётся и при следующем запуске. Распаковка во временную папку и
+ * переименование — в runtime/chrome попадают только целые установки.
+ */
+async function installCftCurl(dir: string): Promise<boolean> {
+  const plat = cftPlatform();
+  if (!plat) return false;
+  let meta: any;
   try {
-    const st = lstatSync(p);
-    if (st.isSymbolicLink()) return 0;
-    if (!st.isDirectory()) return st.size;
-    for (const e of readdirSync(p)) n += dirSize(join(p, e));
-  } catch { /* */ }
-  return n;
+    meta = await fetch(CFT_JSON, { signal: AbortSignal.timeout(20_000) }).then((r) => r.json());
+  } catch (e) {
+    console.log(`не получил список версий Chrome for Testing (${e instanceof Error ? e.message : e}) — пробую запасной способ`);
+    return false;
+  }
+  const st = meta?.channels?.Stable;
+  const dl = (st?.downloads?.chrome as { platform: string; url: string }[] | undefined)?.find((d) => d.platform === plat);
+  if (!dl?.url || !st?.version) { console.log(`в списке нет сборки для ${plat} — пробую запасной способ`); return false; }
+  const zip = join(dir, `chrome-${plat}-${st.version}.zip`);
+  let total = 0;
+  try { total = Number((await fetch(dl.url, { method: 'HEAD', signal: AbortSignal.timeout(20_000) })).headers.get('content-length')) || 0; } catch { /* узнаем по ходу */ }
+  const size = () => { try { return statSync(zip).size; } catch { return 0; } };
+  console.log(`Chrome for Testing ${st.version} (${plat})${total ? `, ${mb(total)}` : ''}\n${dl.url}\n`);
+  if (size()) console.log(`уже скачано ${mb(size())} — продолжаю`);
+  const started = Date.now();
+  const timer = setInterval(() => {
+    const n = size();
+    console.log(`… ${Math.round((Date.now() - started) / 1000)} с · скачано ${mb(n)}${total ? ` из ${mb(total)} (${Math.floor((n / total) * 100)}%)` : ''}`);
+  }, 5000);
+  let ok = total > 0 && size() === total;
+  try {
+    for (let attempt = 1; attempt <= 15 && !ok; attempt++) {
+      if (attempt > 1) { console.log(`связь оборвалась или зависла — продолжаю с ${mb(size())} (попытка ${attempt} из 15)`); await new Promise((r) => setTimeout(r, 2000)); }
+      const code = await runCmd('curl', ['-L', '--fail', '-sS', '-C', '-', '--connect-timeout', '20', '--speed-limit', '10240', '--speed-time', process.env.BOT_CFT_STALL_SEC || '30', '-o', zip, dl.url]);
+      if (code === -1) { console.log('нет curl — пробую запасной способ'); return false; }
+      ok = code === 0 && (!total || size() === total);
+    }
+  } finally {
+    clearInterval(timer);
+  }
+  if (!ok) { console.log(`✗ не скачалось за 15 попыток (скачано ${mb(size())}${total ? ` из ${mb(total)}` : ''}). Запусти установку ещё раз — продолжит с этого места.`); return false; }
+  console.log(`скачано ${mb(size())} за ${Math.round((Date.now() - started) / 1000)} с · распаковываю…`);
+  const dest = join(dir, `${plat}-${st.version}`);
+  const tmp = `${dest}.part`;
+  rmSync(tmp, { recursive: true, force: true });
+  mkdirSync(tmp, { recursive: true });
+  const code = process.platform === 'darwin' ? await runCmd('ditto', ['-x', '-k', zip, tmp]) : await runCmd('unzip', ['-q', '-o', zip, '-d', tmp]);
+  if (code !== 0) {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(zip, { force: true });
+    console.log(`✗ архив не распаковался (код ${code}) — он удалён, запусти установку ещё раз`);
+    return false;
+  }
+  rmSync(dest, { recursive: true, force: true });
+  renameSync(tmp, dest);
+  rmSync(zip, { force: true });
+  return true;
+}
+
+/** Запасной способ: npx @puppeteer/browsers (без докачки). */
+async function installCftNpx(dir: string): Promise<boolean> {
+  console.log('Запасной способ: npx @puppeteer/browsers…');
+  return (await runCmd('npx', ['--yes', '@puppeteer/browsers', 'install', 'chrome@stable', '--path', dir])) === 0;
 }
 
 async function cmdInstallChrome(): Promise<void> {
   const dir = join(ROOT, 'runtime', 'chrome');
   mkdirSync(dir, { recursive: true });
   console.log(`Ставлю Chrome for Testing в ${dir}`);
-  console.log('Скачивание ≈150–200 МБ, обычно 1–5 минут. Прогресс — раз в 5 с.\n');
-  const before = dirSize(dir);
+  console.log('Скачивание ≈100–200 МБ; при медленной связи — несколько минут. Прогресс — раз в 5 с.\n');
   const started = Date.now();
-  const ch = spawn('npx', ['--yes', '@puppeteer/browsers', 'install', 'chrome@stable', '--path', dir], { cwd: ROOT, stdio: ['ignore', 'inherit', 'inherit'] });
-  const timer = setInterval(() => {
-    const mb = Math.max(0, dirSize(dir) - before) / 1048576;
-    console.log(`… ${Math.round((Date.now() - started) / 1000)} с · в runtime/chrome ${mb.toFixed(0)} МБ`);
-  }, 5000);
-  const code = await new Promise<number>((res) => {
-    ch.on('error', (e) => { console.log(`✗ не запускается npx: ${e.message} — нужен Node.js с npm (nodejs.org)`); res(1); });
-    ch.on('close', (c) => res(c ?? 1));
-  });
-  clearInterval(timer);
-  const c = findChrome('', ROOT);
-  if (code === 0 && c?.kind === 'cft') {
+  const okCurl = await installCftCurl(dir);
+  if (!okCurl && !findChrome('', ROOT, { cftOnly: true })) await installCftNpx(dir);
+  const c = findChrome('', ROOT, { cftOnly: true });
+  if (c) {
     console.log(`\n✓ Chrome for Testing установлен за ${Math.round((Date.now() - started) / 1000)} с: ${chromeVersion(c.path) ?? ''}\n  ${c.path}`);
     process.exit(0);
   }
-  console.log(`\n✗ Chrome for Testing не установился (код ${code}). Проверь интернет и нажми «Установить» ещё раз; в Терминале: npm run bot -- install-chrome`);
+  console.log('\n✗ Chrome for Testing не установился. Проверь интернет и запусти установку ещё раз (в пульте «Установить» или npm run bot -- install-chrome) — скачанное не пропадёт.');
   process.exit(1);
 }
 

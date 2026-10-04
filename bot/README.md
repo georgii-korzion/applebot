@@ -35,7 +35,7 @@ cd applebot
 ```bash
 npm i
 npm run build                         # расширение → dist/
-npm run bot -- install-chrome         # Chrome for Testing в runtime/chrome
+npm run bot -- install-chrome         # Chrome for Testing в runtime/chrome (curl с докачкой: обрыв/зависание — продолжит с места)
 cp bot/bot.config.example.jsonc bot.config.json
 cp bot/secrets.example.jsonc secrets.local.json && chmod 600 secrets.local.json
 ```
