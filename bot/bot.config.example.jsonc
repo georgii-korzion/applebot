@@ -28,7 +28,8 @@
     "directAtb": false,             // Add to Bag прямым запросом — только если bot bench покажет выигрыш (§20.6)
     "blockHeavy": false,            // не грузить картинки/видео/шрифты на товаре и в корзине — после замера (§20.4)
     "snapshots": true,              // снимки заглушек в runtime/snapshots (для bot report)
-    "recordPages": false            // живые тесты на 18 Pro: HTML каждого шага (и чекаута) → потом в test/fixtures/live
+    "recordPages": false,           // живые тесты на 18 Pro: HTML каждого шага (и чекаута) → потом в test/fixtures/live
+    "connectTimeoutSec": 25         // браузер открылся, а расширение не подключилось — через столько секунд бот объяснит причину
   },
 
   "proxies": {

@@ -327,7 +327,9 @@ function checksHtml() {
   const saved = s.configExists && s.secretsExists;
   const nErr = S.val.errors.length;
   return checkRow(s.ext ? s.ext.built : null, 'Расширение собрано', s.ext ? (s.ext.built ? 'папка ' + esc(s.ext.dir) : 'нужно собрать один раз и после каждого обновления кода') : '…', jobBtn('build-ext', s.ext && s.ext.built ? 'Пересобрать' : 'Собрать'))
-    + checkRow(s.chrome ? true : s.chrome === null ? false : null, 'Chrome for Testing', s.chrome ? esc(s.chrome.version || s.chrome.path) : 'не найден — нужен отдельный Chrome для бота (≈200 МБ); твой обычный Chrome не трогается', s.chrome ? '' : jobBtn('install-chrome', 'Установить'))
+    + checkRow(s.chrome ? !s.chrome.problem : s.chrome === null ? false : null, 'Chrome for Testing',
+      s.chrome ? (s.chrome.problem ? '<span class="bad">' + esc(s.chrome.problem) + '</span>' : esc(s.chrome.version || s.chrome.path)) : 'не найден — нужен отдельный Chrome для бота (≈200 МБ); твой обычный Chrome не трогается',
+      s.chrome && !s.chrome.problem ? '' : jobBtn('install-chrome', 'Установить'))
     + checkRow(saved && !S.dirty, 'Настройки сохранены', saved ? (S.dirty ? 'есть несохранённые изменения' : esc(S.paths.config) + ' · ' + esc(S.paths.secrets) + ' (права 600)') : 'ещё не сохранялись', `<button type="button" data-act="save"${S.dirty || !saved ? '' : ' disabled'}>Сохранить</button>`)
     + checkRow(!nErr, 'Ошибок в настройках нет', nErr ? `${nErr} ${plural(nErr, 'ошибка', 'ошибки', 'ошибок')} — список ниже` : S.val.warnings.length ? 'есть предупреждения — посмотри ниже' : 'всё заполнено', '')
     + checkRow(S.lastCheck ? S.lastCheck.ok : null, 'Проверка машины', S.lastCheck ? (S.lastCheck.ok ? 'пройдена в ' + new Date(S.lastCheck.at).toLocaleTimeString() : 'есть ✗ — смотри вывод ниже') : 'Chrome и расширение, память, часовой пояс, прокси, Telegram', jobBtn('check', 'Проверить'));
@@ -653,6 +655,7 @@ function tabAdvanced() {
         ${F('config.proxies.downAfterSec', 'Прокси «упал» после … с без ответа', 'num', { step: 1 })}
         ${F('config.fleet.adaptiveWindowsSec.0', 'Адаптация: первое окно, с', 'num', { step: 1 })}
         ${F('config.fleet.adaptiveWindowsSec.1', 'Адаптация: второе окно, с', 'num', { step: 1 })}
+        ${F('config.fleet.connectTimeoutSec', 'Браузер не подключился за … с — объяснить причину', 'num', { min: 3, step: 1 })}
         ${F('config.fleet.chromePath', 'Путь к Chrome (пусто — найти)', 'text')}
         ${F('config.fleet.extensionDir', 'Папка расширения', 'text', { hint: 'dist — боевая сборка' })}
         ${F('config.fleet.extraArgs', 'Доп. аргументы Chrome', 'csv')}

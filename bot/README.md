@@ -101,6 +101,14 @@ npm run bot -- report         # какая стратегия сработала
 npm run bot -- wipe           # удалить secrets.local.json, профили и runtime/ (кроме report.md, orders.txt, orders.csv)
 ```
 
+### Если браузеры открылись и стоят
+
+На дашборде у всех браузеров `STARTING` и красный кружок — значит расширение в окнах не подключилось к боту. Через 25 с бот сам пишет причину в лог (пульт → «Лог бота»), в колонку «ошибка» на дашборде и в `runtime/notify.txt`. Частые причины:
+
+- **Запущен обычный Google Chrome, а не Chrome for Testing.** Обычный Chrome с версии 137 молча игнорирует расширения из командной строки. В пульте на вкладке «Запуск» строка «Chrome for Testing» должна быть ✓; если ✗ — «Установить», потом «■ Остановить всё» и «▶ Запустить». Сейчас бот уже отказывается запускаться с обычным Chrome и говорит об этом.
+- **Расширение не собрано или собрано с ошибкой** — пульт → «Пересобрать»; в окне браузера `chrome://extensions` покажет ошибку.
+- Подробности: `runtime/logs/b01.chrome.log` (вывод Chrome) и `runtime/orchestrator.log`.
+
 ## 4. Telegram (необязательно)
 
 `notify.telegram.enabled: true` и в секретах `botToken`, `chatId`, `allowedUserIds`. Одно закреплённое сообщение со статусом (правка не чаще раза в 3 с), события §12, кнопки на «нужен человек». Команды (только от `allowedUserIds`): `/status`, `/show b07`, `/next`, `/stop b07|all`, `/resume b07`, `/applepay b07`, `/card unburn c1`, `/card b07 c3`, `/strategy all refresh|hold`. **Сообщения с контактами получателей проходят через серверы Telegram — чат должен быть закрытым.**
@@ -141,10 +149,10 @@ bot/src/
 npm run typecheck
 npm test                 # 13 юнит-тестов расширения + 14 юнит-тестов бота
 npm run test:e2e         # 16 сценариев расширения (автономный режим)
-npm run test:bot         # 17 сценариев бота (§15) на моке
+npm run test:bot         # 18 сценариев бота (§15) на моке
 ```
 
-Сценарии бота: `bot-single, bot-pool, h1-refresh, h1-queue, card-decline, card-pool-empty, place-generic-error, applepay-qr, stuck-human, proxy, blocked, captcha, direct-requests, hub-crash, notify, warmup, ui`. Мок: `ADMIT_MODE, DECLINE_LAST4, PLACE_GENERIC_ERR, APPLEPAY_TRUSTED_ONLY, APPLEPAY_QR_EXPIRE_MS, BLOCK_AFTER_SESSIONS, CAPTCHA_AT, HANG_STORES` (описание — в шапке `test/mock-server.mjs`).
+Сценарии бота: `bot-single, bot-pool, h1-refresh, h1-queue, card-decline, card-pool-empty, place-generic-error, applepay-qr, stuck-human, proxy, blocked, captcha, direct-requests, hub-crash, notify, warmup, no-connect, ui`. Мок: `ADMIT_MODE, DECLINE_LAST4, PLACE_GENERIC_ERR, APPLEPAY_TRUSTED_ONLY, APPLEPAY_QR_EXPIRE_MS, BLOCK_AFTER_SESSIONS, CAPTCHA_AT, HANG_STORES` (описание — в шапке `test/mock-server.mjs`).
 
 ## 8. Что проверить вживую до 16.10 (§16)
 

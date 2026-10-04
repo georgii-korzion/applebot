@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFil
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { BotConfig, Secrets } from './config';
-import { chromeArgs, chromeVersion, findChrome, majorOf, type ChromeBin } from './chrome';
+import { chromeArgs, chromeProblem, chromeVersion, findChrome, majorOf, type ChromeBin } from './chrome';
 import { forwarderStatus, parseProxyUrl, redactProxy, httpsGetVia, type ForwarderStatus } from './proxy/forwarder';
 import { fileURLToPath } from 'node:url';
 import type { BrowserRt, FleetOps, Hub } from './hub/server';
@@ -177,6 +177,8 @@ export class Launcher implements FleetOps {
   /** Поднять весь флот: живые (после перезапуска оркестратора) подхватить, остальные запустить с разносом. */
   async startAll(): Promise<void> {
     if (!this.chrome) throw new Error('Chrome не найден — см. bot check (нужен Chrome for Testing: npm run bot -- install-chrome)');
+    const problem = chromeProblem(this.chrome, this.chromeVer);
+    if (problem) throw new Error(`${this.chrome.path}: ${problem}`);
     this.plan();
     const list = [...this.hub.browsers.values()].filter((b) => b.status !== 'RETIRED' && b.status !== 'STOPPED');
     let launched = 0;
@@ -231,6 +233,7 @@ export class Launcher implements FleetOps {
     b.pid = ch.pid;
     b.status = 'STARTING';
     b.launchedAt = Date.now();
+    b.noConnectAt = undefined;
     b.online = false;
     b.state = 'STARTING';
     b.stateSince = Date.now();
@@ -246,12 +249,53 @@ export class Launcher implements FleetOps {
     this.log(`${b.id}: запущен PID ${b.pid} (${b.strategy}, ${b.proxyLabel ?? 'dir'}${b.cdpPort ? `, CDP :${b.cdpPort}` : ''})`);
   }
 
-  /** Подхваченные процессы (не наши дети) — проверка PID раз в секунду. */
+  /** Раз в секунду: подхваченные процессы (не наши дети) — по PID; запущенные, но не подключившиеся — сторож запуска. */
   private watchPids(): void {
+    const now = Date.now();
     for (const b of this.hub.browsers.values()) {
-      if (this.procs.has(b.id) || !b.pid || b.status === 'DEAD' || b.status === 'RETIRED' || b.status === 'STOPPED') continue;
-      if (!pidAlive(b.pid)) this.hub.onDead(b.id, null);
+      if (!b.pid || b.status === 'DEAD' || b.status === 'RETIRED' || b.status === 'STOPPED') continue;
+      if (!this.procs.has(b.id) && !pidAlive(b.pid)) { this.hub.onDead(b.id, null); continue; }
+      if (b.status === 'STARTING' && b.launchedAt && !b.noConnectAt && now - b.launchedAt > this.cfg.fleet.connectTimeoutSec * 1000) void this.noConnect(b);
     }
+  }
+
+  private diagnosing = new Set<string>();
+
+  /** Браузер открылся, но расширение не подключилось к хабу — один раз объяснить почему (лог, дашборд, уведомление). */
+  private async noConnect(b: BrowserRt): Promise<void> {
+    if (this.diagnosing.has(b.id)) return;
+    this.diagnosing.add(b.id);
+    try {
+      const why = await this.diagnoseNoConnect(b);
+      if (b.status !== 'STARTING' || b.noConnectAt) return;
+      b.noConnectAt = Date.now();
+      b.lastError = why;
+      this.log(`${b.id}: не подключился к боту за ${this.cfg.fleet.connectTimeoutSec} с — ${why}`, 'error');
+      this.hub.store.event('browser.no_connect', { browser: b.id, why });
+      // одно уведомление на запуск: обычно причина у всех браузеров одна
+      const others = [...this.hub.browsers.values()].filter((x) => x.id !== b.id && x.noConnectAt);
+      if (!others.length) this.hub.notify('human.needed', { browser: b.id, reason: 'start', text: why });
+      this.hub.persist();
+    } finally {
+      this.diagnosing.delete(b.id);
+    }
+  }
+
+  private async diagnoseNoConnect(b: BrowserRt): Promise<string> {
+    const logFile = join(this.hub.store.dir, 'logs', `${b.id}.chrome.log`);
+    const rel = `runtime/logs/${b.id}.chrome.log`;
+    let log = '';
+    try { log = readFileSync(logFile, 'utf8').slice(-20_000); } catch { /* */ }
+    if (/load-extension[^\n]{0,80}not allowed|not allowed[^\n]{0,80}load-extension/i.test(log) || (this.chrome && chromeProblem(this.chrome, this.chromeVer))) {
+      return 'Chrome не загрузил расширение: обычный Google Chrome не принимает расширения из командной строки. Нужен Chrome for Testing — в пульте «Установить» (или npm run bot -- install-chrome), потом запусти бота заново.';
+    }
+    if (!b.cdpPort) return `расширение не подключилось — в окне ${b.id} открой chrome://extensions и посмотри ошибку (лог Chrome: ${rel})`;
+    const targets = await fetch(`http://127.0.0.1:${b.cdpPort}/json/list`, { signal: AbortSignal.timeout(2500) }).then((r) => r.json() as Promise<{ type?: string; url?: string }[]>).catch(() => null);
+    if (!targets) return `Chrome не отвечает на порту отладки :${b.cdpPort} — окно зависло или порт занят (лог Chrome: ${rel})`;
+    if (!targets.some((t) => String(t.url ?? '').startsWith('chrome-extension://'))) {
+      return `расширение не загрузилось — в окне ${b.id} открой chrome://extensions: там будет ошибка (лог Chrome: ${rel}). Сборка: ${this.cfg.fleet.extensionDir}/ — в пульте «Пересобрать»`;
+    }
+    return `расширение загрузилось, но не подключилось к боту (${this.hub.hubUrl.replace(/\?.*$/, '')}) — в окне ${b.id}: chrome://extensions → Apple Drop Assistant → «service worker» → Console`;
   }
 
   async relaunch(id: string, reason: string, opts: { newProfile: boolean; proxyId?: string | null }): Promise<string | null> {

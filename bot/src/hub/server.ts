@@ -40,6 +40,8 @@ export interface BrowserRt {
   extDir: string;
   status: BrowserStatus;
   launchedAt?: number;
+  /** Сторож запуска уже объяснил, почему браузер не подключился. */
+  noConnectAt?: number;
   relaunches: number;
   retiredReason?: string;
   // живое
@@ -330,6 +332,7 @@ export class Hub {
     b.online = true;
     b.lastBeat = Date.now();
     if (b.status === 'STARTING' || b.status === 'PROXY_DOWN') b.status = 'RUNNING';
+    if (b.noConnectAt) { b.noConnectAt = undefined; b.lastError = undefined; }
     b.ext = m.bot.ext;
     if (m.bot.state && m.bot.state !== b.state) { b.state = m.bot.state; b.stateSince = Date.now(); }
     this.log(`${b.id} подключился (${m.bot.state}${m.orderId ? `, заказ ${m.orderId}` : ''})${wasOnline ? ' — переподключение' : ''}`);

@@ -1,4 +1,5 @@
 // Вход service worker. Все слушатели регистрируются синхронно на верхнем уровне (MV3).
+import { readBootstrap } from './bootstrap';
 import { K } from '../shared/config';
 import type { Cmd } from '../shared/messages';
 import { Orchestrator } from './orchestrator';
@@ -38,6 +39,8 @@ chrome.alarms.onAlarm.addListener(() => { void orch.ready.then(() => { orch.ensu
 
 chrome.runtime.onInstalled.addListener(async (d) => {
   if (d.reason !== 'install') return;
+  // режим бота (bootstrap.json от лаунчера): настройки приходят от хаба — страница настроек не нужна
+  if (await readBootstrap()) return;
   const s = await chrome.storage.local.get(K.config);
   if (!s[K.config]) void chrome.runtime.openOptionsPage();
 });

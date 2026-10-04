@@ -56,6 +56,8 @@ export interface BotConfig {
     snapshots: boolean;
     /** Живые тесты: снимать HTML каждого шага (в т.ч. чекаута) — потом в test/fixtures/live. */
     recordPages: boolean;
+    /** Браузер открылся, но расширение не подключилось за N с — объяснить причину в логе и дашборде. */
+    connectTimeoutSec: number;
   };
   proxies: {
     mode: 'off' | 'all' | 'mixed';
@@ -220,6 +222,7 @@ export function normalizeBotConfig(raw: unknown): BotConfig {
       blockHeavy: bool(f.blockHeavy, false),
       snapshots: bool(f.snapshots, true),
       recordPages: bool(f.recordPages, false),
+      connectTimeoutSec: Math.max(3, num(f.connectTimeoutSec, 25)),
     },
     proxies: {
       mode: p.mode === 'all' || p.mode === 'off' ? p.mode : 'mixed',

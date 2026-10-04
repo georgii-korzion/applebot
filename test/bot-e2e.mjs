@@ -5,7 +5,7 @@
 import { chromium } from 'playwright-core';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -491,13 +491,15 @@ function declineScenario(withReserve) {
       const other = x.orders.find((o) => o.id !== declined.orderId);
       return (withReserve ? other.state === 'ORDERED' : other.method === 'applepay') ? x : null;
     }, 90000, withReserve ? 'второй заказ оплачен запасной' : 'второй заказ на Apple Pay', 500);
-    // браузеры на Apple Pay: QR открыт — «человек» подтверждает
+    // браузеры на Apple Pay: QR выходят по одному (очередь внимания) — «человек» подтверждает тот, что на экране
     const apOrders = s.orders.filter((o) => o.method === 'applepay');
-    for (const o of apOrders) {
-      await waitFor(async () => (await h.state()).browsers.find((b) => b.id === o.leader)?.state === 'WAIT_APPLEPAY', 60000, `QR у ${o.leader}`, 500);
-      const { cdp, page } = await humanPage(h, o.leader, '_s=Review');
+    const paid = new Set();
+    while (paid.size < apOrders.length) {
+      const b = await waitFor(async () => (await h.state()).browsers.find((x) => x.state === 'WAIT_APPLEPAY' && apOrders.some((o) => o.leader === x.id && !paid.has(o.id))), 60000, 'QR Apple Pay на экране', 500);
+      const { cdp, page } = await humanPage(h, b.id, '_s=Review');
       await page.click('[data-test=applepay-confirm]');
       await cdp.close();
+      paid.add(apOrders.find((o) => o.leader === b.id).id);
     }
     const fin = await waitFor(async () => { const x = await h.state(); return x.orders.every((o) => o.state === 'ORDERED') ? x : null; }, 60000, 'все заказы ORDERED', 500);
     const ms = await mockState();
@@ -766,6 +768,27 @@ scenarios.warmup = async () => {
   assert.ok(/WARMUP/.test(log) && /ARMED/.test(log.split('прогрев перед стартом')[1] ?? ''), 'вернулся к товару и ждёт старта');
 };
 
+/** Браузер открылся, а расширение не подключилось (битая сборка): бот сам объясняет причину, а не висит в STARTING. */
+scenarios['no-connect'] = async () => {
+  await startMock({});
+  const ext = join(root, 'test/.bot/noconnect-ext');
+  rmSync(ext, { recursive: true, force: true });
+  cpSync(join(root, 'dist-dev'), ext, { recursive: true });
+  const mf = JSON.parse(readFileSync(join(ext, 'manifest.json'), 'utf8'));
+  writeFileSync(join(ext, 'manifest.json'), JSON.stringify({ ...mf, manifest_version: 1 })); // Chrome такое не загрузит
+  const cfg = botConfig('noconnect', 600, { fleet: { extensionDir: 'test/.bot/noconnect-ext', connectTimeoutSec: 4 }, notify: { telegram: { enabled: false }, webhooks: { enabled: false } } });
+  const h = await startBot('noconnect', cfg, botSecrets());
+  const s = await waitFor(async () => { const x = await h.state(); return x.browsers[0]?.lastError ? x : null; }, 30000, 'причина в дашборде', 500);
+  const b = s.browsers[0];
+  say(`no-connect: ${b.id} ${b.status} — ${b.lastError}`);
+  assert.equal(b.status, 'STARTING');
+  assert.match(b.lastError, /расширение не загрузилось/);
+  assert.ok(h.events().some((e) => e.type === 'browser.no_connect'), 'событие browser.no_connect');
+  assert.match(h.file('hub.log'), /не подключился к боту за 4 с/);
+  assert.match(h.file('notify.txt'), /расширение не загрузилось/, 'уведомление человеку');
+  rmSync(ext, { recursive: true, force: true });
+};
+
 /** Пульт (npm run bot -- ui): заполнить получателя и карту в форме, сохранить, запустить кнопкой, заказ, остановить. */
 scenarios.ui = async () => {
   await startMock({ OPEN_AFTER: '25', THREEDS_MS: '800' });
@@ -860,7 +883,7 @@ scenarios.ui = async () => {
 
 // ---------- запуск ----------
 const want = process.argv.slice(2);
-const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup', 'ui'];
+const list = want.length ? want : ['bot-single', 'bot-pool', 'h1-refresh', 'h1-queue', 'card-decline', 'card-pool-empty', 'place-generic-error', 'applepay-qr', 'stuck-human', 'proxy', 'blocked', 'captcha', 'direct-requests', 'hub-crash', 'notify', 'warmup', 'no-connect', 'ui'];
 if (!existsSync(BOT)) { console.error('нет bot/dist/bot.mjs — npm run test:bot собирает его сам'); process.exit(1); }
 let failed = 0;
 for (const name of list) {

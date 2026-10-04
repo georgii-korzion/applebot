@@ -11,7 +11,7 @@ import page from './page.html';
 import { normalizeBotConfig, normalizeSecrets, readJsonc, validateBot, type BotConfig, type Recipient, type Secrets } from '../config';
 import { PARTS, STORES, partLabel } from '../../../src/shared/parts';
 import { DEFAULT_TIMING } from '../../../src/shared/config';
-import { findChrome, chromeVersion } from '../chrome';
+import { findChrome, chromeProblem, chromeVersion } from '../chrome';
 import { pidAlive } from '../launcher';
 import { Store } from '../store';
 
@@ -147,7 +147,7 @@ export class UiServer {
   private jobs: Job[] = [];
   private nextId = 1;
   private orch: { pid: number; startedAt: number; log: string } | null = null;
-  private chrome: { at: number; path: string; version: string | null } | null = null;
+  private chrome: { at: number; path: string; version: string | null; kind: string; problem: string | null } | null = null;
 
   constructor(readonly o: UiOpts) {}
 
@@ -172,10 +172,12 @@ export class UiServer {
     try { return normalizeBotConfig(readJsonc(this.o.configPath)); } catch { return normalizeBotConfig(readJsonc(join(this.o.root, 'bot/bot.config.example.jsonc'))); }
   }
 
-  private chromeInfo(cfg: BotConfig): { path: string; version: string | null } | null {
+  private chromeInfo(cfg: BotConfig): { path: string; version: string | null; kind: string; problem: string | null } | null {
     if (this.chrome && Date.now() - this.chrome.at < 60_000) return this.chrome;
     const c = findChrome(cfg.fleet.chromePath, this.o.root);
-    this.chrome = c ? { at: Date.now(), path: c.path, version: chromeVersion(c.path) } : null;
+    if (!c) { this.chrome = null; return null; }
+    const version = chromeVersion(c.path);
+    this.chrome = { at: Date.now(), path: c.path, version, kind: c.kind, problem: chromeProblem(c, version) };
     return this.chrome;
   }
 
@@ -271,6 +273,10 @@ export class UiServer {
     if (s.running) return { ok: false, error: 'бот уже запущен' };
     if ((s.busy as string[]).some((k) => FLEET_JOBS.has(k))) return { ok: false, error: 'идёт prepare или bench — дождись конца' };
     if (!(s.ext as { built: boolean }).built) return { ok: false, error: `расширение не собрано (${cfg.fleet.extensionDir}/) — кнопка «Собрать расширение»` };
+    this.chrome = null;
+    const chrome = this.chromeInfo(cfg);
+    if (!chrome) return { ok: false, error: 'не найден Chrome for Testing — кнопка «Установить» на вкладке «Запуск»' };
+    if (chrome.problem) return { ok: false, error: chrome.problem };
     const rt = resolve(this.o.root, cfg.runtimeDir);
     mkdirSync(rt, { recursive: true });
     const log = join(rt, 'orchestrator.log');

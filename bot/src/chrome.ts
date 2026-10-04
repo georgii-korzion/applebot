@@ -65,6 +65,14 @@ export function majorOf(version: string | null): number {
   return Number(/(\d+)\./.exec(version ?? '')?.[1] ?? 0);
 }
 
+/** Этим Chrome бот работать не сможет: фирменный Google Chrome с 137 молча игнорирует --load-extension. */
+export function chromeProblem(bin: ChromeBin, version: string | null): string | null {
+  if (bin.kind === 'chrome' && majorOf(version) >= 137) {
+    return `найден только обычный ${version ?? 'Google Chrome'} — он не загружает расширение бота (с версии 137). Нужен Chrome for Testing: в пульте «Установить» или npm run bot -- install-chrome`;
+  }
+  return null;
+}
+
 export interface LaunchOpts {
   profileDir: string;
   extDir: string;
