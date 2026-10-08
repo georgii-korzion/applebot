@@ -6,3 +6,4 @@ test/.profiles/
 test/.artifacts/
 *.log
 .DS_Store
+out/
