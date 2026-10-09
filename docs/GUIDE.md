@@ -1,6 +1,6 @@
 # Apple Drop Assistant — настройка и доработка
 
-Рабочая инструкция: как настроить расширение под дроп и как его менять. Что расширение умеет — в `docs/FEATURES.md`. Подробно как устроен сайт Apple по шагам и что подтверждено вживую — в `docs/HANDOFF.md`.
+Рабочая инструкция: как настроить расширение под дроп и как его менять. Что расширение умеет — в `docs/FEATURES.md`. Подробно как устроен сайт Apple по шагам и что подтверждено вживую — в `docs/HANDOFF.md`. **Флот на серверах** (много профилей, хаб в интернете, `fleet.json`, день дропа по шагам) — в `docs/FLEET-RUNBOOK.md`; деплой хаба — `hub/README.md`.
 
 **Часть 1 — Настройка:** установка, профили, все поля, тайминги, готовые конфигурации, хаб, проверка, чтение лога.
 **Часть 2 — Доработка:** окружение, где что лежит, как менять селекторы, поля настроек, шаги, мок, тесты, сборка архива, правила.
@@ -31,6 +31,7 @@ Dev-сборку ставить только в отдельный профил�
 - Один профиль Chrome = одна корзина Apple = один заказ одновременно. Нужно два заказа — нужно два профиля.
 - Рекомендуемая схема на дроп: профили `Drop 1`, `Drop 2`, `Drop 3`, в каждом установлено расширение и задан свой `profileId` (`drop-1`, `drop-2`, `drop-3`).
 - Открыть все профили разом на Mac: `./scripts/open-profiles.command 3` (имена папок профилей — `chrome://version` → «Путь к профилю»).
+- Много профилей на сервере (клоны одного шаблона, имя и конфиг из адреса запуска `#drop=nl1-p03&hub=wss://…`, автостарт): `fleet/fleet.ps1` (Windows) / `fleet/fleet.sh` (Mac) — см. `docs/FLEET-RUNBOOK.md` §3.
 - Окружение: VPN выключен, язык Chrome English, часовой пояс Mac — Дубай, уведомления Chrome в macOS разрешены, звук не на нуле, Mac на зарядке, `caffeinate -d` в Терминале, окна профилей не сворачивать.
 
 ## 1.3 Все поля настроек
@@ -136,15 +137,20 @@ Dev-сборку ставить только в отдельный профил�
 
 ## 1.6 Хаб
 
+Хаб v2 (FLEET-SPEC §9) **только наблюдает**: раздаёт профилям конфиг из `fleet.json`, собирает состояние и записи заказов, показывает дашборд и рассылает команды. Ни один шаг покупки его не ждёт: хаб выключен — профили работают сами (в popup «hub ○»).
+
 ```
-npm i          # один раз, в папке исходников
-npm run hub    # держать Терминал открытым
+npm i                                    # один раз
+cp fleet.example.json fleet.json         # заполнить профили; fleet.json в .gitignore (карты, пароли прокси)
+node hub/check.mjs fleet.json            # проверка: ошибки валидации, прокси, IP
+HUB_TOKEN=… HUB_DASH_TOKEN=… npm run hub  # локально можно без токенов
 ```
 
-- Порт и адрес меняются переменными `HUB_PORT` (8765) и `HUB_HOST` (127.0.0.1).
-- Дашборд: `http://127.0.0.1:8765` — все вкладки всех профилей, победители, очередь оплаты, общая таблица заказов, кнопка «Следующий на оплату».
-- `GET /api/state` — состояние JSON; `GET /api/orders.csv` — заказы всех профилей; `POST /api/next` — следующий на оплату; `POST /api/reset` — сбросить состояние хаба между тестами.
-- Хаб упал или не запущен — профили работают каждый сам по себе, в popup красный значок «hub ○» (подключён — зелёный «hub ●»).
+- Адрес для профилей `wss://host/ws?token=<HUB_TOKEN>` — он же в `hubUrl` настроек или в `#hub=` адреса запуска клона; конфиг расширение берёт по `https://host/config/<profileId>?token=…` (выводится из `hubUrl`). Дашборд `https://host/?token=<HUB_DASH_TOKEN>`.
+- Дашборд: openAt и отсчёт, онлайн/всего, первый OPEN, таблица сервер×профиль (стратегия, IP·страна, cfg v, состояние, OPEN +с, Billing +с, номер заказа), Start/Stop/Prepare все, Проверить IP, все → hold/refresh, Разослать конфиг, CSV, лог с фильтром.
+- API: `GET /api/state`, `GET /api/orders.csv`, `POST /api/command {target, cmd, args}`, `POST /api/reload`, `POST /api/reset`; `GET /config/<id>` (404/422/200).
+- Правка `fleet.json` на ходу: `version` +1 → хаб перечитает за 2 с и разошлёт `CONFIG_AVAILABLE`; профиль не в гонке берёт сразу, в гонке — при следующем Start (на дашборде `cfg v … → pending`).
+- Деплой в интернет (VPS + Caddy, Docker, Railway) — `hub/README.md`.
 
 ## 1.7 Проверка перед дропом
 
@@ -202,12 +208,14 @@ npm run hub    # держать Терминал открытым
 | `npm run build:dev` | dev-сборка в `dist-dev/` (мок + apple.com) |
 | `npm run watch` | dev-сборка с пересборкой при изменениях |
 | `npm run typecheck` | проверка типов TypeScript |
-| `npm test` | юнит-тесты (13) |
-| `npm run test:e2e` | dev-сборка + все e2e-сценарии на моке (~5 минут) |
-| `node test/e2e.mjs single card-slow` | только выбранные сценарии |
-| `npm run mock` | мок-сервер на `http://127.0.0.1:4777` |
-| `npm run hub` | хаб на `ws://127.0.0.1:8765` |
-| `npm run pack` | собрать `out/apple-drop-test-setup.zip` для установки |
+| `npm test` | юнит-тесты (`hub/lib/shared.mjs` → `dist-test/` → node --test; + `test/hub.test.mjs`) |
+| `npm run test:e2e` | dev-сборка + все e2e-сценарии на моке (~12 минут; поднимает мок, хаб и локальный прокси) |
+| `node test/e2e.mjs single fleet-hold proxy` | только выбранные сценарии |
+| `npm run mock` | мок-сервер на `http://127.0.0.1:4777` (переключатели — §2.9) |
+| `npm run hub` | хаб на `ws://127.0.0.1:8765/ws` (`FLEET_FILE=./fleet.json`) |
+| `node hub/check.mjs fleet.json` | проверить fleet.json без запуска хаба |
+| `npm run pack` | `dist.zip` — боевая сборка для серверов (распаковать в `C:\drop\ext`) |
+| `npm run pack:setup` | старый архив `out/apple-drop-test-setup.zip` с мок-окружением и README тестов |
 
 Перед каждым коммитом: `npm run typecheck && npm test && npm run test:e2e`.
 
@@ -216,7 +224,9 @@ npm run hub    # держать Терминал открытым
 ```
 src/manifest.json            базовый манифест (финальный пишет build.mjs)
 src/shared/
-  config.ts                  схема конфига, дефолты, нормализация, валидация, фазы рефреша
+  config.ts                  схема конфига, дефолты, нормализация, валидация, фазы рефреша, identity из хеша, URL конфига с хаба
+  strategy.ts                waitPlan(): стратегии ожидания hold/refresh (таблица FLEET-SPEC §4.2), чистая функция
+  hub-entry.ts               что из shared/ попадает в хаб (node build.mjs --hub → hub/lib/shared.mjs)
   selectors.ts               ВСЕ селекторы и тексты сайта Apple
   parts.ts                   парт-номера, URL товаров, магазины
   messages.ts                состояния вкладки/заказа и все сообщения между частями
@@ -233,17 +243,22 @@ src/content/                 работает на страницах apple.com/
   slots.ts                   порядок окон самовывоза
   steps/                     preopen, addToBag, bag, guest, fulfillment, contact, payment, submit, closed, common, country, prepare
 src/sw/                      service worker
-  orchestrator.ts            состояние заказа, лок Add to Bag, победитель, очередь оплаты, записи заказов, хаб, команды popup
-  watcher.ts                 роли вкладок
+  orchestrator.ts            состояние заказа, лок Add to Bag, очередь оплаты внутри профиля, записи заказов, хаб v2, identity, autoStart, команды
+  watcher.ts                 роли вкладок (watcher/racer)
+  proxy.ts                   прокси профиля через chrome.proxy + onAuthRequired, проверка выходного IP
+  applePay.ts                один настоящий клик по Apple Pay через chrome.debugger (FLEET-SPEC §8)
   hubClient.ts, notify.ts, windows.ts, diag.ts
 src/ui/                      popup, options, offscreen (звук), ui.css
-hub/server.mjs               хаб + дашборд
+hub/                         хаб v2: server.mjs (http+ws), config.mjs (fleet.json → конфиг), store.mjs (runtime/),
+                             dashboard.html, check.mjs (проверка fleet.json), lib/shared.mjs (сгенерировано), Dockerfile, README.md
+fleet.example.json           образец fleet.json (плейсхолдеры); настоящий fleet.json — в .gitignore
+fleet/fleet.ps1, fleet.sh    шаблон → клоны → запуск окон плиткой (Windows / Mac)
 test/mock-server.mjs         мок apple.com/ae
-test/e2e.mjs                 e2e-сценарии
-test/unit.test.ts            юнит-тесты
+test/e2e.mjs                 e2e-сценарии (поднимает мок, хаб, локальный прокси)
+test/unit.test.ts            юнит-тесты расширения; test/hub.test.mjs — юнит-тесты хаба
 test-setup/                  README для тестов, live-конфиги, мок-конфиг, КАК-УСТАНОВИТЬ.txt
-scripts/                     open-profiles.command (macOS), pack.sh
-docs/                        SPEC (ТЗ v3), HANDOFF, FEATURES, GUIDE, RESEARCH
+scripts/                     pack.mjs (dist.zip), pack.sh (архив с мок-окружением), open-profiles.command (macOS)
+docs/                        SPEC (ТЗ v3), HANDOFF, FEATURES, GUIDE, RESEARCH, FLEET-RUNBOOK (флот на серверах)
 ```
 
 ### Хочу поменять → куда идти
@@ -378,6 +393,8 @@ billStreet: {
 
 `OPEN_AFTER`, `BUSY_FIRST`, `ATB_404_RATE`, `ATB_404_FIRST`, `ACPART_DELAY_MS`, `COUNTRY_PICKER`, `REQUIRE_TRUSTED`, `UNAVAILABLE_STORES`, `TAKEN_FIRST_SLOT`, `HYDRATE_MS`, `ATTACH_DELAY_MS`, `DEFAULT_CITY`, `STORE_CLOSED` (`blank` / `backsoon` / `redirect` / `offsite`), `QUEUE_AFTER_OPEN`, `CHECKOUT_ERR_FIRST`, `EMPTY_BAG_FIRST`, `RENAME_AUTOM`, `CARD_DELAY_MS`, `THREEDS_MS`.
 
+Флот (FLEET-SPEC §12.1): `ADMIT_SESSIONS` (`odd` / `even` / `list:1,3` / `none` — каких сессий пускать первыми, остальные через `ADMIT_DELAY_MS`), `BUSY_META` (meta refresh на заглушке), `APPLEPAY_TRUSTED_ONLY` (лист только по настоящему клику — как Chrome), `APPLEPAY_SHEET_TTL_MS` (лист сам закрывается), `PROXY_REQUIRED_HEADER` (403 без заголовка `X-Mock-Proxy`, его ставит локальный прокси из e2e), `GET /__ip` (AE через прокси, NL напрямую), `POST /__admit {sids}`.
+
 Служебные адреса: `GET /__state` (сессии, корзины, что было отправлено на каждом шаге, заказы), `POST /__reset`, `POST /__config` (поменять режимы на лету).
 
 Новый режим: строка-описание в шапке → поле в объекте `S` (из `env`) → если нужно на клиенте, передать в `boot` страницы → логика в HTML/JS страницы или в обработчике `/ae/shop/checkoutx` → записать факт в `s.checkout`, чтобы e2e мог проверить через `/__state`.
@@ -409,28 +426,28 @@ scenarios['my-case'] = async () => {
 
 и добавить имя в список `list` внизу файла.
 
-Текущие сценарии: `single`, `hostile`, `assist`, `prepare`, `queue`, `checkout-errors`, `renamed-selectors`, `applepay-turn`, `card-slow`, `card-fallback`, `auto-place`, `closed-backsoon`, `closed-redirect`, `closed-offsite`, `closed-blank`, `acceptance`.
+Текущие сценарии: `single`, `hostile`, `assist`, `prepare`, `queue`, `checkout-errors`, `renamed-selectors`, `applepay-turn`, `card-slow`, `card-fallback`, `auto-place`, `closed-backsoon`, `closed-redirect`, `closed-offsite`, `closed-blank`; флот: `ordered-stays`, `no-cross-profile-blocking`, `card-slow-90s`, `fleet-identity`, `fleet-strategies` (= `fleet-refresh`/`fleet-hold`), `hold-fallback`, `hub-down`, `config-update`, `proxy`, `applepay-retry`, `acceptance` (6 клонов через адрес запуска и autoStart).
 
-Юнит-тесты (`test/unit.test.ts`, `npm test`) — для чистых функций: конфиг, валидация, слоты, маскирование, разбор JSON, роутер, фазы.
+Юнит-тесты (`npm test`): `test/unit.test.ts` — конфиг, валидация, слоты, маскирование секретов, разбор JSON, роутер, фазы, таблица стратегий §4.2, identity из хеша; `test/hub.test.mjs` — fleet.json → конфиг профиля (слияние defaults, ошибки, хеш).
 
 ## 2.11 Сборка
 
 `build.mjs` (esbuild):
 - `dist/` — боевая: `__DEV__ = false`, по умолчанию `https://www.apple.com`, мок запрещён валидацией;
 - `dist-dev/` — `__DEV__ = true`, по умолчанию мок, с source maps;
-- `dist-test/` — юнит-тесты.
+- `dist-test/` — юнит-тесты;
+- `hub/lib/shared.mjs` (`--hub`) — общий код конфига для хаба; **коммитится**, пересобирается `npm run build`/`npm test`. `__DEV__` там решается при запуске: `HUB_ALLOW_MOCK=1` (только e2e).
 
-## 2.12 Архив для установки
+## 2.12 Архивы для установки
 
 ```
-npm run pack
+npm run pack          # dist.zip — боевая сборка для серверов: распаковать в C:\drop\ext, дальше fleet.ps1 init
+npm run pack:setup    # out/apple-drop-test-setup.zip — расширение + extension-dev + мок + README тестов (ручные тесты на Mac)
 ```
-
-Результат — `out/apple-drop-test-setup.zip`. Внутри папка `apple-drop-test-setup`: в корне боевая сборка (её и выбирать в Chrome), `extension-dev/`, `live/`, `mock/` (конфиг, `run-mock.command`, `mock-server.mjs`), README тестов, `КАК-УСТАНОВИТЬ.txt`, FEATURES, GUIDE, RESEARCH.
 
 ## 2.13 Git
 
-- Рабочая ветка: `claude/modest-goldberg-8ufyyx` (репозиторий `georgii-korzion/applebot`).
+- Репозиторий `georgii-korzion/applebot`; ветка флота — `claude/project-thread-9714u4` (от `claude/modest-goldberg-8ufyyx`).
 - Один коммит — одна логическая правка, в сообщении: что и почему (особенно если правка по итогам живого теста — что увидели на сайте).
 - Перед коммитом: typecheck, юнит, e2e.
 
