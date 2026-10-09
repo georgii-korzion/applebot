@@ -1,9 +1,10 @@
 // Юнит-тесты чистых функций: node build.mjs --unit && node --test dist-test/
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { closedReloadMs, defaultConfig, defaultOrder, normalizeConfig, orderFor, phaseOf, validateConfig, jitter } from '../src/shared/config';
+import { DEFAULT_TIMING, closedReloadMs, configUrlFromHub, defaultConfig, defaultOrder, normalizeConfig, orderFor, parseIdentityHash, phaseOf, serverOf, validateConfig, jitter } from '../src/shared/config';
+import { waitPlan } from '../src/shared/strategy';
 import { PARTS, getPart, matchBagName, partByPath, partUrl } from '../src/shared/parts';
-import { fmtLine, maskEmail, maskPhone, maskUrl, rel, scrub } from '../src/shared/log';
+import { fmtLine, maskEmail, maskPhone, maskUrl, registerSecret, rel, scrub } from '../src/shared/log';
 import { orderWindows, parseSlot } from '../src/content/slots';
 import { routeKey } from '../src/content/router';
 import { fmUrl, parseFm } from '../src/shared/watch';
@@ -43,7 +44,7 @@ test('config: нормализация и дефолты', () => {
 
 test('config: валидация §10', () => {
   const now = Date.parse('2026-10-01T00:00:00Z');
-  const ok = { ...defaultConfig(), orders: [validOrder()] };
+  const ok = { ...defaultConfig(), profileId: 'drop-1', orders: [validOrder()] };
   assert.deepEqual(validateConfig(ok, now).errors, []);
 
   const bad = normalizeConfig({
@@ -160,4 +161,91 @@ test('watch: разбор fulfillment-messages', () => {
   assert.match(fmUrl('https://www.apple.com', ['MK254AH/A'], 'R597'), /parts\.0=MK254AH%2FA&searchNearby=true&store=R597$/);
   const closed = parseFm('<!doctype html>', ['MK254AH/A'], ['R597']);
   assert.equal(closed.statuses['MK254AH/A'].isBuyable, false);
+});
+
+// ---------- FLEET-SPEC ----------
+
+test('fleet: стратегии ожидания — таблица §4.2 построчно', () => {
+  const t = DEFAULT_TIMING;
+  // товар до старта («Continue»)
+  assert.equal(waitPlan('refresh', 'armed', 'preorder', {}, t).reload, null, 'до openAt−60 с никто не рефрешит');
+  assert.equal(waitPlan('hold', 'armed', 'preorder', {}, t).reload, null);
+  assert.equal(waitPlan('refresh', 'pre', 'preorder', {}, t).reload, t.preOpenReloadMs, 'refresh: последняя минута — 3 с');
+  assert.equal(waitPlan('hold', 'pre', 'preorder', {}, t).reload, null, 'hold: последняя минута — только JSON');
+  assert.equal(waitPlan('refresh', 'post', 'preorder', { sinceOpenAt: 5000 }, t).reload, t.postOpenReloadMs, 'refresh: после openAt — 1.5 с');
+  assert.equal(waitPlan('hold', 'post', 'preorder', { sinceOpenAt: 5000 }, t).reload, null, 'hold: после openAt — ждём');
+  const fb = waitPlan('hold', 'post', 'preorder', { sinceOpenAt: t.holdFallbackSec * 1000 }, t);
+  assert.equal(fb.fallback, true, 'hold через holdFallbackSec переходит на refresh');
+  assert.equal(fb.reload, t.postOpenReloadMs);
+  assert.equal(waitPlan('hold', 'post', 'preorder', { sinceOpenAt: 1000, opened: true }, t).reload, t.postOpenReloadMs, 'после своего OPEN стратегии не различаются');
+  // заглушка нагрузки
+  assert.equal(waitPlan('hold', 'post', 'busy', { metaRefreshSec: 30 }, t).reload, null, 'hold + meta refresh — не трогаем');
+  assert.equal(waitPlan('hold', 'post', 'busy', { waitedMs: 0 }, t).reload, t.holdBusyWaitSec * 1000, 'hold без meta — рефреш через holdBusyWaitSec');
+  assert.equal(waitPlan('hold', 'post', 'busy', { waitedMs: t.holdBusyWaitSec * 1000 }, t).fallback, true);
+  const b0 = waitPlan('refresh', 'post', 'busy', { busyInRow: 0 }, t).reload!;
+  const b3 = waitPlan('refresh', 'post', 'busy', { busyInRow: 3 }, t).reload!;
+  const b9 = waitPlan('refresh', 'post', 'busy', { busyInRow: 9 }, t).reload!;
+  assert.ok(b0 >= t.minReloadMs && b0 < b3 && b3 <= b9 && b9 <= 4000, `refresh: бэкофф ${b0} → ${b3} → ${b9} ≤ 4 с`);
+  assert.equal(waitPlan('refresh', 'post', 'busy', { busyInRow: 0, metaRefreshSec: 10 }, t).reload, 15000, 'refresh + meta: наш рефреш лишь страховка (meta+5 с)');
+  assert.equal(waitPlan('refresh', 'armed', 'busy', {}, t).reload, t.closedReloadMs, 'refresh до старта — по фазе');
+  // очередь Apple
+  assert.equal(waitPlan('refresh', 'post', 'queue', { waitedMs: 0 }, t).reload, t.queueMaxWaitSec * 1000);
+  assert.equal(waitPlan('hold', 'post', 'queue', { waitedMs: 0 }, t).reload, t.holdQueueWaitSec * 1000, 'hold ждёт очередь дольше');
+  assert.equal(waitPlan('refresh', 'post', 'queue', { waitedMs: t.queueMaxWaitSec * 1000 + 1 }, t).fallback, true, 'очередь не пустила — рефреш');
+  assert.equal(waitPlan('hold', 'post', 'queue', { waitedMs: t.queueMaxWaitSec * 1000 + 1 }, t).fallback, undefined, 'hold ещё ждёт');
+  // закрыто / 404
+  assert.equal(waitPlan('refresh', 'pre', 'closed', {}, t).reload, t.preOpenReloadMs, 'refresh: закрыто — по фазе');
+  assert.equal(waitPlan('hold', 'pre', 'closed', {}, t).reload, t.closedReloadMs, 'hold: закрыто — раз в 30 с всегда');
+  assert.equal(waitPlan('hold', 'post', 'closed', { opened: true }, t).reload, t.postOpenReloadMs);
+});
+
+test('fleet: имя клона из адреса запуска §6', () => {
+  assert.deepEqual(parseIdentityHash('#drop=nl1-p01&hub=wss%3A%2F%2Fhub.example.com%2Fws%3Ftoken%3Dabc'), { profileId: 'nl1-p01', hubUrl: 'wss://hub.example.com/ws?token=abc' });
+  assert.deepEqual(parseIdentityHash('drop=ae1-p02'), { profileId: 'ae1-p02', hubUrl: '' });
+  assert.equal(parseIdentityHash('#x=1'), null, 'без drop= — не наш хеш');
+  assert.equal(parseIdentityHash('#drop='), null);
+  assert.equal(parseIdentityHash(''), null);
+  assert.equal(serverOf('nl1-p01'), 'nl1');
+  assert.equal(serverOf('solo'), 'solo');
+  assert.equal(configUrlFromHub('wss://hub.example.com/ws?token=abc', 'nl1-p01'), 'https://hub.example.com/config/nl1-p01?token=abc');
+  assert.equal(configUrlFromHub('ws://127.0.0.1:8765/ws', 'a/b'), 'http://127.0.0.1:8765/config/a%2Fb');
+  assert.equal(configUrlFromHub('https://hub.example.com/', 'x'), null, 'хаб — только ws/wss');
+  assert.equal(configUrlFromHub('', 'x'), null);
+  assert.equal(configUrlFromHub('wss://h/ws', ''), null);
+});
+
+test('fleet: нормализация новых полей §4/§7/§8', () => {
+  const c = normalizeConfig({
+    profileId: 'nl1-p01', strategy: 'hold', autoStart: 1, version: '3', cfgHash: 'abcd', ipCheckUrl: '',
+    proxy: { scheme: 'http', host: 'p.example.com', port: '8000', username: 'u', password: 'secret-pass', bypass: ['<-loopback>', ''] },
+    orders: [{ id: 'A', applePayClick: 'dom', applePayRetries: '5' }],
+  });
+  assert.equal(c.strategy, 'hold');
+  assert.equal(c.autoStart, true);
+  assert.equal(c.version, 3);
+  assert.equal(c.cfgHash, 'abcd');
+  assert.equal(c.ipCheckUrl, 'https://ipinfo.io/json', 'пустой ipCheckUrl → по умолчанию');
+  assert.deepEqual(c.proxy, { scheme: 'http', host: 'p.example.com', port: 8000, username: 'u', password: 'secret-pass', bypass: ['<-loopback>'] });
+  assert.equal(c.orders[0].applePayClick, 'dom');
+  assert.equal(c.orders[0].applePayRetries, 5);
+  const d = normalizeConfig({ profileId: 'x', strategy: 'weird', proxy: { scheme: 'socks5' }, orders: [{ id: 'A' }] });
+  assert.equal(d.strategy, 'refresh', 'неизвестная стратегия → refresh');
+  assert.equal(d.proxy, null, 'прокси без host/port → нет прокси');
+  assert.equal(d.autoStart, false);
+  assert.equal(d.orders[0].applePayClick, 'debugger');
+  assert.equal(d.orders[0].applePayRetries, 3);
+  const v = validateConfig(normalizeConfig({ profileId: 'nl1-p01', proxy: { host: 'h', port: 0 }, orders: [validOrder()] }));
+  assert.ok(v.errors.some((e) => /proxy\.port/.test(e)), `прокси без порта — ошибка: ${v.errors}`);
+});
+
+test('fleet: секреты в логе — пароль прокси и токены скрыты §11', () => {
+  registerSecret('Qw7Zx-test-pass');
+  registerSecret('');
+  registerSecret('ab'); // слишком короткий — не регистрируется (иначе замажет пол-лога)
+  const s = scrub('прокси http://user:Qw7Zx-test-pass@p.example.com:8000 применён, ab ok, hub wss://h/ws?token=SECRETTOKEN');
+  assert.ok(!s.includes('Qw7Zx-test-pass'), s);
+  assert.ok(s.includes('***'), s);
+  assert.ok(s.includes('ab ok'), 'короткая строка не маскируется');
+  assert.ok(!s.includes('SECRETTOKEN'), `token= в URL скрыт: ${s}`);
+  assert.equal(maskUrl('wss://h/ws?token=abc&x=1'), 'wss://h/ws?token=…&x=1');
 });

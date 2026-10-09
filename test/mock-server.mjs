@@ -26,7 +26,14 @@
 //                            backsoon — «We’ll be back.» (503) по тому же адресу
 //                            redirect — 302 на /ae/shop/backsoon
 //                            offsite  — 302 на /shop/backsoon (вне /ae/, content script там не работает)
-// Служебное: GET /__state, POST /__reset, POST /__config
+//   ADMIT_SESSIONS=        кого пускать после открытия (FLEET-SPEC §12.1): пусто — всех сразу; odd|even — сессии с нечётным/чётным
+//                          порядковым номером; list:1,3 — номера или sid; none — никого. Остальные видят COMING_SOON ещё ADMIT_DELAY_MS
+//   ADMIT_DELAY_MS=10000   через сколько после openAt пускать «не выбранные» сессии; POST /__admit {sids:[…]} пускает вручную
+//   BUSY_META=0            у заглушки «Almost there» есть <meta http-equiv=refresh content=N> (0 — нет)
+//   APPLEPAY_TRUSTED_ONLY=0  «Continue with Pay» открывает лист только по настоящему клику (event.isTrusted)
+//   APPLEPAY_SHEET_TTL_MS=0  лист Apple Pay сам закрывается через N мс без заказа (повтор QR)
+//   PROXY_REQUIRED_HEADER=0  без заголовка X-Mock-Proxy все запросы → 403 (e2e поднимает локальный прокси, который его ставит)
+// Служебное: GET /__state, POST /__reset, POST /__config, POST /__admit, GET /__ip ({ip, country}: через прокси — ОАЭ, иначе NL)
 import http from 'node:http';
 import crypto from 'node:crypto';
 
@@ -53,7 +60,15 @@ const S = {
   checkoutErrFirst: env.CHECKOUT_ERR_FIRST === '1',
   emptyBagFirst: env.EMPTY_BAG_FIRST === '1',
   renameAutom: env.RENAME_AUTOM === '1',
+  admitSessions: env.ADMIT_SESSIONS ?? '',
+  admitDelayMs: num(env.ADMIT_DELAY_MS, 10000),
+  busyMeta: num(env.BUSY_META, 0),
+  applePayTrustedOnly: env.APPLEPAY_TRUSTED_ONLY === '1',
+  applePaySheetTtlMs: num(env.APPLEPAY_SHEET_TTL_MS, 0),
+  proxyRequiredHeader: env.PROXY_REQUIRED_HEADER === '1',
 };
+const admittedManually = new Set();
+let sessionSeq = 0;
 let openAt = Date.now() + S.openAfter * 1000;
 
 // ---------- каталог (как src/shared/parts.ts) ----------
@@ -72,8 +87,20 @@ const PRO = [
   ['2tb', 'black', 'MJRK4AH/A', 'MJXJ4AH/A'], ['2tb', 'silver', 'MJRL4AH/A', 'MJXK4AH/A'], ['2tb', 'burgundy', 'MJRM4AH/A', 'MJXL4AH/A'], ['2tb', 'glacier', 'MJRN4AH/A', 'MJXM4AH/A'],
 ];
 for (const [c, col, pro, max] of PRO) { add(pro, 'iphone-18-pro', 'iPhone 18 Pro', '6.3', c, col, 4699); add(max, 'iphone-18-pro', 'iPhone 18 Pro Max', '6.9', c, col, 5099); }
+const PARTS_BY_FAMILY = (family) => Object.values(PARTS).filter((p) => p.family === family);
 const partBySlug = (family, slug) => Object.values(PARTS).find((p) => p.family === family && p.slug === slug.toLowerCase());
-const isOpen = (p) => p.family !== 'iphone-duo' || Date.now() >= openAt;
+/** Пустили ли эту сессию после открытия (ADMIT_SESSIONS): часть профилей Apple пускает позже — у каждого свой OPEN. */
+function admitted(s) {
+  if (!S.admitSessions || !s) return true;
+  if (Date.now() >= openAt + S.admitDelayMs) return true;
+  if (admittedManually.has(s.sid) || admittedManually.has(String(s.idx))) return true;
+  const mode = String(S.admitSessions);
+  if (mode === 'odd') return s.idx % 2 === 1;
+  if (mode === 'even') return s.idx % 2 === 0;
+  if (mode.startsWith('list:')) return mode.slice(5).split(',').some((x) => x === String(s.idx) || x === s.sid);
+  return false; // none
+}
+const isOpen = (p, s) => p.family !== 'iphone-duo' || (Date.now() >= openAt && admitted(s));
 
 const STORES = [
   { id: 'R597', name: 'Apple Dubai Mall', city: 'Dubai' },
@@ -92,7 +119,7 @@ function session(req, res) {
   let sid = ck.sid;
   if (!sid || !sessions.has(sid)) {
     sid = crypto.randomBytes(8).toString('hex');
-    sessions.set(sid, { sid, created: Date.now(), hits: [], bag: [], busyShown: false, queueLeft: null, lastQueueUrl: null, queueReloads: 0, queuePassed: 0, fulfillErr: 0, contactErr: 0, atbAttempts: 0, atb: crypto.randomBytes(20).toString('hex'), atbOk: 0, atb404: 0, checkout: {}, geo: null, pending: null });
+    sessions.set(sid, { sid, idx: ++sessionSeq, created: Date.now(), hits: [], bag: [], busyShown: false, queueLeft: null, lastQueueUrl: null, queueReloads: 0, queuePassed: 0, fulfillErr: 0, contactErr: 0, atbAttempts: 0, atb: crypto.randomBytes(20).toString('hex'), atbOk: 0, atb404: 0, checkout: {}, geo: null, pending: null });
     res.appendHeader('set-cookie', `sid=${sid}; Path=/; HttpOnly; SameSite=Lax`);
   }
   const s = sessions.get(sid);
@@ -129,7 +156,7 @@ function page(s, title, body, { status, scripts = '' } = {}) {
 <main id="main">${body}</main>${scripts}</body></html>` };
 }
 const notFound = (s) => page(s, 'Page Not Found - Apple (AE)', '<h1>The page you’re looking for can’t be found.</h1><p>Page Not Found</p>', { status: 404 });
-const busy = (s) => page(s, 'Apple Store', '<h1>We’re busy right now.</h1><p>Almost there — so are we. Please try again in a moment.</p>', { status: 503 });
+const busy = (s) => page(s, 'Apple Store', `<h1>We’re busy right now.</h1><p>Almost there — so are we. Please try again in a moment.</p>${S.busyMeta > 0 ? `<meta http-equiv="refresh" content="${S.busyMeta}">` : ''}`, { status: 503 });
 // текст снят с apple.com (US) перед предзаказом iPhone 17/18 Pro
 const backSoon = (s, status = 503) => page(s, 'Apple Store', '<h1>We love that early energy.</h1><p>Almost ready for you. Pre-order begins at 4:00 p.m. See you soon.</p>', { status });
 // страница очереди: сама ведёт дальше через meta refresh (как «очередь» Apple 12.09.2026)
@@ -138,7 +165,7 @@ const queuePage = (s, nextUrl, step) => page(s, 'Apple Store', `<h1>You’re in 
 const storeOpen = () => Date.now() >= openAt;
 
 function productPage(s, p) {
-  const open = isOpen(p);
+  const open = isOpen(p, s);
   const boot = { part: p.part, family: p.family, node: `home/shop_iphone/family/${p.family.replace(/-/g, '_')}`, hydrateMs: S.hydrateMs, open };
   const colors = Object.values(PARTS).filter((x) => x.family === p.family && x.model === p.model && x.capacity === p.capacity);
   const caps = Object.values(PARTS).filter((x) => x.family === p.family && x.model === p.model && x.color === p.color);
@@ -258,6 +285,7 @@ function checkoutPage(s) {
     stores: STORES.map((x, i) => ({ ...x, available: !S.unavailableStores.includes(x.id), dist: (2.1 + i * 7.3).toFixed(1) })),
     cities: CITIES, defaultCity: S.defaultCity, dates, slots: Object.fromEntries(dates.map((d, i) => [d.day, slotsFor(i, d.day)])),
     items: bagJson(s).items, cardDelayMs: S.cardDelayMs, threeDsMs: S.threeDsMs,
+    apTrustedOnly: S.applePayTrustedOnly, apSheetTtlMs: S.applePaySheetTtlMs,
   };
   return page(s, 'Checkout - Apple (AE)', `<div id="app"></div><script id="boot" type="application/json">${JSON.stringify(boot)}</script>`, { scripts: `<script>(${checkoutClient.toString()})();</script>` });
 }
@@ -464,7 +492,16 @@ function checkoutClient() {
       return false;
     }
     var ap = document.getElementById('applepay');
-    if (ap) ap.onclick = function () { if (!termsOk()) return; post('/ae/shop/checkoutx?_a=applePaySheet', { trusted: '1' }); document.getElementById('applepay-sheet').hidden = false; };
+    // APPLEPAY_TRUSTED_ONLY: как браузер — лист открывается только по настоящему клику (isTrusted); программный клик игнорируется.
+    // APPLEPAY_SHEET_TTL_MS: лист сам закрывается без заказа (QR истёк / отменили) — расширение должно повторить.
+    if (ap) ap.onclick = function (e) {
+      if (B.apTrustedOnly && !(e && e.isTrusted)) { post('/ae/shop/checkoutx?_a=applePayUntrusted', {}); return; }
+      if (!termsOk()) return;
+      post('/ae/shop/checkoutx?_a=applePaySheet', { trusted: e && e.isTrusted ? '1' : '0' });
+      var sheet = document.getElementById('applepay-sheet');
+      sheet.hidden = false;
+      if (B.apSheetTtlMs > 0) setTimeout(function () { sheet.hidden = true; post('/ae/shop/checkoutx?_a=applePaySheetClosed', {}); }, B.apSheetTtlMs);
+    };
     var place = document.getElementById('place');
     if (place) place.onclick = function () {
       if (!termsOk()) return;
@@ -485,20 +522,20 @@ function thankYouPage(s, no) {
 }
 
 // ---------- JSON ----------
-function fulfillmentMessages(q) {
+function fulfillmentMessages(q, s) {
   const parts = [0, 1, 2].map((i) => q.get(`parts.${i}`)).filter(Boolean).map((p) => p.toUpperCase());
   const deliveryMessage = {};
   for (const p of parts) {
     const part = PARTS[p];
     if (!part) continue;
-    const open = isOpen(part);
+    const open = isOpen(part, s);
     const buy = open ? { isBuyable: true, reason: null, commitCode: '0' } : { isBuyable: false, reason: 'COMING_SOON', commitCode: '9942' };
     deliveryMessage[p] = { regular: { buyability: buy, quote: open ? 'Delivers Oct 23' : '' }, compact: { buyability: buy, quote: open ? 'Delivers Oct 23' : '' } };
   }
   const stores = STORES.map((st) => ({
     storeNumber: st.id, storeName: st.name.replace(/^Apple /, ''),
     partsAvailability: Object.fromEntries(parts.map((p) => {
-      const open = PARTS[p] ? isOpen(PARTS[p]) : false;
+      const open = PARTS[p] ? isOpen(PARTS[p], s) : false;
       const av = open && !S.unavailableStores.includes(st.id);
       return [p, { pickupDisplay: !open ? 'ineligible' : av ? 'available' : 'unavailable', pickupSearchQuote: !open ? 'Currently unavailable' : av ? 'Available Today' : 'Currently unavailable' }];
     })),
@@ -527,13 +564,24 @@ const server = http.createServer(async (req, res) => {
       return json(res, {
         open: Date.now() >= openAt, openAt, settings: S,
         sessions: [...sessions.values()].map((s) => ({
-          sid: s.sid, geo: s.geo, bag: s.bag.map((i) => ({ part: i.part, qty: i.qty })), atbOk: s.atbOk, atb404: s.atb404,
+          sid: s.sid, idx: s.idx, admitted: admitted(s), geo: s.geo, bag: s.bag.map((i) => ({ part: i.part, qty: i.qty })), atbOk: s.atbOk, atb404: s.atb404,
           checkout: s.checkout, busyShown: s.busyShown, hits: s.hits, queueReloads: s.queueReloads, queuePassed: s.queuePassed, atbAttempts: s.atbAttempts,
         })),
         orders,
       });
     }
-    if (path === '/__reset' && req.method === 'POST') { sessions.clear(); orders.length = 0; return json(res, { ok: true }); }
+    if (path === '/__reset' && req.method === 'POST') { sessions.clear(); orders.length = 0; admittedManually.clear(); sessionSeq = 0; return json(res, { ok: true }); }
+    if (path === '/__admit' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)) || '{}');
+      for (const x of b.sids ?? []) admittedManually.add(String(x));
+      return json(res, { ok: true, admitted: [...admittedManually] });
+    }
+    // выходной IP «как ipinfo»: через локальный прокси (заголовок X-Mock-Proxy) — ОАЭ, напрямую — Нидерланды
+    if (path === '/__ip') return json(res, req.headers['x-mock-proxy'] ? { ip: '203.0.113.7', country: 'AE', city: 'Dubai' } : { ip: '198.51.100.1', country: 'NL', city: 'Amsterdam' });
+    if (S.proxyRequiredHeader && !req.headers['x-mock-proxy']) {
+      res.writeHead(403, { 'content-type': 'text/html; charset=utf-8' });
+      return res.end('<!doctype html><title>Access Denied</title><h1>Access Denied</h1><p>You don\'t have permission to access this resource (mock: нет заголовка X-Mock-Proxy).</p>');
+    }
     if (path === '/__config' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)) || '{}');
       Object.assign(S, b);
@@ -562,7 +610,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(302, { location: S.storeClosed === 'offsite' ? '/shop/backsoon' : '/ae/shop/backsoon' });
       return res.end();
     }
-    if (path === '/ae/shop/fulfillment-messages') return json(res, fulfillmentMessages(q));
+    if (path === '/ae/shop/fulfillment-messages') return json(res, fulfillmentMessages(q, s));
     if (path === '/ae/shop/updateSummary') { await sleep(S.acpartDelayMs); return json(res, { head: { status: 200 }, body: { summary: { acpart: q.get('acpart') ?? null } } }); }
     if (path === '/ae/shop/updateSEO' || path === '/ae/shop/dc' || path === '/ae/shop/bag/status') return json(res, { ok: true, items: s.bag.length });
     if (path === '/ae/shop/beacon/atb') {
@@ -623,7 +671,9 @@ const server = http.createServer(async (req, res) => {
       if (a === 'selectBillingOption') { s.checkout.method = body.method; return json(res, { ok: true }); }
       if (a === 'continueFromBillingToReview') { s.checkout.review = { method: body.method, cardEntered: !!body.cardEntered, cardLast4: body.cardLast4, exp: body.exp, cvvLen: Number(body.cvvLen), nameOnCard: body.nameOnCard, billing: body.method === 'CREDIT' ? { first: body.billFirst, last: body.billLast, street: body.billStreet, area: body.billArea, town: body.billTown, city: body.billCity, title: body.billTitle } : null }; return json(res, { ok: true }); }
       if (a === 'termsAccepted') { s.checkout.termsAccepted = true; return json(res, { ok: true }); }
-      if (a === 'applePaySheet') { s.checkout.applePayClicks = (s.checkout.applePayClicks ?? 0) + 1; return json(res, { ok: true }); }
+      if (a === 'applePaySheet') { s.checkout.applePayClicks = (s.checkout.applePayClicks ?? 0) + 1; s.checkout.applePayTrusted = (s.checkout.applePayTrusted ?? 0) + (body.trusted === '1' ? 1 : 0); return json(res, { ok: true }); }
+      if (a === 'applePayUntrusted') { s.checkout.applePayUntrusted = (s.checkout.applePayUntrusted ?? 0) + 1; return json(res, { ok: true }); }
+      if (a === 'applePaySheetClosed') { s.checkout.applePaySheetClosed = (s.checkout.applePaySheetClosed ?? 0) + 1; return json(res, { ok: true }); }
       if (a === 'placeOrder') {
         s.checkout.placeOrderClicks = (s.checkout.placeOrderClicks ?? 0) + 1;
         const no = `W${String(100000000 + Math.floor(Math.random() * 899999999))}`;
@@ -639,7 +689,7 @@ const server = http.createServer(async (req, res) => {
       if (!p) return send(res, notFound(s));
       if (q.get('add-to-cart') === 'add-to-cart') {
         const bad = q.get('acpart') !== 'none' || !q.get('atbtoken') || q.get('atbtoken') !== s.atb || (q.get('product') ?? '').toUpperCase() !== p.part
-          || (S.requireTrusted && q.get('hx') !== '1') || !isOpen(p) || s.atb404 < S.atb404First || Math.random() < S.atb404Rate;
+          || (S.requireTrusted && q.get('hx') !== '1') || !isOpen(p, s) || s.atb404 < S.atb404First || Math.random() < S.atb404Rate;
         if (bad) { s.atb404++; return send(res, notFound(s)); }
         const token = crypto.randomBytes(6).toString('hex');
         s.atbAttempts++;
@@ -647,7 +697,7 @@ const server = http.createServer(async (req, res) => {
         s.pending = { part: p.part, token, ghost: S.emptyBagFirst && s.atbAttempts === 1 };
         return send(res, atbPendingPage(s, p, token));
       }
-      if (isOpen(p) && S.queueAfterOpen > 0) {
+      if (isOpen(p, s) && S.queueAfterOpen > 0) {
         const here = path + url.search;
         if (s.lastQueueUrl === here) { s.queueReloads++; return send(res, queuePage(s, `${path}?qstep=${s.queuePassed}`, s.queuePassed)); }
         if (s.queueLeft === null) s.queueLeft = S.queueAfterOpen;
@@ -658,11 +708,16 @@ const server = http.createServer(async (req, res) => {
         }
         s.lastQueueUrl = null;
       }
-      if (isOpen(p) && p.family === 'iphone-duo' && S.busyFirst && !s.busyShown) { s.busyShown = true; return send(res, busy(s)); }
+      if (isOpen(p, s) && p.family === 'iphone-duo' && S.busyFirst && !s.busyShown) { s.busyShown = true; return send(res, busy(s)); }
       return send(res, productPage(s, p));
     }
     m = /^\/ae\/shop\/buy-iphone\/([^/]+)\/?$/.exec(path);
     if (m && q.get('step') === 'attach') return send(res, attachPage(s, PARTS[(q.get('product') ?? '').toUpperCase()]));
+    if (m && PARTS_BY_FAMILY(m[1]).length) {
+      // страница семейства — адрес запуска клона (FLEET-SPEC §5.3), расширение здесь только «представляется» хабу
+      const list = PARTS_BY_FAMILY(m[1]);
+      return send(res, page(s, `Buy ${list[0].model} - Apple (AE)`, `<h1>Buy ${esc(list[0].model)}</h1><ul>${list.map((x) => `<li><a href="/ae/shop/buy-iphone/${x.family}/${x.slug}">${esc(x.name)}</a></li>`).join('')}</ul>`));
+    }
     if (path === '/ae/' || path === '/ae') return send(res, page(s, 'Apple (AE)', '<h1>iPhone Duo</h1><p>Pre-order starting 16/10.</p><a href="/ae/shop/buy-iphone/iphone-duo">Buy</a>'));
     if (/^\/(us|uk)\/?$/.test(path)) return send(res, page(null, 'Apple', `<h1>Apple ${path}</h1>`));
     return send(res, notFound(s));
