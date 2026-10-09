@@ -1,5 +1,7 @@
 // Хаб (§5.1): общий сигнал OPEN, один наблюдатель на всех, победитель между профилями заказа,
 // очередь оплаты между профилями, дашборд http://127.0.0.1:8765.
+// Личных данных хаб не получает и не хранит: ни контактов, ни номеров заказов, ни строк лога профилей —
+// только кто ведёт какой заказ и в каком состоянии вкладки. Записи о заказах смотреть в popup своего профиля.
 //   node hub/server.mjs            (HUB_PORT=8765 по умолчанию)
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
@@ -13,20 +15,11 @@ const S = {
   openSource: null,
   watcher: null,
   profiles: new Map(), // profile → { ws, orderId, priority, targets, tabs, stage, online, lastSeen }
-  orders: new Map(),   // orderId → { winner, standby: [], failed: Set, stage, billingAt, orderNo }
+  orders: new Map(),   // orderId → { winner, standby: [], failed: Set, stage, billingAt }
   queue: [],           // [{ orderId, profile, priority, readyAt, store, slotLabel }]
   active: null,        // { orderId, profile, since }
-  records: new Map(),  // key → OrderRecord (все профили)
   log: [],
 };
-function keepRecord(rec) { if (rec?.key) S.records.set(rec.key, rec); }
-function recordsCsv() {
-  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const fmt = (t) => (t ? new Date(t).toLocaleString('ru-RU') : '');
-  const head = ['профиль', 'заказ', 'статус', 'номер заказа', 'товар', 'парт', 'магазин', 'окно самовывоза', 'имя', 'фамилия', 'email', 'телефон', 'оплата', 'сумма', 'OPEN', 'на оплате с', 'оформлен'];
-  const rows = [...S.records.values()].map((r) => [r.profileId, r.orderId, r.status, r.orderNo, r.partLabel, r.part, r.storeName, r.slotLabel, r.firstName, r.lastName, r.email, r.phone, r.payment, r.price, fmt(r.openedAt), fmt(r.billingAt), fmt(r.orderedAt)].map(esc).join(';'));
-  return '\uFEFF' + [head.map(esc).join(';'), ...rows].join('\n');
-}
 
 const ts = () => new Date().toISOString().slice(11, 23);
 function log(msg) {
@@ -39,7 +32,7 @@ function send(ws, m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m))
 function toProfile(profile, m) { send(S.profiles.get(profile)?.ws, m); }
 function broadcast(m) { for (const p of S.profiles.values()) send(p.ws, m); }
 function order(id) {
-  if (!S.orders.has(id)) S.orders.set(id, { winner: null, standby: [], failed: new Set(), stage: null, billingAt: null, orderNo: null });
+  if (!S.orders.has(id)) S.orders.set(id, { winner: null, standby: [], failed: new Set(), stage: null, billingAt: null });
   return S.orders.get(id);
 }
 
@@ -146,7 +139,6 @@ function onMsg(ws, m) {
       S.queue.sort((a, b) => a.priority - b.priority || a.readyAt - b.readyAt);
       const t = S.openedAt ? ` (+${((Date.now() - S.openedAt) / 1000).toFixed(1)} с от OPEN)` : '';
       log(`заказ ${m.orderId}: BILLING_READY у ${m.profile} · ${m.store} · ${m.slotLabel}${t}`);
-      keepRecord(m.record);
       for (const sp of o.standby) toProfile(sp, { t: 'CLEAN', orderId: m.orderId });
       activate();
       break;
@@ -159,20 +151,14 @@ function onMsg(ws, m) {
       break;
     case 'ORDERED': {
       const o = order(m.orderId);
-      o.orderNo = m.orderNo;
       o.stage = 'ORDERED';
-      log(`заказ ${m.orderId}: ORDERED ${m.orderNo} (${m.profile})`);
-      keepRecord(m.record);
+      log(`заказ ${m.orderId}: оформлен (${m.profile}) — номер и данные смотреть в профиле`);
       if (S.active && S.active.orderId === m.orderId) nextPay('ORDERED');
       break;
     }
     case 'STATUS':
       if (p) { p.tabs = m.tabs ?? []; p.stage = m.stage ?? null; p.orderId = m.orderId; }
       if (m.orderId && m.stage && order(m.orderId).winner === m.profile && order(m.orderId).stage !== 'ORDERED') order(m.orderId).stage = m.stage;
-      break;
-    case 'LOG':
-      S.log.push(String(m.line));
-      if (S.log.length > 3000) S.log.splice(0, S.log.length - 3000);
       break;
     case 'PING':
       send(ws, { t: 'PONG' });
@@ -202,10 +188,9 @@ function snapshot() {
     openSource: S.openSource,
     watcher: S.watcher,
     profiles: [...S.profiles.entries()].map(([name, p]) => ({ name, orderId: p.orderId, priority: p.priority, online: p.online, lastSeen: p.lastSeen, stage: p.stage, tabs: p.tabs })),
-    orders: [...S.orders.entries()].map(([id, o]) => ({ id, winner: o.winner, standby: o.standby, failed: [...o.failed], stage: o.stage, billingAt: o.billingAt, orderNo: o.orderNo })),
+    orders: [...S.orders.entries()].map(([id, o]) => ({ id, winner: o.winner, standby: o.standby, failed: [...o.failed], stage: o.stage, billingAt: o.billingAt })),
     queue: S.queue,
     active: S.active,
-    records: [...S.records.values()],
     log: S.log.slice(-300),
   };
 }
@@ -223,10 +208,6 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify(snapshot()));
   }
   if (req.method === 'POST' && url.pathname === '/api/next') { nextPay('дашборд'); res.writeHead(200); return res.end('ok'); }
-  if (req.method === 'GET' && url.pathname === '/api/orders.csv') {
-    res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="apple-drop-orders.csv"' });
-    return res.end(recordsCsv());
-  }
   if (req.method === 'POST' && url.pathname === '/api/reset') { reset(); res.writeHead(200); return res.end('ok'); }
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -242,7 +223,13 @@ wss.on('connection', (ws) => {
   ws.on('error', () => {});
 });
 
-server.listen(PORT, HOST, () => log(`хаб слушает ws://${HOST}:${PORT}, дашборд http://${HOST}:${PORT}`));
+const LOOPBACK = /^(127\.\d+\.\d+\.\d+|localhost|::1)$/i;
+if (!LOOPBACK.test(HOST) && process.env.HUB_ALLOW_REMOTE !== '1') {
+  console.error(`HUB_HOST=${HOST}: хаб был бы открыт для сети без шифрования и пароля. По умолчанию разрешён только 127.0.0.1.\n`
+    + 'Если правда нужно (профили на разных компьютерах в доверенной сети) — HUB_ALLOW_REMOTE=1, но лучше запускать хаб на каждом компьютере отдельно.');
+  process.exit(1);
+}
+server.listen(PORT, HOST, () => log(`хаб слушает ws://${HOST}:${PORT}, дашборд http://${HOST}:${PORT}${LOOPBACK.test(HOST) ? ' (только этот компьютер)' : ' — ОТКРЫТ ДЛЯ СЕТИ'}`));
 
 const DASHBOARD = /* html */ `<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -266,11 +253,9 @@ pre { font:11px/1.35 ui-monospace, Menlo, monospace; background:var(--card); pad
 <button id="next">Следующий на оплату</button></div>
 <h2>Заказы</h2><div id="orders" class="orders"></div>
 <h2>Очередь оплаты</h2><div id="queue" class="card">—</div>
-<h2>Заказы всех профилей <a href="/api/orders.csv" style="font-weight:400;text-transform:none">скачать CSV</a></h2>
-<table><thead><tr><th>профиль</th><th>заказ</th><th>статус</th><th>номер</th><th>товар</th><th>магазин · окно</th><th>получатель</th><th>сумма</th><th>на оплате с</th></tr></thead><tbody id="records"></tbody></table>
 <h2>Заказ × профиль × вкладка</h2>
 <table><thead><tr><th>заказ</th><th>профиль</th><th>вкладка</th><th>роль</th><th>состояние</th><th>деталь</th><th>исход</th><th>обновлено (от OPEN)</th></tr></thead><tbody id="rows"></tbody></table>
-<h2>Лог</h2><pre id="log"></pre>
+<h2>Лог хаба <span style="font-weight:400;text-transform:none">(лог каждого профиля — в его popup)</span></h2><pre id="log"></pre>
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
@@ -286,7 +271,7 @@ async function tick() {
     + (o.billingAt && s.openedAt ? '<div>Billing: +' + ((o.billingAt - s.openedAt) / 1000).toFixed(1) + ' с</div>' : '')
     + (o.standby.length ? '<div class="muted">запас: ' + esc(o.standby.join(', ')) + '</div>' : '')
     + (o.failed.length ? '<div class="err">упали: ' + esc(o.failed.join(', ')) + '</div>' : '')
-    + (o.orderNo ? '<div class="ok big">' + esc(o.orderNo) + '</div>' : '') + '</div>').join('') : '<div class="muted">пока нет</div>';
+    + (o.stage === 'ORDERED' ? '<div class="muted">номер заказа — в popup профиля ' + esc(o.winner ?? '') + '</div>' : '') + '</div>').join('') : '<div class="muted">пока нет</div>';
   $('queue').innerHTML = (s.active ? 'сейчас: <b>' + esc(s.active.orderId) + '</b> (' + esc(s.active.profile) + ') · ' + esc(s.active.store) + ' · ' + esc(s.active.slotLabel) : 'никого')
     + (s.queue.length ? ' · ждут: ' + s.queue.map((q) => esc(q.orderId + '/' + q.profile)).join(', ') : '');
   const rows = [];
@@ -300,7 +285,6 @@ async function tick() {
     }
   }
   $('rows').innerHTML = rows.join('') || '<tr><td colspan="8" class="muted">нет профилей</td></tr>';
-  $('records').innerHTML = (s.records ?? []).map((r) => '<tr><td>' + esc(r.profileId) + '</td><td>' + esc(r.orderId) + '</td><td class="' + (r.status === 'ORDERED' ? 'ok' : 'warn') + '">' + esc(r.status) + '</td><td class="big">' + esc(r.orderNo ?? '') + '</td><td>' + esc(r.partLabel) + '</td><td>' + esc((r.storeName || '').replace(/^Apple /, '') + ' · ' + r.slotLabel) + '</td><td>' + esc(r.firstName + ' ' + r.lastName + ' · ' + r.phone + ' · ' + r.email) + '</td><td>' + esc(r.price ?? '') + '</td><td>' + rel(r.billingAt, s.openedAt) + '</td></tr>').join('') || '<tr><td colspan="9" class="muted">пока нет</td></tr>';
   const lg = s.log.join('\\n');
   if (lg !== lastLog) { const el = $('log'); const bottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20; el.textContent = lg; lastLog = lg; if (bottom) el.scrollTop = el.scrollHeight; }
 }

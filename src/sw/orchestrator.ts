@@ -86,7 +86,7 @@ export class Orchestrator {
       profile: this.cfg?.profileId ?? '?', order: this.order?.id ?? '-', tab, state, msg: scrub(msg), level,
     });
     this.logs.push(line);
-    this.hub.send({ t: 'LOG', line });
+    // лог остаётся в профиле: в хаб уходят только сигналы координации (владелец, 09.10)
   }
 
   private async saveOs(push = false): Promise<void> {
@@ -225,8 +225,9 @@ export class Orchestrator {
         await this.saveOs();
         this.log(tabId, 'ORDERED', `номер заказа ${m.orderNo}`);
         void notify({ id: `ordered-${tabId}`, title: `Заказ ${this.order?.id}: оформлен ✅`, message: m.orderNo, tabId, sound: 'done', sticky: true });
-        const rec = await this.recordOrder({ orderNo: m.orderNo, orderedAt: Date.now(), status: 'ORDERED' });
-        if (this.order) this.hub.send({ t: 'ORDERED', orderId: this.order.id, profile: this.cfg.profileId, orderNo: m.orderNo, record: rec });
+        await this.recordOrder({ orderNo: m.orderNo, orderedAt: Date.now(), status: 'ORDERED' });
+        // номер заказа и запись с контактами остаются в профиле; хабу — только факт «оформлен» для очереди оплаты
+        if (this.order) this.hub.send({ t: 'ORDERED', orderId: this.order.id, profile: this.cfg.profileId });
         if (tabId === this.payActive) await this.advancePay('ORDERED');
         break;
       }
@@ -534,10 +535,10 @@ export class Orchestrator {
     await this.saveOs();
     const took = this.os.openedAt ? ` (${((Date.now() - this.os.openedAt) / 1000).toFixed(1)} с от OPEN)` : '';
     this.log(tabId, 'BILLING_READY', `${storeName(store)} · ${slotLabel} · ${method}${price ? ` · ${price}` : ''}${cardFilled ? ' · карта заполнена' : ''}${took}`);
-    const rec = await this.recordOrder({ price, billingAt: Date.now(), status: 'BILLING_READY' });
+    await this.recordOrder({ price, billingAt: Date.now(), status: 'BILLING_READY' }); // запись только в этом профиле
     const item: PayItem = { tabId, orderId: this.order?.id ?? '?', priority: this.order?.priority ?? 99, readyAt: Date.now(), store, slotLabel };
     if (this.hub.connected && this.order) {
-      this.hub.send({ t: 'PAY_READY', orderId: item.orderId, profile: this.cfg.profileId, priority: item.priority, store, slotLabel, readyAt: item.readyAt, record: rec });
+      this.hub.send({ t: 'PAY_READY', orderId: item.orderId, profile: this.cfg.profileId, priority: item.priority, store, slotLabel, readyAt: item.readyAt });
       return;
     }
     this.payQueue = [...this.payQueue.filter((p) => p.tabId !== tabId), item].sort((a, b) => a.priority - b.priority || a.readyAt - b.readyAt);

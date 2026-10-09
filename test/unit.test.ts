@@ -72,6 +72,11 @@ test('config: валидация §10', () => {
   const past = normalizeConfig({ ...ok, openAt: '2026-09-01T00:00:00+04:00' });
   assert.deepEqual(validateConfig(past, now).errors, []);
   assert.match(validateConfig(past, now).warnings.join('\n'), /openAt в прошлом/);
+
+  const localHub = normalizeConfig({ ...ok, hubUrl: 'ws://127.0.0.1:8765' });
+  assert.ok(!/хаб не на этом компьютере/.test(validateConfig(localHub, now).warnings.join('\n')));
+  const remoteHub = normalizeConfig({ ...ok, hubUrl: 'ws://192.168.1.20:8765' });
+  assert.match(validateConfig(remoteHub, now).warnings.join('\n'), /хаб не на этом компьютере/);
 });
 
 test('config: заказ профиля', () => {

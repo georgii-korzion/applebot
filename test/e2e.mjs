@@ -276,6 +276,15 @@ scenarios.acceptance = async () => {
     const h2 = await waitFor(async () => { const h = await hubState(); return h.active && h.active.orderId !== active ? h : null; }, 5000, 'следующий на оплату');
     say(`acceptance: «Следующий» → ${h2.active.orderId}`);
     assert.ok(worst <= 10, `все 3 заказа на Billing ≤ 10 с после OPEN (худший ${worst.toFixed(1)} с)`);
+    // личные данные и записи о заказах остаются в профилях: в хабе их нет
+    const hubJson = JSON.stringify(await hubState());
+    for (const c of CONTACTS) {
+      for (const v of [c.email, c.phone, c.firstName]) assert.ok(!hubJson.includes(v), `в хабе нет «${v}»`);
+    }
+    assert.ok(!/records|orderNo|\bW\d{9,11}\b/.test(hubJson), 'в хабе нет записей о заказах и номеров');
+    assert.equal((await fetch(`${HUB}/api/orders.csv`)).status, 404, 'выгрузки заказов из хаба нет');
+    const recs = (await profiles[0].status()).orders;
+    if (recs.length) assert.ok(recs[0].email, 'в профиле запись о заказе с контактами есть');
   } catch (e) { await dumpOnFail(profiles, 'acceptance'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 

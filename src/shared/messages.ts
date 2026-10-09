@@ -145,7 +145,8 @@ export type S2C =
   | { t: 'SW_WATCH'; at: number; ok: boolean }
   | { t: 'MODE'; mode: Mode; extra?: Partial<TabState> };
 
-// SW ↔ hub
+// SW ↔ hub. В хаб — только координация и состояния вкладок: никаких контактов, номеров заказов, строк лога,
+// конфига и карты (личные данные и записи о заказах видны только локально в своём профиле).
 export type Hub2S =
   | { t: 'WATCHER'; profile: string | null; targets?: string[] }
   | { t: 'OPEN'; at: number; buyable: string[]; source: string }
@@ -160,12 +161,11 @@ export type S2Hub =
   | { t: 'OPEN'; profile: string; buyable: string[]; source: string }
   | { t: 'WIN_REQ'; orderId: string; profile: string }
   | { t: 'FAILED'; orderId: string; profile: string; reason: string }
-  | { t: 'PAY_READY'; orderId: string; profile: string; priority: number; store: string; slotLabel: string; readyAt: number; record?: OrderRecord }
+  | { t: 'PAY_READY'; orderId: string; profile: string; priority: number; store: string; slotLabel: string; readyAt: number }
   | { t: 'PAY_DONE'; orderId: string; profile: string; stage: string }
   | { t: 'NEXT' }
-  | { t: 'ORDERED'; orderId: string; profile: string; orderNo: string; record?: OrderRecord }
+  | { t: 'ORDERED'; orderId: string; profile: string }
   | { t: 'STATUS'; profile: string; orderId: string | null; stage?: string; tabs: TabRow[]; openedAt?: number }
-  | { t: 'LOG'; line: string }
   | { t: 'PING' };
 
 export interface TabRow {

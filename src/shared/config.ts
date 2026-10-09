@@ -263,6 +263,7 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   else if (!IS_DEV_BUILD && cfg.baseUrl !== LIVE_BASE) errors.push(`baseUrl «${cfg.baseUrl}» — боевая сборка работает только с ${LIVE_BASE}; мок-сервер только с dev-сборкой (папка extension-dev) в отдельном профиле`);
   else if (IS_DEV_BUILD && !isMockBase(cfg.baseUrl) && cfg.baseUrl !== LIVE_BASE) errors.push(`baseUrl «${cfg.baseUrl}»: либо ${LIVE_BASE}, либо адрес мока http://127.0.0.1:4777`);
   if (cfg.hubUrl && !/^wss?:\/\//.test(cfg.hubUrl)) errors.push('hubUrl должен начинаться с ws://');
+  else if (cfg.hubUrl && !/^wss?:\/\/(127\.\d+\.\d+\.\d+|localhost|\[::1\])(:\d+)?\/?$/i.test(cfg.hubUrl)) warnings.push('хаб не на этом компьютере — сигналы координации пойдут по сети без шифрования; личные данные в хаб не отправляются, но лучше хаб на каждом компьютере свой (ws://127.0.0.1:8765)');
   return { errors, warnings };
 }
 
