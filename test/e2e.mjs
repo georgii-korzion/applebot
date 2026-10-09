@@ -71,6 +71,7 @@ async function hubCmd(target, cmd, args = {}) {
 /** Хаб v2 читает fleet.json: пишем его в test/.hub/<name>/ (runtime/ там же). */
 function makeFleet(name, profiles, { openInSec, version = 1, defaults = {}, top = {} } = {}) {
   const dir = join(HUBDIR, name);
+  rmSync(dir, { recursive: true, force: true }); // runtime/ прошлого прогона иначе «восстановится» на хабе (записи, OPEN, PAY_READY)
   mkdirSync(dir, { recursive: true });
   const fleet = {
     version, openAt: new Date(Date.now() + openInSec * 1000).toISOString(), mode: 'auto', baseUrl: MOCK, ipCheckUrl: `${MOCK}/__ip`,
@@ -101,6 +102,7 @@ async function startServers(mockEnv = {}, withHub = false, hubEnv = {}) {
 async function startHub(hubEnv = {}) {
   const dir = hubEnv.FLEET_FILE ? dirname(hubEnv.FLEET_FILE) : join(HUBDIR, 'default');
   mkdirSync(dir, { recursive: true });
+  if (!hubEnv.FLEET_FILE) rmSync(join(dir, 'runtime'), { recursive: true, force: true });
   if (!hubEnv.FLEET_FILE) writeFileSync(join(dir, 'fleet.json'), JSON.stringify({ version: 1, openAt: new Date(Date.now() + 3600_000).toISOString(), baseUrl: MOCK, profiles: { 'x-p01': { contact: CONTACTS[0] } } }));
   const hub = run('hub/server.mjs', { HUB_PORT: String(HUB_PORT), HUB_ALLOW_MOCK: '1', FLEET_FILE: hubEnv.FLEET_FILE ?? join(dir, 'fleet.json'), RUNTIME_DIR: hubEnv.RUNTIME_DIR ?? join(dir, 'runtime'), ...hubEnv });
   await waitHttp(`${HUB}/healthz`);
@@ -557,7 +559,8 @@ scenarios['card-fallback'] = async () => {
   const p = await launchProfile('cardfb');
   const profiles = [p];
   try {
-    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD })], { openInSec: -5, timing: { cardWaitMs: 4000 } }));
+    // FLEET-SPEC этап 2: без явного cardFallback: 'applepay' на Apple Pay не переключаемся (см. card-slow-90s)
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD, cardFallback: 'applepay' })], { openInSec: -5, timing: { cardWaitMs: 4000 } }));
     const r = await p.cmd({ cmd: 'start' });
     assert.ok(r.ok, r.error);
     const ms = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.checkout.applePayClicks) ? m : null; }, 40000, 'клик Apple Pay на Review');

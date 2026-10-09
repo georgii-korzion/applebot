@@ -4,7 +4,7 @@
 //   HUB_PORT (иначе PORT — его задаёт Railway, иначе 8765), слушает 0.0.0.0; FLEET_FILE=./fleet.json; RUNTIME_DIR=./runtime
 // TLS — снаружи (Caddy/Nginx или домен Railway). Протокол v1 не поддерживается — расширение и хаб обновляются вместе.
 import http from 'node:http';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
@@ -48,6 +48,11 @@ function warn(text) {
 }
 
 const store = new Store(RUNTIME_DIR, { log: (m, l) => hubLog(m, l) });
+// Railway и подобные: файл на том не положить — fleet.json можно передать переменной FLEET_JSON (сам текст); пишется в FLEET_FILE один раз.
+if (process.env.FLEET_JSON && !existsSync(FLEET_FILE)) {
+  try { mkdirSync(dirname(FLEET_FILE), { recursive: true }); writeFileSync(FLEET_FILE, process.env.FLEET_JSON); hubLog(`fleet.json записан из FLEET_JSON → ${FLEET_FILE}`); }
+  catch (e) { warn(`FLEET_JSON не записан в ${FLEET_FILE}: ${e.message}`); }
+}
 const fleet = new FleetSource(FLEET_FILE, { log: (m, l) => { if (l === 'warn') warn(m); else hubLog(m); } });
 
 // ---------- профили ----------
