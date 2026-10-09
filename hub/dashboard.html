@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apple Drop — флот</title>
+<style>
+:root { --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --line:#d2d2d7; --card:#f5f5f7; --ok:#248a3d; --warn:#b25000; --err:#d70015; --accent:#0071e3; }
+@media (prefers-color-scheme: dark) { :root { --bg:#1d1d1f; --fg:#f5f5f7; --muted:#a1a1a6; --line:#424245; --card:#2c2c2e; --ok:#30d158; --warn:#ffd60a; --err:#ff453a; --accent:#2997ff; } }
+body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+h1 { font-size:18px; margin:0 0 4px; } h2 { font-size:13px; color:var(--muted); text-transform:uppercase; margin:18px 0 6px; }
+.row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.card { background:var(--card); border-radius:10px; padding:10px 12px; }
+table { border-collapse:collapse; width:100%; font-size:12px; } th, td { text-align:left; padding:4px 7px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); position:sticky; top:0; background:var(--bg); }
+.ok { color:var(--ok); } .warn { color:var(--warn); } .err { color:var(--err); } .muted { color:var(--muted); }
+button { font:inherit; padding:5px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+button:hover { border-color:var(--accent); } button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; } button.danger { color:var(--err); }
+button.sm { padding:2px 7px; font-size:11px; }
+pre { font:11px/1.35 ui-monospace, Menlo, monospace; background:var(--card); padding:8px; border-radius:8px; max-height:380px; overflow:auto; white-space:pre-wrap; word-break:break-word; margin:0; }
+.banner { background:rgba(255,69,58,.15); color:var(--err); border-radius:10px; padding:8px 12px; margin:8px 0; white-space:pre-wrap; }
+.kv { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:4px 16px; }
+.kv b { font-weight:600; } .big { font-size:16px; font-weight:600; }
+td.det { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+tr.off td { opacity:.6; } tr.never td { opacity:.45; font-style:italic; }
+input[type=text] { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+#msg { min-height:1.2em; }
+</style>
+</head>
+<body>
+<div class="row" style="justify-content:space-between">
+  <div><h1>Apple Drop — флот</h1><div id="head" class="muted">…</div></div>
+  <div class="row">
+    <button class="primary" data-cmd="start">Start все</button>
+    <button class="danger" data-cmd="stop">Stop все</button>
+    <button data-cmd="prepare">Prepare все</button>
+    <button data-cmd="checkIp">Проверить IP у всех</button>
+    <button data-cmd="setStrategy" data-arg="refresh">все → refresh</button>
+    <button data-cmd="setStrategy" data-arg="hold">все → hold</button>
+    <button id="reload">Разослать конфиг</button>
+    <a id="csv" href="#"><button>Скачать CSV</button></a>
+    <button id="reset" class="danger">Сбросить состояние</button>
+  </div>
+</div>
+<div id="fleetErr" class="banner" hidden></div>
+<div id="warnings" class="banner" hidden></div>
+<div id="summary" class="card kv" style="margin-top:10px"></div>
+<div id="msg" class="muted"></div>
+
+<h2>Сервер × профиль</h2>
+<table>
+  <thead><tr><th>сервер</th><th>профиль</th><th>страт.</th><th>IP · страна</th><th>cfg</th><th>состояние</th><th>деталь</th><th>OPEN</th><th>Billing</th><th>заказ</th><th>рефр./404</th><th>обновлено</th><th></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<h2>Заказы всех профилей</h2>
+<table>
+  <thead><tr><th>сервер</th><th>профиль</th><th>страт.</th><th>IP</th><th>статус</th><th>номер</th><th>товар</th><th>магазин · окно</th><th>получатель</th><th>оплата</th><th>сумма</th><th>на оплате с</th></tr></thead>
+  <tbody id="records"></tbody>
+</table>
+
+<h2 class="row">Лог <input id="filter" type="text" placeholder="фильтр по профилю" style="font-weight:400;text-transform:none"></h2>
+<pre id="log"></pre>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const token = new URLSearchParams(location.search).get('token') ?? '';
+const api = (path, opts = {}) => fetch(path, { ...opts, cache: 'no-store', headers: { 'content-type': 'application/json', 'x-token': token, ...(opts.headers ?? {}) } });
+$('csv').href = `/api/orders.csv${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+const fmtT = (t) => (t ? new Date(t).toLocaleTimeString() : '');
+const rel = (t, from) => (t && from ? `+${((t - from) / 1000).toFixed(1)} с` : t ? fmtT(t) : '');
+const ago = (t, now) => { if (!t) return ''; const s = Math.round((now - t) / 1000); return s < 60 ? `${s} с` : s < 3600 ? `${Math.floor(s / 60)} мин` : fmtT(t); };
+const dur = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return `${h ? `${h} ч ` : ''}${m} мин ${s % 60} с`; };
+let lastLog = '';
+let state = null;
+
+function msg(text, cls = 'muted') { const m = $('msg'); m.textContent = text; m.className = cls; }
+async function command(target, cmd, args) {
+  const r = await (await api('/api/command', { method: 'POST', body: JSON.stringify({ target, cmd, args }) })).json();
+  msg(r.ok ? `${cmd}${args?.strategy ? ` ${args.strategy}` : ''} → ${target}: отправлено ${r.sent.length}${r.offline.length ? `, офлайн ${r.offline.length}` : ''}` : `ошибка: ${r.error}`, r.ok ? 'ok' : 'err');
+}
+for (const b of document.querySelectorAll('button[data-cmd]')) {
+  b.onclick = () => {
+    const cmd = b.dataset.cmd;
+    const args = cmd === 'setStrategy' ? { strategy: b.dataset.arg } : {};
+    const n = state ? state.profiles.filter((p) => p.online).length : 0;
+    if (!confirm(`${b.textContent} — отправить команду ${n} профилям онлайн?`)) return;
+    void command('all', cmd, args);
+  };
+}
+$('reload').onclick = async () => {
+  const r = await (await api('/api/reload', { method: 'POST' })).json();
+  msg(r.ok ? `fleet.json v${r.version}${r.changed ? ' (изменился)' : ' (без изменений)'} — CONFIG_AVAILABLE разослан` : `fleet.json: ${r.error}`, r.ok ? 'ok' : 'err');
+};
+$('reset').onclick = async () => { if (!confirm('Сбросить состояние профилей и лог хаба? fleet.json и записи заказов останутся.')) return; await api('/api/reset', { method: 'POST' }); msg('состояние сброшено'); };
+
+function rowButtons(p) {
+  const b = (cmd, label, arg) => `<button class="sm" data-row="${esc(p.name)}" data-c="${cmd}"${arg ? ` data-a="${arg}"` : ''}>${label}</button>`;
+  return `${b('start', 'Start')}${b('stop', 'Stop')}${b('focus', 'Focus')}${b('setStrategy', p.strategy === 'hold' ? '→refresh' : '→hold', p.strategy === 'hold' ? 'refresh' : 'hold')}${b('cleanBag', 'Clean bag')}`;
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-row]');
+  if (!b) return;
+  const cmd = b.dataset.c;
+  if (cmd === 'cleanBag' && !confirm(`Очистить корзину профиля ${b.dataset.row}?`)) return;
+  void command(b.dataset.row, cmd, cmd === 'setStrategy' ? { strategy: b.dataset.a } : {});
+});
+
+function stateCls(st) {
+  return /STUCK|TIMEOUT|ERROR/.test(st) ? 'err' : /ASSIST|HOLD|BUSY|COUNTRY|CLOSED|QUEUE|NEED_HUMAN|WATCHING|ARMED/.test(st) ? 'warn' : /BILLING|PAY|ORDERED|IN_BAG|REVIEW/.test(st) ? 'ok' : '';
+}
+
+async function tick() {
+  let s;
+  try { s = await (await api('/api/state')).json(); } catch { $('head').textContent = 'хаб недоступен'; return; }
+  if (s.error) { $('head').textContent = `хаб: ${s.error}`; return; }
+  state = s;
+  const online = s.profiles.filter((p) => p.online).length;
+  const ordered = s.profiles.filter((p) => p.orderNo).length;
+  const oa = s.fleet.openAtMs;
+  $('head').textContent = `fleet.json v${s.fleet.version} · ${s.fleet.hash ? s.fleet.hash.slice(0, 8) : '—'} · профилей ${s.fleet.profiles} · онлайн ${online}/${s.profiles.length}`;
+  const sum = [];
+  sum.push(`<div>openAt <b>${esc(s.fleet.openAt ?? '—')}</b></div>`);
+  if (oa) sum.push(`<div>${oa > s.now ? `до старта <b>${dur(oa - s.now)}</b>` : `после старта <b>${dur(s.now - oa)}</b>`}</div>`);
+  sum.push(`<div>первый OPEN: <b>${s.firstOpen ? `${esc(s.firstOpen.profile)} ${s.firstOpen.sinceOpenAt !== undefined ? `(${(s.firstOpen.sinceOpenAt / 1000).toFixed(1)} с от openAt)` : fmtT(s.firstOpen.at)}` : '—'}</b></div>`);
+  sum.push(`<div>на Billing <b>${s.profiles.filter((p) => p.payReadyAt).length}</b> · заказов оформлено <b class="${ordered ? 'ok' : ''}">${ordered}</b></div>`);
+  sum.push(`<div class="muted">авторизация: WS ${s.auth.ws ? '✓' : '✗ без токена'} · дашборд ${s.auth.dash ? '✓' : '✗ без токена'}</div>`);
+  $('summary').innerHTML = sum.join('');
+  $('fleetErr').hidden = !s.fleet.error;
+  $('fleetErr').textContent = s.fleet.error ? `fleet.json: ${s.fleet.error}` : '';
+  const w = s.warnings.slice(-5);
+  $('warnings').hidden = !w.length;
+  $('warnings').textContent = w.map((x) => `${fmtT(x.ts)} ${x.text}`).join('\n');
+
+  const rows = [];
+  for (const p of s.profiles) {
+    const tabs = p.tabs && p.tabs.length ? p.tabs : [{}];
+    const eg = p.egress ? (p.egress.error ? `<span class="err">ошибка IP</span>` : `${esc(p.egress.ip ?? '?')} · <span class="${p.egress.country === 'AE' ? 'ok' : 'warn'}">${esc(p.egress.country ?? '?')}</span>`) : '<span class="muted">—</span>';
+    const cfg = p.cfgErrors && p.cfgErrors.length ? `<span class="err" title="${esc(p.cfgErrors.join('\n'))}">ошибки</span>` : p.neverSeen ? '<span class="muted">—</span>' : `<span class="${p.cfgOutdated ? 'err' : ''}">v${p.cfgVersion}${p.cfgPending ? ` → v${p.cfgPending}` : ''}</span>`;
+    tabs.forEach((t, i) => {
+      rows.push(`<tr class="${p.neverSeen ? 'never' : p.online ? '' : 'off'}">`
+        + `<td>${i ? '' : esc(p.server)}</td>`
+        + `<td>${i ? '' : `${p.online ? '● ' : p.neverSeen ? '○ ' : '<span class="err">○</span> '}${esc(p.name)}${p.neverSeen ? ' <span class="muted">(не подключался)</span>' : ''}`}</td>`
+        + `<td>${i ? '' : `${esc(p.strategy || '')}${p.proxy ? ` <span class="muted" title="${esc(p.proxy)}">⇄</span>` : ''}`}</td>`
+        + `<td>${i ? '' : eg}</td><td>${i ? '' : cfg}</td>`
+        + `<td class="${stateCls(t.state ?? '')}">${esc(t.state ?? (p.neverSeen ? '' : p.armed ? 'armed' : 'idle'))}${t.role && t.role !== 'idle' ? ` <span class="muted">${esc(t.role)}</span>` : ''}</td>`
+        + `<td class="det" title="${esc(t.detail ?? '')}">${esc(t.detail ?? '')}</td>`
+        + `<td>${i ? '' : rel(p.openedAt, oa)}</td><td>${i ? '' : rel(p.payReadyAt, p.openedAt)}</td>`
+        + `<td class="big ok">${i ? '' : esc(p.orderNo ?? '')}</td>`
+        + `<td>${t.reloads ?? ''}${t.atb404 ? ` / 404×${t.atb404}` : ''}</td>`
+        + `<td>${ago(t.updatedAt ?? p.lastSeen, s.now)}</td>`
+        + `<td>${i || p.neverSeen ? '' : rowButtons(p)}</td></tr>`);
+    });
+  }
+  $('rows').innerHTML = rows.join('') || '<tr><td colspan="13" class="muted">нет профилей — проверь fleet.json и адрес запуска клонов</td></tr>';
+  $('records').innerHTML = (s.records ?? []).map((r) => `<tr><td>${esc(r.server)}</td><td>${esc(r.profileId)}</td><td>${esc(r.strategy)}</td><td>${esc(r.egress?.ip ?? '')}</td>`
+    + `<td class="${r.status === 'ORDERED' ? 'ok' : 'warn'}">${esc(r.status)}</td><td class="big">${esc(r.orderNo ?? '')}</td><td>${esc(r.partLabel)}</td>`
+    + `<td>${esc(`${(r.storeName || '').replace(/^Apple /, '')} · ${r.slotLabel}`)}</td><td>${esc(`${r.firstName} ${r.lastName} · ${r.phone} · ${r.email}`)}</td>`
+    + `<td>${esc(r.payment)}</td><td>${esc(r.price ?? '')}</td><td>${rel(r.billingAt, r.openedAt)}</td></tr>`).join('') || '<tr><td colspan="12" class="muted">пока нет</td></tr>';
+  const f = $('filter').value.trim().toLowerCase();
+  const lg = s.log.filter((e) => !f || String(e.profile).toLowerCase().includes(f) || String(e.line).toLowerCase().includes(f)).map((e) => (e.profile === 'hub' ? e.line : `${esc(e.line).length ? '' : ''}${e.line}`)).join('\n');
+  if (lg !== lastLog) { const el = $('log'); const bottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20; el.textContent = lg; lastLog = lg; if (bottom) el.scrollTop = el.scrollHeight; }
+}
+$('filter').oninput = () => { lastLog = ''; void tick(); };
+tick(); setInterval(tick, 1000);
+</script>
+</body>
+</html>

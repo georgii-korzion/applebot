@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "openAt": "2026-10-16T16:00:00+04:00",
+  "mode": "auto",
+  "baseUrl": "https://www.apple.com",
+  "ipCheckUrl": "https://ipinfo.io/json",
+  "timing": {},
+  "retries": { "checkout": 4, "slotsPerStore": 4 },
+  "limits": { "maxTabsTotal": 12 },
+  "defaults": {
+    "strategy": "refresh",
+    "racersPerProfile": 1,
+    "autoStart": true,
+    "targets": ["MJR54AH/A", "MJX54AH/A"],
+    "stores": ["R597", "R596", "R706"],
+    "city": "Dubai",
+    "slot": { "day": null, "after": null, "before": null },
+    "payment": "applepay",
+    "applePayFallback": "manual",
+    "applePayClick": "debugger",
+    "applePayRetries": 3,
+    "cardFallback": null,
+    "autoReview": true,
+    "autoPlaceOrder": false,
+    "deliveryFallback": false,
+    "address": { "street": "", "area": "", "city": "Dubai" },
+    "proxy": null
+  },
+  "profiles": {
+    "nl1-p01": {
+      "strategy": "hold",
+      "proxy": { "scheme": "http", "host": "PROXY_HOST", "port": 8000, "username": "PROXY_USER", "password": "PROXY_PASSWORD" },
+      "contact": { "firstName": "Ahmed", "lastName": "Example", "email": "ahmed@example.com", "phone": "0501234567" },
+      "card": { "number": "", "expiry": "", "cvv": "", "name": "" },
+      "billing": { "title": "Mr.", "firstName": "", "lastName": "", "street": "Sheikh Zayed Rd 1", "area": "Downtown", "town": "", "city": "Dubai" }
+    },
+    "nl1-p02": {
+      "strategy": "refresh",
+      "proxy": null,
+      "payment": "manual",
+      "contact": { "firstName": "Maria", "lastName": "Example", "email": "maria@example.com", "phone": "0529876543" },
+      "card": { "number": "4111111111111111", "expiry": "12/29", "cvv": "123", "name": "MARIA EXAMPLE" },
+      "billing": { "title": "Ms.", "firstName": "", "lastName": "", "street": "Al Wasl Rd 10", "area": "Jumeirah", "town": "", "city": "Dubai" }
+    },
+    "ae1-p01": {
+      "strategy": "refresh",
+      "proxy": null,
+      "contact": { "firstName": "Omar", "lastName": "Example", "email": "omar@example.com", "phone": "0551112233" },
+      "card": { "number": "", "expiry": "", "cvv": "", "name": "" },
+      "billing": { "title": "", "firstName": "", "lastName": "", "street": "Corniche Rd 5", "area": "Al Markaziyah", "town": "", "city": "Abu Dhabi" }
+    }
+  }
+}
