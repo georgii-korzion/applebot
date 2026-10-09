@@ -1,4 +1,4 @@
-// Prepare (§7.5, прогрев профиля), Clean bag, STANDBY проигравшего профиля (§7.1).
+// Prepare (§7.5, прогрев профиля) и Clean bag. STANDBY/CLEAN между профилями больше нет (FLEET-SPEC §3).
 import { SEL } from '../../shared/selectors';
 import type { Ctl } from '../ctl';
 import type { PageInfo } from '../classify';
@@ -62,21 +62,4 @@ export async function cleanStep(c: Ctl, page: PageInfo): Promise<void> {
   c.send({ t: 'CLEANED', count: Math.max(n, 0) });
   c.setMode('idle');
   c.setState(empty ? 'CLEANED' : 'CLEAN_FAILED', empty ? `корзина пуста (удалено ${Math.max(n, 0)})` : 'не удалось очистить корзину');
-}
-
-/** STANDBY: профиль проиграл, держит товар как запас holdLoserBagSec (§7.1). */
-export async function standbyStep(c: Ctl, page: PageInfo): Promise<void> {
-  const until = c.ts.standbyUntil ?? Date.now() + c.t.holdLoserBagSec * 1000;
-  c.ts.standbyUntil = until;
-  if (page.kind !== 'bag') { await c.navigate(c.bagUrl(), 'STANDBY: держим корзину'); return; }
-  const left = until - Date.now();
-  if (left <= 0) {
-    c.log('STANDBY: время удержания вышло — чищу корзину');
-    c.setMode('clean');
-    c.rerun('standby-expired');
-    return;
-  }
-  c.setState('STANDBY', `запас: держим товар ещё ~${Math.round(left / 1000)} с`);
-  c.renderOverlay({ countdownTo: until });
-  c.timer(left, () => c.rerun('standby-expired'));
 }

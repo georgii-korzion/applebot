@@ -156,15 +156,19 @@ export class Ctl {
 
   renderOverlay(extra: Partial<Parameters<Overlay['update']>[0]> = {}): void {
     if (!this.overlay) return;
+    const fo = this.os?.fleetOpen;
     this.overlay.update({
       profile: this.profileId,
       order: this.order?.id ?? '—',
       state: this.ts.state,
       detail: this.ts.detail,
       role: this.role === 'idle' ? this.ts.mode : this.role,
+      strategy: this.cfg?.strategy === 'hold' && !this.ts.holdFallback ? 'hold' : 'refresh',
       reloads: this.ts.reloads,
       atb404: this.ts.atb404InRow,
       paused: this.ts.paused,
+      // OPEN_SEEN от хаба — только подсказка человеку, на поведение вкладки не влияет (FLEET-SPEC §9.3)
+      note: fo && !this.os.openedAt ? `флот: ${fo.profile} уже пустили${fo.sinceOpenAt !== undefined ? ` (+${(fo.sinceOpenAt / 1000).toFixed(1)} с)` : ''}` : undefined,
       ...extra,
     });
   }
@@ -215,7 +219,15 @@ export class Ctl {
   }
 
   // ---------- навигация ----------
+  /** После ORDERED вкладка страницу не меняет и не перезагружает (FLEET-SPEC §11): человек читает подтверждение. */
+  private orderedGuard(why: string): boolean {
+    if (this.ts.state !== 'ORDERED') return false;
+    this.log(`заказ оформлен — навигация «${why}» отменена`, 'warn');
+    return true;
+  }
+
   async navigate(url: string, why: string, rateLimited = false): Promise<void> {
+    if (this.orderedGuard(why)) return;
     if (rateLimited) await this.respectMinReload();
     if (rateLimited) { this.ts.reloads++; this.ts.lastReloadAt = Date.now(); }
     if (this.order && url === this.targetUrl()) this.ts.lastTargetNavAt = Date.now();
@@ -225,6 +237,7 @@ export class Ctl {
   }
 
   async reload(why: string): Promise<void> {
+    if (this.orderedGuard(why)) return;
     await this.respectMinReload();
     this.ts.reloads++;
     this.ts.lastReloadAt = Date.now();
@@ -240,6 +253,7 @@ export class Ctl {
   }
 
   scheduleReload(ms: number, why: string): void {
+    if (this.orderedGuard(why)) return;
     this.timer(Math.max(ms, 0), () => { void this.reload(why); });
   }
 

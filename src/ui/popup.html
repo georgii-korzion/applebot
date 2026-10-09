@@ -5,7 +5,7 @@
   <title>Apple Drop Assistant</title>
   <link rel="stylesheet" href="ui.css">
   <style>
-    body { width: 460px; padding: 12px; }
+    body { width: 480px; padding: 12px; }
     .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
     .grid button { width: 100%; }
     .kv { display: grid; grid-template-columns: 110px 1fr; gap: 2px 8px; }
@@ -15,7 +15,7 @@
 <body>
   <div class="row spread">
     <h1>Apple Drop Assistant</h1>
-    <span id="hub" class="badge">hub —</span>
+    <span id="hub" class="badge">хаб —</span>
   </div>
   <div class="row muted" style="margin-top:4px">
     <span id="who">…</span>
@@ -30,12 +30,14 @@
     <button id="stop" class="danger">Stop</button>
     <button id="prepare">Prepare</button>
     <button id="clean">Clean bag</button>
-    <button id="next">Следующий на оплату</button>
+    <button id="strategy">Стратегия: refresh</button>
     <button id="assist">Ассистент: вкл</button>
-    <button id="export">Экспорт лога</button>
+    <button id="checkIp">Проверить IP</button>
+    <button id="fetchConfig">Обновить конфиг</button>
     <button id="options">Настройки</button>
-    <button id="clearlog">Очистить лог</button>
+    <button id="export">Экспорт лога</button>
     <button id="exportOrders">Экспорт заказов (CSV)</button>
+    <button id="clearlog">Очистить лог</button>
   </div>
   <div id="result" class="msg" style="margin-top:6px"></div>
 

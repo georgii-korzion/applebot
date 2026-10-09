@@ -1,5 +1,6 @@
 // Вход content script: классификация страницы → шаг машины состояний (§6).
 import type { S2C } from '../shared/messages';
+import { parseIdentityHash } from '../shared/config';
 import { Ctl } from './ctl';
 import { classify, hasProductMarkers, isModal, type PageInfo } from './classify';
 import { watchRoute } from './router';
@@ -10,14 +11,14 @@ import { clickable } from './dom';
 import { findEl, setFallbackReporter } from './find';
 import { closedStep, reportStore } from './steps/closed';
 import { handleCountry } from './steps/country';
-import { ensureWatcher, onOpen, productStep } from './steps/preopen';
+import { WAITING_STATES, ensureWatcher, onOpen, productStep } from './steps/preopen';
 import { atbResult } from './steps/addToBag';
 import { checkoutClick, fixBag } from './steps/bag';
 import { guestStep } from './steps/guest';
 import { fulfillmentStep, shippingStep } from './steps/fulfillment';
 import { contactStep } from './steps/contact';
-import { checkPayTimeout, onFocusForPay, ordered, paymentStep, reviewStep, showPayBanner, watchForOrderNo } from './steps/payment';
-import { cleanStep, prepStep, standbyStep } from './steps/prepare';
+import { applePayCoords, checkPayTimeout, onFocusForPay, ordered, paymentStep, reviewStep, showPayBanner, watchForOrderNo } from './steps/payment';
+import { cleanStep, prepStep } from './steps/prepare';
 
 async function dispatch(c: Ctl): Promise<void> {
   const page = classify();
@@ -58,11 +59,10 @@ async function dispatch(c: Ctl): Promise<void> {
     busyBackoff(c, page);
     return;
   }
-  c.ts.busyInRow = 0;
+  if (c.ts.busyInRow || c.ts.busyHoldSince) { c.ts.busyInRow = 0; c.ts.busyHoldSince = undefined; void c.save(); }
   switch (c.ts.mode) {
     case 'race': return raceStep(c, page);
     case 'checkout': return checkoutStep(c, page);
-    case 'standby': return standbyStep(c, page);
     case 'prep': return prepStep(c, page);
     case 'clean': return cleanStep(c, page);
   }
@@ -94,7 +94,7 @@ async function raceStep(c: Ctl, page: PageInfo): Promise<void> {
       return;
     case 'atb-pending':
       c.setState('ATB_PENDING', 'URL add-to-cart= — ждём переход сайта');
-      c.timer(15000, () => { void c.navigate(c.targetUrl(), 'нет step=attach за 15 с', true); });
+      c.timer(c.t.continueWaitMs, () => { void c.navigate(c.targetUrl(), `нет step=attach за ${Math.round(c.t.continueWaitMs / 1000)} с`, true); });
       return;
     case 'signin':
     case 'checkout':
@@ -146,14 +146,14 @@ async function bagAfterAtb(c: Ctl): Promise<void> {
   c.ts.emptyBagInRow = 0;
   c.ts.price = r.total || c.ts.price;
   c.send({ t: 'BAG', ok: true, detail: r.detail });
-  c.setState('IN_BAG', `${r.detail} — ждём решения`);
-  if (!applyDecision(c)) c.timer(6000, () => c.rerun('bag-decision-timeout'));
+  c.setState('IN_BAG', `${r.detail} — к чекауту`);
+  // решение одно и локальное: корзина подтверждена → чекаут (FLEET-SPEC §3); SW пришлёт GO_BAG/OS с decision
+  if (!applyDecision(c)) c.timer(3000, () => c.rerun('bag-decision-timeout'));
 }
 
 function applyDecision(c: Ctl): boolean {
   if (c.os.winnerTabId !== c.tabId) return false;
   if (c.os.decision === 'go') { c.setMode('checkout'); c.rerun('go'); return true; }
-  if (c.os.decision === 'standby') { c.setMode('standby', { standbyUntil: Date.now() + c.t.holdLoserBagSec * 1000 }); c.rerun('standby'); return true; }
   return false;
 }
 
@@ -233,7 +233,7 @@ function onSwMessage(c: Ctl, m: S2C): void {
       c.role = m.role;
       c.renderOverlay();
       ensureWatcher(c);
-      if (c.ts.mode === 'race' && ['WATCHING', 'PRE_RELOAD', 'ARMED', 'CLOSED', 'BUSY'].includes(c.ts.state)) c.rerun('role');
+      if (c.ts.mode === 'race' && WAITING_STATES.includes(c.ts.state)) c.rerun('role');
       break;
     case 'OPEN':
       c.os.openedAt ??= Date.now();
@@ -244,43 +244,45 @@ function onSwMessage(c: Ctl, m: S2C): void {
       ensureWatcher(c);
       onOpen(c);
       break;
-    case 'OS':
+    case 'OS': {
+      const hadNote = !!c.os.fleetOpen;
       c.os = m.os;
       ensureWatcher(c);
       if (c.ts.mode === 'race' && c.os.inBagVerified && c.os.winnerTabId !== undefined && c.os.winnerTabId !== c.tabId) {
         becomeStopped(c, `товар в корзине (вкладка ${c.os.winnerTabId})`);
-      }
+      } else if (c.ts.mode === 'race' && c.ts.state === 'IN_BAG') applyDecision(c);
+      else if (!hadNote && c.os.fleetOpen) c.renderOverlay();
       break;
+    }
     case 'STOP':
       if (c.ts.mode !== 'idle') becomeStopped(c, m.reason);
       break;
     case 'GO_BAG':
-      if (c.ts.mode === 'race' || c.ts.mode === 'standby') {
-        c.setMode('checkout', { standbyUntil: undefined });
-        c.log('GO: победитель → чекаут');
-        c.rerun('go');
-      }
-      break;
-    case 'STANDBY':
       if (c.ts.mode === 'race') {
-        c.setMode('standby', { standbyUntil: Date.now() + m.holdSec * 1000 });
-        c.rerun('standby');
-      }
-      break;
-    case 'CLEAN':
-      if (c.ts.mode === 'standby' || c.ts.mode === 'race') {
-        c.setMode('clean', { standbyUntil: undefined });
-        c.rerun('clean');
+        c.setMode('checkout');
+        c.log('GO: корзина подтверждена → чекаут');
+        c.rerun('go');
       }
       break;
     case 'FOCUS_FOR_PAY':
       onFocusForPay(c);
       break;
-    case 'CONFIG':
+    case 'CONFIG': {
+      const strategyChanged = c.cfg?.strategy !== m.cfg.strategy;
       c.cfg = m.cfg;
       c.order = m.order;
+      c.profileId = m.cfg.profileId;
+      if (strategyChanged && c.ts.holdFallback) { c.ts.holdFallback = undefined; void c.save(); }
       c.renderOverlay();
+      // новый конфиг (стратегия, тайминги, openAt) — пересчитать ожидание, если вкладка ждёт открытия
+      if (c.ts.mode === 'race' && WAITING_STATES.includes(c.ts.state) && !c.ts.atbPendingSince) c.rerun('config');
       break;
+    }
+    case 'APPLEPAY_COORDS_REQ': {
+      const p = applePayCoords();
+      if (p) c.send({ t: 'APPLEPAY_COORDS', x: p.x, y: p.y });
+      break;
+    }
     case 'MODE':
       c.stopAll();
       c.overlay.banner(null);
@@ -302,11 +304,18 @@ async function main(): Promise<void> {
 
   // буфер Resource Timing: чекаут Apple грузит сотни ресурсов, а нам нужны записи updateSummary/checkoutx
   try { performance.setResourceTimingBufferSize(3000); } catch { /* */ }
+  // идентичность клона из адреса запуска `#drop=<profileId>&hub=<wss-url>` (FLEET-SPEC §6) — читаем до связи с SW
+  const identity = parseIdentityHash(location.hash);
   const c = new Ctl();
   c.dispatch = dispatch;
   c.onMessage = (m) => onSwMessage(c, m);
   setFallbackReporter((key, how) => c.log(`селектор «${key}» не найден — нашёл по: ${how}. После дропа обновить selectors.ts`, 'warn'));
   await c.connect();
+  if (identity) {
+    c.send({ t: 'IDENTITY', profileId: identity.profileId, hubUrl: identity.hubUrl });
+    // хеш больше не нужен: при рефреше вкладка не должна снова «представляться»
+    try { history.replaceState(null, '', location.pathname + location.search); } catch { /* */ }
+  }
   c.overlay = new Overlay(c.ts.hidden ?? c.ts.mode === 'idle');
   c.overlay.onPause = (paused) => {
     c.ts.paused = paused;

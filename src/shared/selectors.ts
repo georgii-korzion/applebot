@@ -73,7 +73,8 @@ export const SEL = {
   // ошибка валидации поля/выбора — повтор не поможет, нужен человек (в отличие от «Please try again»)
   txtValidation: /(Please (select|choose|enter|provide|check|correct|complete|confirm|review|add|read|accept|agree)|is required|invalid|not valid|must be|can.t be blank)/i,
   // Review без галочки (18 Pro, live): «Please read and accept the terms & conditions of this order.»
-  txtTermsError: /(read and accept|accept the terms|agree to the terms|terms\s*(&|and)\s*conditions of this order)/i,
+  /** Текст ошибки Apple «Please read and accept the terms & conditions of this order» — без «agree to the terms»: так написан сам label галочки. */
+  txtTermsError: /(read and accept|accept the terms\s*(&|and)\s*conditions)/i,
   txtEmptyBag: /Your bag is empty/i,
   txtOrderNo: /\bW\d{9,11}\b/,
   txtThanks: /(thank you|your order number|order number)/i,

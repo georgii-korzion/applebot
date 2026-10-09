@@ -23,7 +23,7 @@ function items(): BagItem[] {
 }
 
 /** Ждём отрисовку корзины: позиции или «Your bag is empty». */
-export async function readBag(c: Ctl, timeout = 10000): Promise<{ list: BagItem[]; empty: boolean } | null> {
+export async function readBag(c: Ctl, timeout = c.t.checkoutPageWaitMs): Promise<{ list: BagItem[]; empty: boolean } | null> {
   const ok = await waitUntil(() => (findAll('bagItemName').length || SEL.txtEmptyBag.test(bodyText()) ? true : null), timeout, c.signal);
   if (!ok) return null;
   let list = items();
@@ -93,7 +93,7 @@ export async function removeAll(c: Ctl): Promise<number> {
 export async function checkoutClick(c: Ctl): Promise<void> {
   const sig = c.signal;
   for (let attempt = 1; ; attempt++) {
-    const btn = await waitEnabled('bagCheckout', 8000, sig);
+    const btn = await waitEnabled('bagCheckout', c.t.checkoutPageWaitMs, sig);
     if (!btn) {
       c.setState('CHECKOUT', 'кнопка Check Out не активна — обновляю корзину');
       c.scheduleReload(2000, 'no-checkout-btn');

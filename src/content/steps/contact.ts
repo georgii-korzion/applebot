@@ -10,12 +10,12 @@ export async function contactStep(c: Ctl): Promise<void> {
   const sig = c.signal;
   const o = c.order!;
   c.setState('CONTACT', 'контакты получателя');
-  const self = await waitEl('selfPickup', 10000, sig);
+  const self = await waitEl('selfPickup', c.t.checkoutPageWaitMs, sig);
   if (self && !isChecked(self)) {
     pickRadio(self);
     await sleep(250, sig);
   }
-  await waitUntil(() => findField('firstName'), 8000, sig);
+  await waitUntil(() => findField('firstName'), c.t.checkoutPageWaitMs, sig);
   const fields: [Key, string, string][] = [
     ['firstName', o.contact.firstName, 'firstName'],
     ['lastName', o.contact.lastName, 'lastName'],

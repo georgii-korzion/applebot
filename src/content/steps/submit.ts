@@ -21,7 +21,7 @@ function waitForButtonCycle(btn: Element, timeout: number, signal?: AbortSignal)
     .then((went) => (went ? waitUntil(() => (isEnabled(btn) ? true : null), timeout, signal) : null));
 }
 
-export async function submitAndWait(c: Ctl, btn: Element, nextUrl: RegExp, errorRe: RegExp, timeout = 15000): Promise<SubmitResult> {
+export async function submitAndWait(c: Ctl, btn: Element, nextUrl: RegExp, errorRe: RegExp, timeout = c.t.continueWaitMs): Promise<SubmitResult> {
   const sig = c.signal;
   const t0 = performance.now();
   const before = errorSnapshot(errorRe);

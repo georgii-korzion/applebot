@@ -3,6 +3,7 @@
 // (autoReview), для Apple Pay пробует открыть лист с кодом. Place Order / подтверждение Apple Pay — только человек.
 import { SEL } from '../../shared/selectors';
 import { storeName } from '../../shared/parts';
+import { isMockBase } from '../../shared/config';
 import type { Ctl } from '../ctl';
 import { assistClick } from '../assist';
 import { clickEl, clickable, isChecked, pickRadio, qa, resolveInput, setInput, setSelect, sleep, textOf, waitForUrl, waitUntil } from '../dom';
@@ -20,7 +21,7 @@ export async function paymentStep(c: Ctl): Promise<void> {
     return;
   }
   c.setState('BILLING', 'выбор способа оплаты');
-  await waitUntil(() => findEl('payCard') || findEl('payApplePay'), 12000, sig);
+  await waitUntil(() => findEl('payCard') || findEl('payApplePay'), c.t.checkoutPageWaitMs, sig);
   let method = o.payment;
   if (method === 'applepay') {
     const ap = findEl('payApplePay');
@@ -64,18 +65,31 @@ export async function paymentStep(c: Ctl): Promise<void> {
 }
 
 /**
- * Блок карты у Apple появляется через несколько секунд после выбора «Credit or Debit Card» (live 30.09) —
- * ждём до timing.cardWaitMs; если через 3 с полей нет и radio не выбран, кликаем его ещё раз.
+ * Блок карты у Apple появляется через несколько секунд после выбора «Credit or Debit Card» (live 30.09), на дропе —
+ * заметно дольше. Ждём до timing.cardWaitMs (90 с, FLEET-SPEC §10): каждые 5 с проверяем, что radio всё ещё
+ * выбран (иначе кликаем снова), каждые 15 с пишем в лог, чтобы было видно, что вкладка не зависла.
  */
 async function waitCardFields(c: Ctl, radio: HTMLElement | null): Promise<HTMLInputElement | null> {
   const t0 = Date.now();
   const total = Math.max(1000, c.t.cardWaitMs);
-  let num = await waitUntil(() => findField('cardNumber'), Math.min(3000, total), c.signal);
-  if (!num && radio && !isChecked(radio)) {
-    c.log('radio «Credit or Debit Card» не выбрался — повторный клик', 'warn');
-    pickRadio(radio);
+  let lastLog = t0;
+  let num: HTMLInputElement | null = null;
+  while (!num) {
+    const left = total - (Date.now() - t0);
+    if (left <= 0) break;
+    num = await waitUntil(() => findField('cardNumber'), Math.min(5000, left), c.signal);
+    if (num) break;
+    const r = radio ?? findEl('payCard');
+    if (r && !isChecked(r)) {
+      c.log('radio «Credit or Debit Card» не выбран — повторный клик', 'warn');
+      pickRadio(r);
+    }
+    if (Date.now() - lastLog >= 15000) {
+      lastLog = Date.now();
+      c.setState('BILLING', `ждём поля карты ${Math.round((Date.now() - t0) / 1000)} с из ${Math.round(total / 1000)}`);
+      c.log(`поля карты ещё не появились (${Math.round((Date.now() - t0) / 1000)} с)`);
+    }
   }
-  if (!num) num = await waitUntil(() => findField('cardNumber'), Math.max(0, total - (Date.now() - t0)), c.signal);
   const dt = Date.now() - t0;
   if (num && dt > 1500) c.log(`поля карты появились через ${(dt / 1000).toFixed(1)} с`);
   return num;
@@ -203,13 +217,15 @@ async function onTurn(c: Ctl): Promise<void> {
     if (c.ts.payMethod === 'manual') { const f = findField('cardNumber'); if (f && !c.ts.cardFilled) f.focus(); }
     return;
   }
-  const btn = await waitEnabled('reviewButton', 4000, sig);
+  const btn = await waitEnabled('reviewButton', c.t.checkoutPageWaitMs, sig);
   if (!btn) { c.log('кнопка Review Your Order не активна — дальше человек', 'warn'); return; }
   if (findEl('termsCheckbox')) await acceptTerms(c, 1000); // иногда условия уже на Billing
   c.setState('PAYING', 'Review Your Order');
   clickEl(btn);
-  const went = await waitForUrl(REVIEW_URL, 15000, sig);
-  if (went) { await onReviewTurn(c); return; }
+  const went = await waitForUrl(REVIEW_URL, c.t.continueWaitMs, sig);
+  // смена _s=Review → watchRoute перезапустит диспетчер (reviewStep → onReviewTurn) с новым signal;
+  // продолжать отсюда нельзя: этот шаг вот-вот прервут, и клик Apple Pay оборвался бы на полпути
+  if (went) return;
   {
     const err = /Please\s[^.\n]{3,120}|unexpected error|something went wrong/i.exec(document.body?.innerText ?? '')?.[0];
     c.setState('PAYING', `Review не открылся${err ? `: ${err}` : ''} — проверь форму и нажми Review сам`);
@@ -217,18 +233,43 @@ async function onTurn(c: Ctl): Promise<void> {
   }
 }
 
+/** Центр кнопки Apple Pay в координатах viewport — для настоящего клика через chrome.debugger из SW (FLEET-SPEC §8). */
+export function applePayCoords(): { x: number; y: number } | null {
+  const btn = findEl('applePayButton');
+  if (!btn) return null;
+  const r = clickable(btn).getBoundingClientRect();
+  if (!r.width || !r.height) return null;
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+/** Лист Apple Pay (QR) открыт: это окно браузера поверх страницы — страница теряет фокус. В mock — видимый #applepay-sheet. */
+function sheetOpen(c: Ctl): boolean {
+  if (isMockBase(c.base)) { const el = document.getElementById('applepay-sheet'); return !!el && !el.hidden; }
+  return !document.hasFocus();
+}
+
+function waitSheet(c: Ctl, ms: number): Promise<boolean> {
+  return waitUntil(() => (sheetOpen(c) ? true : null), ms, c.signal).then((x) => !!x);
+}
+
 /**
- * Apple Pay в Chrome: лист с кодом для iPhone открывает браузер, и ему нужен настоящий клик пользователя —
- * программный клик Chrome отвергает (правило браузера, не защита Apple). Пробуем один раз; если лист не
- * открылся — подсвечиваем кнопку, один клик человека, дальше он сканирует код телефоном.
+ * Apple Pay в Chrome: лист с кодом для iPhone открывает браузер, и ему нужен настоящий клик — программный клик
+ * из content script Chrome отвергает (правило браузера, не защита Apple). Цепочка (FLEET-SPEC §8):
+ * 1) программный клик (вдруг пройдёт), 2) один настоящий клик через chrome.debugger из SW, 3) подсветка — жмёт человек.
+ * Лист закрылся без номера заказа → повтор через 5 с, до applePayRetries. Расширение ничего не подтверждает.
  */
 async function tryApplePay(c: Ctl): Promise<void> {
   if (c.ts.payMethod !== 'applepay' || c.ts.applePayTried) return;
-  c.ts.applePayTried = true;
-  void c.save();
   const btn = await waitUntil(() => findEl('applePayButton'), 5000, c.signal);
   if (!btn) { c.log('кнопка Apple Pay на Review не найдена — жми сам', 'warn'); showPayBanner(c); return; }
   await acceptTerms(c, 2500); // обязательно до клика по оплате — иначе «Please read and accept the terms & conditions»
+  if (c.ts.applePayTried) return; // параллельный вызов уже кликнул
+  // флаг — непосредственно перед кликом: если шаг прервут раньше (смена маршрута), следующий вызов попробует снова
+  c.ts.applePayTried = true;
+  c.ts.applePayTries = (c.ts.applePayTries ?? 0) + 1;
+  c.ts.applePayAt = Date.now();
+  void c.save();
+  btn.scrollIntoView({ block: 'center' });
   clickEl(btn);
   await sleep(900, c.signal);
   if (termsErrorShown()) {
@@ -237,16 +278,65 @@ async function tryApplePay(c: Ctl): Promise<void> {
     clickEl(btn);
     await sleep(900, c.signal);
   }
-  // лист Apple Pay — окно браузера поверх страницы: страница теряет фокус
-  if (!document.hasFocus()) {
+  let opened = await waitSheet(c, 1500);
+  let how = 'программный клик';
+  if (!opened && c.order?.applePayClick === 'debugger') {
+    how = 'debugger-клик';
+    const p = applePayCoords();
+    if (!p) c.log('кнопка Apple Pay не видна — debugger-клик невозможен', 'warn');
+    else {
+      c.setState('PAYING', 'Apple Pay: настоящий клик через debugger');
+      const r = await c.request({ t: 'APPLEPAY_CLICK_REQ', x: p.x, y: p.y }, 'APPLEPAY_CLICK_DONE', 10000);
+      if (!r) c.log('SW не ответил на запрос debugger-клика', 'warn');
+      else if (!r.ok) c.log(`debugger-клик не выполнен: ${r.error ?? ''}`, 'warn');
+      opened = await waitSheet(c, 3000);
+      if (!opened && termsErrorShown() && (await acceptTerms(c, 3000))) {
+        const p2 = applePayCoords() ?? p;
+        await c.request({ t: 'APPLEPAY_CLICK_REQ', x: p2.x, y: p2.y }, 'APPLEPAY_CLICK_DONE', 10000);
+        opened = await waitSheet(c, 3000);
+      }
+    }
+  }
+  if (opened) {
+    c.log(`лист Apple Pay открыт (${how}, попытка ${c.ts.applePayTries}) — сканируй код телефоном`);
     c.setState('PAYING', 'Apple Pay: лист открыт — сканируй код телефоном');
     c.overlay.banner(`${payLabel(c)} · сканируй код телефоном и подтверди`, 'Расширение ничего не подтверждает', 'warn');
+    void watchSheet(c).catch(() => {});
     return;
   }
-  c.log('программный клик Apple Pay лист не открыл (нужен клик человека)', 'warn');
+  c.log(`лист Apple Pay не открылся (${how}) — нужен клик человека`, 'warn');
   await assistClick(c, clickable(btn), 'Apple Pay', 'Нажми Apple Pay — откроется код для iPhone');
   c.setState('PAYING', 'Apple Pay: сканируй код телефоном');
   showPayBanner(c);
+}
+
+/** Лист закрылся без номера заказа (отменили / QR истёк): через 5 с ещё попытка, пока не исчерпаны applePayRetries. */
+async function watchSheet(c: Ctl): Promise<void> {
+  const sig = c.signal;
+  let closedSince: number | null = null;
+  for (;;) {
+    await sleep(500, sig);
+    if (c.ts.state === 'ORDERED' || !REVIEW_URL.test(location.href)) return;
+    if (sheetOpen(c)) { closedSince = null; continue; }
+    closedSince ??= Date.now();
+    if (Date.now() - closedSince >= 2000) break; // 2 с подряд «страница в фокусе» — лист закрыт
+  }
+  const tries = c.ts.applePayTries ?? 1;
+  const max = c.order?.applePayRetries ?? 0;
+  if (tries > max) {
+    c.log(`лист Apple Pay закрылся без заказа, повторы исчерпаны (${max}) — нажми Apple Pay сам`, 'warn');
+    c.setState('PAYING', 'Apple Pay: лист закрылся — нажми Apple Pay сам');
+    const btn = findEl('applePayButton');
+    if (btn) await assistClick(c, clickable(btn), 'Apple Pay', 'Нажми Apple Pay — откроется код для iPhone');
+    showPayBanner(c);
+    return;
+  }
+  c.log(`лист Apple Pay закрылся без заказа — повтор через 5 с (${tries} из ${max})`, 'warn');
+  c.setState('PAYING', `Apple Pay: лист закрылся — повтор через 5 с (${tries}/${max})`);
+  await sleep(5000, sig);
+  if (c.ts.state === 'ORDERED') return;
+  c.ts.applePayTried = false;
+  await tryApplePay(c);
 }
 
 export function reviewStep(c: Ctl): void {
@@ -321,8 +411,9 @@ async function acceptTerms(c: Ctl, wait = 4000): Promise<boolean> {
   return false;
 }
 
+/** Ошибка про галочку условий — только в блоках ошибок, не по всему тексту страницы (label галочки похож на неё). */
 function termsErrorShown(): boolean {
-  return SEL.txtTermsError.test(document.body?.innerText ?? '');
+  return qa<HTMLElement>('[role="alert"], [class*="error" i]').some((el) => SEL.txtTermsError.test(textOf(el)));
 }
 
 let orderObserver: MutationObserver | null = null;

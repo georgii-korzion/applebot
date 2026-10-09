@@ -48,9 +48,21 @@ export function maskUrl(u: string): string {
     .replace(/([?&](?:ssi|_a_token|token|signKey|timeSlotId)=)[^&#]*/gi, '$1…');
 }
 
-/** Защита от случайной утечки: email/телефон/длинные hex в тексте лога. */
+// Секреты, которые в лог попадать не должны ни в каком виде (пароль прокси, токен хаба) — FLEET-SPEC §11.
+const secrets = new Set<string>();
+
+export function registerSecret(s: string | undefined | null): void {
+  if (s && s.length >= 3) secrets.add(s);
+}
+
+function hideSecrets(msg: string): string {
+  for (const s of secrets) if (msg.includes(s)) msg = msg.split(s).join('***');
+  return msg;
+}
+
+/** Защита от случайной утечки: email/телефон/длинные hex/зарегистрированные секреты в тексте лога. */
 export function scrub(msg: string): string {
-  return maskUrl(msg)
+  return maskUrl(hideSecrets(msg))
     .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, (m) => maskEmail(m))
     .replace(/\b0?5\d{8}\b/g, (m) => maskPhone(m))
     .replace(/\b(?:\d[ -]?){12,18}\d\b/g, (m) => `****${m.replace(/\D/g, '').slice(-4)}`)

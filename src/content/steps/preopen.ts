@@ -1,6 +1,7 @@
-// До старта: наблюдатель JSON (§3.0, §7.3) и рефреш вкладок по фазам.
+// До старта: наблюдатель JSON (§3.0, §7.3) и ожидание открытия по стратегии профиля (FLEET-SPEC §4).
 import { SEL } from '../../shared/selectors';
 import { phaseOf } from '../../shared/config';
+import { waitPlan } from '../../shared/strategy';
 import { normPart, partUrl } from '../../shared/parts';
 import { pollFm } from '../../shared/watch';
 import type { Ctl } from '../ctl';
@@ -9,9 +10,12 @@ import { Aborted, sleep, waitUntil, yieldTask } from '../dom';
 import { findEl } from '../find';
 import { atbFlow } from './addToBag';
 import { closedStep, reportStore } from './closed';
+import { effectiveStrategy, holdFallback } from './common';
 import { hasProductBootstrap, isBlankPage } from '../classify';
 
 const PRE_WINDOW_MS = 60_000;
+/** Состояния ожидания открытия: сюда приходит OPEN, смена роли и новый конфиг. */
+export const WAITING_STATES = ['INIT', 'ARMED', 'PRE_RELOAD', 'WATCHING', 'HOLD', 'FAST_RELOAD', 'CLOSED', 'BUSY'];
 
 /** Страница конфигурации в режиме гонки. */
 export async function productStep(c: Ctl, page: PageInfo): Promise<void> {
@@ -36,39 +40,65 @@ export async function productStep(c: Ctl, page: PageInfo): Promise<void> {
   closedStep(c, page, isBlankPage() ? 'пустая страница' : 'нет формы покупки');
 }
 
-/** Рефреш по фазам §7.3: ARMED → PRE_RELOAD → FAST_RELOAD. */
+/**
+ * Наблюдатель JSON не рефрешится до своего OPEN — кроме случая, когда он единственная вкладка профиля
+ * в стратегии refresh: тогда рефрешит как все, а JSON между загрузками опрашивает страховочный поллер SW.
+ */
+export function watcherHolds(c: Ctl): boolean {
+  if (c.role !== 'watcher' || c.os.openedAt) return false;
+  return !(effectiveStrategy(c) === 'refresh' && c.os.raceTabs.length <= 1);
+}
+
+/** Ожидание открытия по фазам и стратегии (§7.3, FLEET-SPEC §4.2): ARMED → PRE_RELOAD/HOLD → FAST_RELOAD. */
 export function scheduleByPhase(c: Ctl): void {
   const now = Date.now();
   const openAt = Date.parse(c.cfg.openAt);
-  const open = !!c.os.openedAt;
-  const grace = openAt + c.t.graceSec * 1000;
+  const opened = !!c.os.openedAt;
+  const phase = phaseOf(c.cfg, c.os.openedAt, now);
+  const strategy = effectiveStrategy(c);
   const min = c.t.minReloadMs;
-  if (!open && Number.isFinite(openAt) && now < openAt - PRE_WINDOW_MS) {
-    c.setState('ARMED', `рефреш с ${new Date(openAt - PRE_WINDOW_MS).toLocaleTimeString()}`);
-    c.renderOverlay({ countdownTo: openAt, timerSince: undefined });
-    c.timer(Math.min(openAt - PRE_WINDOW_MS - now, 3_600_000), () => c.rerun('phase:pre'));
-    return;
-  }
-  if (!open && Number.isFinite(openAt) && now < grace) {
-    c.renderOverlay({ countdownTo: openAt });
-    if (c.role === 'watcher') {
-      c.setState('WATCHING', 'опрос fulfillment-messages, без рефреша');
-      c.timer(grace - now, () => c.rerun('phase:grace'));
+  const sinceOpenAt = Number.isFinite(openAt) ? now - openAt : 0;
+
+  if (watcherHolds(c)) {
+    // refresh: ждём до openAt+grace, потом рефрешим как все; hold: до holdFallbackSec после openAt
+    const until = Number.isFinite(openAt) ? openAt + (strategy === 'hold' ? c.t.holdFallbackSec : c.t.graceSec) * 1000 : Infinity;
+    if (now < until) {
+      c.setState('WATCHING', `${strategy === 'hold' ? 'hold: ' : ''}опрос fulfillment-messages, без рефреша`);
+      c.renderOverlay({ countdownTo: now < openAt ? openAt : undefined, timerSince: undefined });
+      c.timer(Math.min(until - now, 3_600_000), () => c.rerun('phase:watch'));
       return;
     }
-    c.setState('PRE_RELOAD', `рефреш ~${c.t.preOpenReloadMs} мс`);
-    c.scheduleReload(Math.max(c.jit(c.t.preOpenReloadMs), min), 'pre-open');
+    if (strategy === 'hold') holdFallback(c, 'OPEN');
+  }
+
+  const plan = waitPlan(c.ts.holdFallback ? 'refresh' : strategy, phase, 'preorder', { opened, sinceOpenAt }, c.t);
+  if (plan.fallback) holdFallback(c, 'OPEN');
+  if (plan.reload === null) {
+    // ARMED до openAt−60 с (любая стратегия) или hold до openAt+holdFallbackSec
+    const next = phase === 'armed' ? openAt - PRE_WINDOW_MS : phase === 'pre' ? openAt : openAt + c.t.holdFallbackSec * 1000;
+    const label = phase === 'armed'
+      ? `рефреш с ${new Date(openAt - PRE_WINDOW_MS).toLocaleTimeString()}`
+      : plan.reason;
+    c.setState(phase === 'armed' ? 'ARMED' : 'HOLD', label);
+    c.renderOverlay({ countdownTo: now < openAt ? openAt : undefined, timerSince: undefined });
+    c.timer(Math.min(Math.max(next - now, 500), 3_600_000), () => c.rerun(`phase:${phase}`));
     return;
   }
-  c.renderOverlay({ countdownTo: undefined, timerSince: c.os.openedAt, timerLabel: 'OPEN' });
-  c.setState('FAST_RELOAD', open ? 'продажи открыты — ждём активную Add to Bag' : 'сигнала OPEN нет после openAt+grace');
-  c.scheduleReload(Math.max(c.jit(c.t.postOpenReloadMs), min), 'post-open');
+  if (phase === 'post' || opened) {
+    c.renderOverlay({ countdownTo: undefined, timerSince: c.os.openedAt, timerLabel: 'OPEN' });
+    c.setState('FAST_RELOAD', opened ? 'продажи открыты — ждём активную Add to Bag' : 'сигнала OPEN нет после openAt — рефреш');
+    c.scheduleReload(Math.max(c.jit(plan.reload), min), 'post-open');
+    return;
+  }
+  c.renderOverlay({ countdownTo: openAt });
+  c.setState('PRE_RELOAD', `рефреш ~${plan.reload} мс`);
+  c.scheduleReload(Math.max(c.jit(plan.reload), min), 'pre-open');
 }
 
 /** Сигнал OPEN от SW: первый рефреш со случайной задержкой 0–500 мс (§7.2). */
 export function onOpen(c: Ctl): void {
   if (c.ts.mode !== 'race') return;
-  if (!['ARMED', 'PRE_RELOAD', 'WATCHING', 'FAST_RELOAD', 'INIT', 'CLOSED', 'BUSY'].includes(c.ts.state)) return;
+  if (!WAITING_STATES.includes(c.ts.state)) return;
   const want = partUrl(c.base, c.target());
   const samePage = new URL(want).pathname.toLowerCase() === location.pathname.replace(/\/$/, '').toLowerCase();
   // страница загрузилась уже после OPEN (сообщение пришло с задержкой, после реконнекта) — не тратить рефреш
@@ -99,10 +129,9 @@ export function ensureWatcher(c: Ctl): void {
   }
 }
 
+/** Опрос только своих целей: чужие профили за свои сессии отвечают сами (FLEET-SPEC §3). */
 function pollJson(c: Ctl) {
-  const own = c.order?.targets ?? [];
-  const targets = [...new Set([...own, ...(c.os.watchTargets ?? [])])];
-  return pollFm(c.base, targets, c.order?.stores ?? []);
+  return pollFm(c.base, c.order?.targets ?? [], c.order?.stores ?? []);
 }
 
 /**

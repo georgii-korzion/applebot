@@ -7,7 +7,7 @@ import { waitEl, waitEnabled } from '../find';
 export async function guestStep(c: Ctl): Promise<void> {
   const sig = c.signal;
   c.setState('GUEST', 'Continue as Guest');
-  const first = await waitEl('guest', 12000, sig);
+  const first = await waitEl('guest', c.t.checkoutPageWaitMs, sig);
   if (!first) {
     const n = ++c.ts.checkoutRetries;
     if (n > c.cfg.retries.checkout) {

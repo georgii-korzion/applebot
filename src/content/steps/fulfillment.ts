@@ -16,7 +16,7 @@ export async function fulfillmentStep(c: Ctl): Promise<void> {
   const sig = c.signal;
   const o = c.order!;
   c.setState('FULFILLMENT', 'самовывоз');
-  await waitUntil(() => (qa(SEL.segmented).length || findSelect('city') || findEl('storeRadioAny') ? true : null), 12000, sig);
+  await waitUntil(() => (qa(SEL.segmented).length || findSelect('city') || findEl('storeRadioAny') ? true : null), c.t.checkoutPageWaitMs, sig);
 
   // 1. «I'll pick it up»
   const pick = qa<HTMLButtonElement>(SEL.segmented).find((b) => SEL.txtPickup.test(textOf(b)));
@@ -31,7 +31,7 @@ export async function fulfillmentStep(c: Ctl): Promise<void> {
   else c.log('нет select города — пропускаю', 'warn');
 
   // 3. список магазинов
-  const listed = await waitUntil(() => (storeRadios().length ? true : null), 10000, sig);
+  const listed = await waitUntil(() => (storeRadios().length ? true : null), c.t.checkoutPageWaitMs, sig);
   if (!listed) c.log('список магазинов не появился за 10 с', 'warn');
 
   // 4. магазины по порядку
@@ -181,7 +181,7 @@ async function deliveryFallback(c: Ctl): Promise<void> {
   c.alert(`Заказ ${c.order?.id}: доставка`, 'Самовывоза нет — оформляю доставку');
   const del = qa<HTMLButtonElement>(SEL.segmented).find((b) => SEL.txtDelivered.test(textOf(b)));
   if (del && !del.classList.contains(SEL.segmentedSelectedClass)) del.click();
-  const any = await waitEl('deliveryOption', 8000, sig);
+  const any = await waitEl('deliveryOption', c.t.checkoutPageWaitMs, sig);
   if (!any) { c.setState('STUCK', 'нет вариантов доставки'); return; }
   const groups = new Map<string, HTMLInputElement[]>();
   for (const r of findAll('deliveryOption').map((el) => resolveInput(el)).filter((x): x is HTMLInputElement => !!x)) {
@@ -197,14 +197,14 @@ async function deliveryFallback(c: Ctl): Promise<void> {
   const cont = await waitEnabled('fulfillmentContinue', 5000, sig);
   if (!cont) { c.setState('STUCK', 'Continue to Shipping Address не активна'); return; }
   clickEl(cont);
-  if (!(await waitForUrl(/_s=Shipping/i, 15000, sig))) c.setState('STUCK', 'не перешли на Shipping');
+  if (!(await waitForUrl(/_s=Shipping/i, c.t.continueWaitMs, sig))) c.setState('STUCK', 'не перешли на Shipping');
 }
 
 export async function shippingStep(c: Ctl): Promise<void> {
   const sig = c.signal;
   const o = c.order!;
   c.setState('SHIPPING', 'адрес доставки');
-  await waitUntil(() => findField('firstName'), 10000, sig);
+  await waitUntil(() => findField('firstName'), c.t.checkoutPageWaitMs, sig);
   const fields: [Key, string][] = [
     ['firstName', o.contact.firstName],
     ['lastName', o.contact.lastName],

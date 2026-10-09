@@ -34,12 +34,30 @@
       <div class="form">
         <label for="profileId">profileId</label><input id="profileId" placeholder="drop-1">
         <div class="hint">Уникален в каждом профиле Chrome. Хранится отдельно — импорт общего JSON его не перетирает.</div>
-        <label for="hubUrl">Хаб</label><input id="hubUrl" placeholder="ws://127.0.0.1:8765 (пусто — без хаба)">
+        <label for="hubUrl">Хаб</label><input id="hubUrl" placeholder="wss://hub.example.com/ws?token=… (пусто — без хаба)">
+        <div class="hint">Обычно задаётся адресом запуска клона <code>#drop=&lt;profileId&gt;&amp;hub=&lt;wss-url&gt;</code>; конфиг профиля расширение само берёт с хаба (GET /config/&lt;profileId&gt;).</div>
         <label for="openAt">openAt</label><input id="openAt" placeholder="2026-10-16T16:00:00+04:00">
         <label for="mode">Режим</label>
         <select id="mode"><option value="auto">auto — клики делает расширение</option><option value="assist">assist — критичные кнопки жмёт человек</option></select>
+        <label for="strategy">Стратегия ожидания</label>
+        <select id="strategy"><option value="refresh">refresh — перезагружать страницу по фазам</option><option value="hold">hold — не трогать страницу, ждать свой OPEN по JSON</option></select>
+        <div class="hint">hold: без рефреша до holdFallbackSec после openAt (300 с), потом как refresh. Меняется и из popup, и командой хаба.</div>
+        <label for="autoStart">autoStart</label><input id="autoStart" type="checkbox" style="justify-self:start">
+        <div class="hint">Start выполняется само при запуске Chrome — один раз на openAt. На серверах флота включено через fleet.json.</div>
         <label for="baseUrl">baseUrl</label><input id="baseUrl" placeholder="https://www.apple.com">
         <div class="hint">Для мок-сервера: http://127.0.0.1:4777 (нужна dev-сборка).</div>
+      </div>
+
+      <h2>Прокси профиля</h2>
+      <div class="form">
+        <label for="p_scheme">Схема</label>
+        <select id="p_scheme"><option value="http">http</option><option value="socks5">socks5</option></select>
+        <label for="p_host">Хост</label><input id="p_host" placeholder="пусто — напрямую" autocomplete="off">
+        <label for="p_port">Порт</label><input id="p_port" type="number" min="1" max="65535" autocomplete="off">
+        <label for="p_user">Логин</label><input id="p_user" autocomplete="off">
+        <label for="p_pass">Пароль</label><input id="p_pass" type="password" autocomplete="off">
+        <label for="p_bypass">Мимо прокси</label><input id="p_bypass" placeholder="пусто — хаб, Google, localhost" autocomplete="off">
+        <div class="hint">Ставится самим расширением (chrome.proxy) на весь профиль; хаб и служебные хосты Google идут напрямую. Пароль хранится в этом профиле и <b>не попадает</b> в экспорт JSON и логи. Проверка выходного IP — в popup («Проверить IP»).</div>
       </div>
 
       <h2>Заказ</h2>
@@ -52,7 +70,7 @@
         <label for="o_id">id</label><input id="o_id">
         <label for="o_priority">priority</label><input id="o_priority" type="number" min="1">
         <label for="o_profiles">profiles</label><input id="o_profiles" placeholder="drop-1, drop-2">
-        <div class="hint">Профили, которые ведут этот заказ (гонка между профилями — через хаб).</div>
+        <div class="hint">Профили, которые ведут этот заказ (имена вида nl1-p03; каждый покупает сам, хаб только наблюдает).</div>
         <label for="o_racers">вкладок в профиле</label><input id="o_racers" type="number" min="1" max="6">
         <label for="o_targets">targets</label><input id="o_targets" placeholder="MK254AH/A, MK244AH/A">
         <div class="hint">Парт-номера по приоритету. Список ниже.</div>
@@ -68,8 +86,12 @@
         <label for="o_apfb">Фолбэк Apple Pay</label>
         <select id="o_apfb"><option value="manual">manual</option><option value="">нет</option></select>
         <label for="o_cardfb">Фолбэк карты</label>
-        <select id="o_cardfb"><option value="applepay">applepay — поля карты не появились за 10 с → Apple Pay</option><option value="">нет — ждать и вводить карту самому</option></select>
-        <div class="hint">Блок карты у Apple подгружается с задержкой (30.09). Ожидание — <code>timing.cardWaitMs</code> в JSON справа (10 000 мс).</div>
+        <select id="o_cardfb"><option value="">нет — ждать поля карты и вводить самому</option><option value="applepay">applepay — поля карты не появились за cardWaitMs → Apple Pay</option></select>
+        <div class="hint">Блок карты у Apple подгружается с задержкой (30.09). Ожидание — <code>timing.cardWaitMs</code> в JSON справа (90 000 мс): каждые 5 с проверяется radio, каждые 15 с — строка в логе.</div>
+        <label for="o_apclick">Клик Apple Pay</label>
+        <select id="o_apclick"><option value="debugger">debugger — программный клик, затем настоящий через chrome.debugger</option><option value="dom">dom — только программный клик, дальше человек</option></select>
+        <label for="o_apretries">Повторы Apple Pay</label><input id="o_apretries" type="number" min="0" max="10">
+        <div class="hint">Лист с QR закрылся без номера заказа → ещё попытка через 5 с, столько раз. Расширение ничего не подтверждает — код сканирует человек.</div>
         <label for="o_first">Имя</label><input id="o_first">
         <label for="o_last">Фамилия</label><input id="o_last">
         <label for="o_email">Email</label><input id="o_email" type="email">

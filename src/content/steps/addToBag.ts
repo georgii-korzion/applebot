@@ -100,7 +100,7 @@ export async function atbResult(c: Ctl, page: PageInfo): Promise<boolean> {
     case 'atb-pending': {
       // 200 на URL с add-to-cart= — ничего не делать и не уходить, сайт сам перейдёт на step=attach
       c.setState('ATB_PENDING', 'запрос принят, ждём step=attach — не уходим');
-      c.timer(Math.max(15000 - elapsed, 3000), () => { void atbFail(c, 'ATB_TIMEOUT'); });
+      c.timer(Math.max(c.t.continueWaitMs - elapsed, 3000), () => { void atbFail(c, 'ATB_TIMEOUT'); });
       return true;
     }
     case 'product':

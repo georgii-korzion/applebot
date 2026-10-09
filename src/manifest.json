@@ -1,22 +1,45 @@
 {
   "manifest_version": 3,
   "name": "Apple Drop Assistant",
-  "version": "3.0.0",
-  "description": "Pre-order assistant for apple.com/ae: waits for the drop, adds to bag, walks guest checkout to payment. Payment is always done by a human.",
+  "version": "4.0.0",
+  "description": "Pre-order assistant for apple.com/ae: waits for the drop, adds to bag, walks guest checkout to payment; per-profile proxy and hub telemetry for a fleet of profiles. Payment is always confirmed by a human.",
   "minimum_chrome_version": "120",
-  "permissions": ["storage", "tabs", "notifications", "offscreen", "webRequest", "alarms"],
+  "permissions": [
+    "storage",
+    "tabs",
+    "notifications",
+    "offscreen",
+    "webRequest",
+    "webRequestAuthProvider",
+    "alarms",
+    "proxy",
+    "debugger"
+  ],
   "host_permissions": [
     "https://www.apple.com/ae/*",
     "https://*.store.apple.com/*",
-    "http://127.0.0.1/*"
+    "http://127.0.0.1/*",
+    "<all_urls>"
   ],
-  "background": { "service_worker": "sw.js", "type": "module" },
-  "content_scripts": [{
-    "matches": ["https://www.apple.com/ae/*", "https://*.store.apple.com/ae/*"],
-    "js": ["content.js"],
-    "run_at": "document_idle",
-    "all_frames": false
-  }],
-  "action": { "default_popup": "popup.html" },
+  "background": {
+    "service_worker": "sw.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.apple.com/ae/*",
+        "https://*.store.apple.com/ae/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
   "options_page": "options.html"
 }

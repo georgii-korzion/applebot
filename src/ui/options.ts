@@ -23,6 +23,8 @@ function orderToForm(o: OrderCfg): void {
   $<HTMLSelectElement>('o_payment').value = o.payment;
   $<HTMLSelectElement>('o_apfb').value = o.applePayFallback ?? '';
   $<HTMLSelectElement>('o_cardfb').value = o.cardFallback ?? '';
+  $<HTMLSelectElement>('o_apclick').value = o.applePayClick;
+  $('o_apretries').value = String(o.applePayRetries);
   $('o_first').value = o.contact.firstName;
   $('o_last').value = o.contact.lastName;
   $('o_email').value = o.contact.email;
@@ -58,6 +60,8 @@ function formToOrder(o: OrderCfg): void {
   o.payment = $<HTMLSelectElement>('o_payment').value === 'manual' ? 'manual' : 'applepay';
   o.applePayFallback = $<HTMLSelectElement>('o_apfb').value === 'manual' ? 'manual' : null;
   o.cardFallback = $<HTMLSelectElement>('o_cardfb').value === 'applepay' ? 'applepay' : null;
+  o.applePayClick = $<HTMLSelectElement>('o_apclick').value === 'dom' ? 'dom' : 'debugger';
+  o.applePayRetries = Math.max(0, Math.min(10, Math.round(Number($('o_apretries').value) || 0)));
   o.contact = { firstName: $('o_first').value.trim(), lastName: $('o_last').value.trim(), email: $('o_email').value.trim(), phone: $('o_phone').value.replace(/[\s-]/g, '') };
   o.card = { number: $('o_cardnum').value.replace(/[\s-]/g, ''), expiry: $('o_cardexp').value.trim(), cvv: $('o_cardcvv').value.trim(), name: $('o_cardname').value.trim() };
   o.billing = { title: $('o_btitle').value.trim(), firstName: $('o_bfirst').value.trim(), lastName: $('o_blast').value.trim(), street: $('o_bstreet').value.trim(), area: $('o_barea').value.trim(), town: $('o_btown').value.trim(), city: $<HTMLSelectElement>('o_bcity').value || 'Dubai' };
@@ -72,7 +76,16 @@ function render(): void {
   $('hubUrl').value = cfg.hubUrl;
   $('openAt').value = cfg.openAt;
   $<HTMLSelectElement>('mode').value = cfg.mode;
+  $<HTMLSelectElement>('strategy').value = cfg.strategy;
+  $('autoStart').checked = cfg.autoStart;
   $('baseUrl').value = cfg.baseUrl;
+  const px = cfg.proxy;
+  $<HTMLSelectElement>('p_scheme').value = px?.scheme ?? 'http';
+  $('p_host').value = px?.host ?? '';
+  $('p_port').value = px?.port ? String(px.port) : '';
+  $('p_user').value = px?.username ?? '';
+  $('p_pass').value = px?.password ?? '';
+  $('p_bypass').value = px?.bypass?.join(', ') ?? '';
   const sel = $<HTMLSelectElement>('orderSel');
   sel.textContent = '';
   cfg.orders.forEach((o, i) => {
@@ -92,13 +105,30 @@ function readForm(): void {
   cfg.hubUrl = $('hubUrl').value.trim();
   cfg.openAt = $('openAt').value.trim();
   cfg.mode = $<HTMLSelectElement>('mode').value === 'assist' ? 'assist' : 'auto';
+  cfg.strategy = $<HTMLSelectElement>('strategy').value === 'hold' ? 'hold' : 'refresh';
+  cfg.autoStart = $('autoStart').checked;
   cfg.baseUrl = $('baseUrl').value.trim().replace(/\/$/, '');
+  const host = $('p_host').value.trim();
+  cfg.proxy = host ? {
+    scheme: $<HTMLSelectElement>('p_scheme').value === 'socks5' ? 'socks5' : 'http',
+    host, port: Number($('p_port').value) || 0,
+    ...($('p_user').value.trim() ? { username: $('p_user').value.trim() } : {}),
+    ...($('p_pass').value ? { password: $('p_pass').value } : {}),
+    ...(list($('p_bypass').value).length ? { bypass: list($('p_bypass').value) } : {}),
+  } : null;
   if (cfg.orders[cur]) formToOrder(cfg.orders[cur]);
 }
 
 function syncJson(): void {
   if (document.activeElement === $('json')) return;
   $<HTMLTextAreaElement>('json').value = JSON.stringify(cfg, null, 2);
+}
+
+/** Копия конфига без пароля прокси — для экспорта (пароль остаётся только в этом профиле Chrome). */
+function exportable(c: Config): Config {
+  if (!c.proxy?.password) return c;
+  const { password: _p, ...proxy } = c.proxy;
+  return { ...c, proxy: proxy as Config['proxy'] };
 }
 
 function show(text: string, cls: 'ok' | 'err' | 'warn'): void {
@@ -109,9 +139,10 @@ function show(text: string, cls: 'ok' | 'err' | 'warn'): void {
 }
 
 async function load(): Promise<void> {
-  const s = await chrome.storage.local.get([K.config, K.profileId]);
+  const s = await chrome.storage.local.get([K.config, K.profileId, K.hubUrl]);
   cfg = normalizeConfig(s[K.config] ?? defaultConfig());
   if (s[K.profileId]) cfg.profileId = String(s[K.profileId]);
+  if (typeof s[K.hubUrl] === 'string') cfg.hubUrl = String(s[K.hubUrl]);
   cur = Math.max(0, cfg.orders.findIndex((o) => o.profiles.includes(cfg.profileId)));
   render();
 }
@@ -125,7 +156,8 @@ async function save(): Promise<void> {
     show(`Не сохранено. Ошибки:\n• ${v.errors.join('\n• ')}${v.warnings.length ? `\n\nПредупреждения:\n• ${v.warnings.join('\n• ')}` : ''}`, 'err');
     return;
   }
-  await chrome.storage.local.set({ [K.config]: cfg, [K.profileId]: cfg.profileId });
+  // profileId и hubUrl — отдельными ключами: они задаются адресом запуска (#drop=…&hub=…) и переживают импорт общего JSON
+  await chrome.storage.local.set({ [K.config]: cfg, [K.profileId]: cfg.profileId, [K.hubUrl]: cfg.hubUrl });
   await chrome.storage.local.remove(K.modeOverride);
   show(`Сохранено ✓ ${new Date().toLocaleTimeString()}${v.warnings.length ? `\n• ${v.warnings.join('\n• ')}` : ''}`, v.warnings.length ? 'warn' : 'ok');
 }
@@ -187,7 +219,9 @@ $('reset').onclick = () => {
 $('save').onclick = () => void save();
 $('export').onclick = () => {
   readForm();
-  const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' });
+  const hasCard = cfg.orders.some((o) => o.card.number);
+  if (hasCard && !confirm('В экспорт попадут данные карты открытым текстом (пароль прокси не попадёт). Продолжить?')) return;
+  const blob = new Blob([JSON.stringify(exportable(cfg), null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `apple-drop-config-${cfg.profileId}.json`;

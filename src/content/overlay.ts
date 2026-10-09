@@ -6,12 +6,16 @@ export interface OverlayData {
   state: string;
   detail?: string;
   role?: string;
+  /** refresh / hold (FLEET-SPEC §4). */
+  strategy?: string;
   reloads: number;
   atb404: number;
   timerLabel?: string;
   timerSince?: number;   // epoch ms — «N с назад»
   countdownTo?: number;  // epoch ms — «через N с»
   paused?: boolean;
+  /** Подсказка (например, OPEN_SEEN от хаба) — отдельной строкой под счётчиками. */
+  note?: string;
 }
 
 const CSS = `
@@ -98,9 +102,9 @@ export class Overlay {
       p.append(b);
       return;
     }
-    const head = row(`${d.profile || '—'} · заказ ${d.order || '—'}`, d.role ?? '');
+    const head = row(`${d.profile || '—'} · заказ ${d.order || '—'}`, [d.role, d.strategy].filter(Boolean).join(' · '));
     const st = document.createElement('div');
-    st.className = 'state' + (/STUCK|TIMEOUT|ERROR/.test(d.state) ? ' err' : /ASSIST|PAUSE|STANDBY|COUNTRY|CLOSED|BUSY|QUEUE|NEED_HUMAN/.test(d.state) ? ' warn' : '');
+    st.className = 'state' + (/STUCK|TIMEOUT|ERROR/.test(d.state) ? ' err' : /ASSIST|PAUSE|HOLD|COUNTRY|CLOSED|BUSY|QUEUE|NEED_HUMAN/.test(d.state) ? ' warn' : '');
     st.textContent = d.paused ? `⏸ ${d.state}` : d.state;
     const det = document.createElement('div');
     det.className = 'detail';
@@ -119,7 +123,14 @@ export class Overlay {
     hide.textContent = 'Скрыть';
     hide.onclick = () => { this.minimized = true; this.onHide(true); this.render(); };
     btns.append(pause, hide);
-    p.append(head, st, det, counters, btns);
+    p.append(head, st, det, counters);
+    if (d.note) {
+      const n = document.createElement('div');
+      n.className = 'muted';
+      n.textContent = d.note;
+      p.append(n);
+    }
+    p.append(btns);
   }
 }
 

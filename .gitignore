@@ -7,3 +7,10 @@ test/.artifacts/
 *.log
 .DS_Store
 out/
+# флот: реальные адреса/пароли прокси и токены — только локально
+fleet.json
+fleet/fleet.json
+hub/runtime/
+runtime/
+dist.zip
+test/.hub/

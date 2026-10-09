@@ -1,17 +1,24 @@
-// Popup (§7.9): статус профиля, вкладки, Start/Stop/Prepare/Clean bag/Следующий/Ассистент/Экспорт лога.
-import type { Cmd, OrderRecord, OrderState, TabRow } from '../shared/messages';
+// Popup (§7.9, FLEET-SPEC §5.3): статус профиля, стратегия, IP, конфиг с хаба, вкладки, Start/Stop/Prepare/Clean bag/Экспорт.
+import type { Cmd, Egress, OrderRecord, OrderState, TabRow } from '../shared/messages';
+import type { CfgMeta, Strategy } from '../shared/config';
 
 interface Status {
   ok: boolean;
   profileId: string;
+  server: string;
   mode: 'auto' | 'assist';
+  strategy: Strategy;
+  autoStart: boolean;
   openAt: string;
   baseUrl: string;
   mock: boolean;
   order: { id: string; targets: string[]; stores: string[]; payment: string; racers: number } | null;
   os: OrderState;
   tabs: TabRow[];
-  hub: { url: string; connected: boolean; watcher: string | null };
+  hub: { url: string; connected: boolean };
+  cfg: { version: number; hash: string; meta: CfgMeta | null; pending?: number };
+  proxy: { label: string } | null;
+  egress: Egress | null;
   payQueue: { tabId: number; orderId: string }[];
   payActive: number | null;
   prepared: { ok: boolean; detail: string; at: number } | null;
@@ -49,30 +56,35 @@ function until(iso: string): string {
 }
 
 let lastLog = '';
+let cur: Status | null = null;
 
 function render(st: Status): void {
-  $('who').textContent = `профиль ${st.profileId} · заказ ${st.order?.id ?? '— (не назначен)'}`;
+  cur = st;
+  $('who').textContent = `профиль ${st.profileId || '— (нет имени)'} · сервер ${st.server || '—'} · заказ ${st.order?.id ?? '— (не назначен)'}`;
   const mode = $('mode');
   mode.textContent = st.mode;
   mode.className = `badge ${st.mode === 'assist' ? 'warn' : 'ok'}`;
   $('assist').textContent = st.mode === 'assist' ? 'Ассистент: выкл' : 'Ассистент: вкл';
   const hub = $('hub');
-  hub.textContent = st.hub.url ? `hub ${st.hub.connected ? '●' : '○'}${st.hub.watcher ? ` · watcher ${st.hub.watcher}` : ''}` : 'без хаба';
+  hub.textContent = st.hub.url ? `хаб ${st.hub.connected ? '✓' : '✗'}` : 'без хаба';
+  hub.title = st.hub.url;
   hub.className = `badge ${st.hub.url ? (st.hub.connected ? 'ok' : 'err') : ''}`;
+  $('strategy').textContent = `Стратегия: ${st.strategy}${st.os.armed ? ' (сменится сразу)' : ''}`;
 
   const sum = $('summary');
   sum.textContent = '';
   const kv = (k: string, v: string, cls = '') => { sum.append(el('span', k, 'muted'), el('span', v, cls)); };
   const os = st.os;
   kv('сайт', st.mock ? `${st.baseUrl} — МОК, не Apple! (Настройки → baseUrl)` : st.baseUrl, st.mock ? 'warn' : '');
-  kv('старт', until(st.openAt));
+  kv('старт', `${until(st.openAt)}${st.autoStart ? ' · autoStart' : ''}`);
   kv('статус', os.armed ? (os.openedAt ? `OPEN ${ago(os.openedAt)} (${os.openSource ?? ''})` : 'взведён, ждём OPEN') : 'не запущен', os.openedAt ? 'ok' : '');
+  if (os.fleetOpen && !os.openedAt) kv('флот', `${os.fleetOpen.profile} уже пустили ${ago(os.fleetOpen.at)} — ждём свой OPEN`, 'warn');
   if (st.order) {
     kv('цели', st.order.targets.join(', '));
     kv('магазины', `${st.order.stores.join(', ')} · оплата ${st.order.payment}`);
   }
   if (os.activeTarget) kv('активная цель', os.activeTarget);
-  if (os.stage || os.inBagVerified) kv('заказ', `${os.stage ?? 'IN_BAG'}${os.decision ? ` · ${os.decision}` : ''}${os.winnerTabId ? ` · вкладка ${os.winnerTabId}` : ''}`);
+  if (os.stage || os.inBagVerified) kv('заказ', `${os.stage ?? 'IN_BAG'}${os.winnerTabId ? ` · вкладка ${os.winnerTabId}` : ''}`);
   if (os.slotLabel) kv('слот', `${os.store ?? ''} · ${os.slotLabel}${os.billingReadyAt ? ` · выбран ${ago(os.billingReadyAt)}` : ''}`);
   if (os.orderNo) kv('номер', os.orderNo, 'ok');
   if (os.storeClosedSince) kv('Apple Store', `закрыт с ${new Date(os.storeClosedSince).toLocaleTimeString()} — вкладки обновляются, пока не пустит`, 'warn');
@@ -81,8 +93,13 @@ function render(st: Status): void {
     const w = Object.entries(os.watch).map(([p, s]) => `${p}: ${s.isBuyable ? 'BUYABLE' : s.reason ?? '?'}`).join(' · ');
     kv('наблюдатель', `${w}${os.watchAt ? ` · ${ago(os.watchAt)}` : ''}${os.watchSource === 'sw' ? ' · страховочный опрос из SW' : ''}`);
   }
+  const eg = st.egress;
+  const egText = !eg ? 'не проверялся' : eg.error ? `ошибка: ${eg.error} (${ago(eg.at)})` : `${eg.ip ?? '?'} · ${eg.country ?? '?'} · ${ago(eg.at)}`;
+  kv('IP · страна', `${egText}${st.proxy ? ` · прокси ${st.proxy.label}` : ' · без прокси'}`, !eg ? 'warn' : eg.error || (eg.country && eg.country !== 'AE') ? 'err' : 'ok');
+  const cm = st.cfg.meta;
+  kv('конфиг', st.cfg.version ? `v${st.cfg.version}${cm ? ` · ${cm.source} · ${ago(cm.receivedAt)}` : ''}${st.cfg.pending ? ` · на хабе уже v${st.cfg.pending}, применится после Stop/Start` : ''}` : 'локальный (не с хаба)', st.cfg.pending ? 'warn' : '');
   kv('Prepare', st.prepared ? `${st.prepared.ok ? '✓' : '✗'} ${ago(st.prepared.at)} — ${st.prepared.detail}` : 'не выполнялся', st.prepared ? (st.prepared.ok ? 'ok' : 'err') : 'warn');
-  if (st.payQueue.length || st.payActive) kv('очередь оплаты', `${st.payActive ? `сейчас вкладка ${st.payActive}` : '—'}${st.payQueue.length ? ` · ждут ${st.payQueue.map((p) => p.tabId).join(', ')}` : ''}`);
+  if (st.payQueue.length || st.payActive) kv('оплата', `${st.payActive ? `сейчас вкладка ${st.payActive}` : '—'}${st.payQueue.length ? ` · ждут ${st.payQueue.map((p) => p.tabId).join(', ')}` : ''}`);
 
   const v = $('validation');
   v.textContent = '';
@@ -94,7 +111,7 @@ function render(st: Status): void {
   for (const t of st.tabs) {
     const tr = el('tr', undefined, 'click');
     tr.title = `${t.url ?? ''}\n${t.detail ?? ''}`;
-    const stCls = /STUCK|TIMEOUT|ERROR/.test(t.state) ? 'err' : /ASSIST|STANDBY|COUNTRY|BUSY|CLOSED|QUEUE|NEED_HUMAN/.test(t.state) ? 'warn' : /BILLING|PAY|ORDERED|IN_BAG/.test(t.state) ? 'ok' : '';
+    const stCls = /STUCK|TIMEOUT|ERROR/.test(t.state) ? 'err' : /ASSIST|HOLD|COUNTRY|BUSY|CLOSED|QUEUE|NEED_HUMAN/.test(t.state) ? 'warn' : /BILLING|PAY|ORDERED|IN_BAG/.test(t.state) ? 'ok' : '';
     tr.append(
       el('td', String(t.tabId) + (t.tabId === st.os.winnerTabId ? ' ★' : '')),
       el('td', t.role === 'idle' ? t.mode : t.role),
@@ -160,11 +177,26 @@ function result(r: { ok?: boolean; error?: string; warnings?: string[] } | undef
   box.textContent = r.ok ? `${okText}${r.warnings?.length ? `\n• ${r.warnings.join('\n• ')}` : ''}` : `Ошибка: ${r.error}`;
 }
 
-$('start').onclick = async () => result(await send({ cmd: 'start' }), 'Запущено: вкладки открыты и взведены');
+$('start').onclick = async () => result(await send({ cmd: 'start', source: 'popup' }), 'Запущено: вкладки открыты и взведены');
 $('stop').onclick = async () => result(await send({ cmd: 'stop' }), 'Остановлено');
 $('prepare').onclick = async () => result(await send({ cmd: 'prepare' }), 'Prepare: открыта вкладка прогрева');
 $('clean').onclick = async () => result(await send({ cmd: 'cleanBag' }), 'Clean bag: открыта корзина');
-$('next').onclick = async () => result(await send({ cmd: 'nextPay' }), 'Следующий на оплату');
+$('strategy').onclick = async () => {
+  const next: Strategy = cur?.strategy === 'hold' ? 'refresh' : 'hold';
+  result(await send({ cmd: 'setStrategy', strategy: next }), `Стратегия: ${next}`);
+  void refresh();
+};
+$('checkIp').onclick = async () => {
+  const r = await send<{ ok: boolean; egress?: Egress; error?: string }>({ cmd: 'checkIp' });
+  const e = r?.egress;
+  result(r, e?.error ? `IP не проверен: ${e.error}` : `IP ${e?.ip ?? '?'} · ${e?.country ?? '?'}${e?.country && e.country !== 'AE' ? ' — НЕ ОАЭ!' : ''}`);
+  void refresh();
+};
+$('fetchConfig').onclick = async () => {
+  const r = await send<{ ok: boolean; version?: number; error?: string }>({ cmd: 'fetchConfig' });
+  result(r, r?.version ? `Конфиг с хаба: v${r.version}` : 'Конфиг с хаба получен');
+  void refresh();
+};
 $('assist').onclick = async () => result(await send({ cmd: 'toggleAssist' }), 'Режим переключён');
 $('clearlog').onclick = async () => result(await send({ cmd: 'clearLog' }), 'Лог очищен');
 $('options').onclick = () => void chrome.runtime.openOptionsPage();

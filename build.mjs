@@ -3,6 +3,7 @@
 //   node build.mjs --dev      → dist-dev/
 //   node build.mjs --dev --watch
 //   node build.mjs --unit     → dist-test/ (юнит-тесты для node --test)
+//   node build.mjs --hub      → hub/lib/shared.mjs (общий код конфига для хаба; коммитится)
 import * as esbuild from 'esbuild';
 import { mkdirSync, readFileSync, writeFileSync, copyFileSync, rmSync, existsSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
@@ -14,6 +15,22 @@ const args = new Set(process.argv.slice(2));
 const dev = args.has('--dev');
 const watch = args.has('--watch');
 const MOCK_ORIGIN = 'http://127.0.0.1:4777';
+
+if (args.has('--hub')) {
+  const out = join(root, 'hub/lib');
+  mkdirSync(out, { recursive: true });
+  await esbuild.build({
+    entryPoints: [join(root, 'src/shared/hub-entry.ts')],
+    outfile: join(out, 'shared.mjs'),
+    bundle: true, platform: 'node', format: 'esm', target: 'node20',
+    // __DEV__ решается при запуске хаба: HUB_ALLOW_MOCK=1 разрешает baseUrl мока (только для e2e-тестов).
+    define: { __DEV__: 'process.env.HUB_ALLOW_MOCK', __DEFAULT_BASE_URL__: JSON.stringify('https://www.apple.com') },
+    banner: { js: '// Сгенерировано `node build.mjs --hub` из src/shared/*.ts — не править руками.' },
+    logLevel: 'warning',
+  });
+  console.log(`built → ${join(out, 'shared.mjs')}`);
+  process.exit(0);
+}
 
 if (args.has('--unit')) {
   const out = join(root, 'dist-test');

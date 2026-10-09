@@ -1,19 +1,21 @@
 {
   "name": "apple-drop-assistant",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "private": true,
   "description": "Chrome MV3 extension: pre-order assistant for apple.com/ae (stops before payment)",
   "type": "module",
   "scripts": {
-    "build": "node build.mjs",
+    "build": "node build.mjs && node build.mjs --hub",
     "build:dev": "node build.mjs --dev",
     "watch": "node build.mjs --dev --watch",
     "typecheck": "tsc --noEmit",
     "hub": "node hub/server.mjs",
     "mock": "node test/mock-server.mjs",
-    "test": "node build.mjs --unit && node --test dist-test/unit.test.mjs",
+    "test": "node build.mjs --hub && node build.mjs --unit && node --test dist-test/unit.test.mjs test/hub.test.mjs",
     "test:e2e": "node build.mjs --dev && node test/e2e.mjs",
-    "pack": "bash scripts/pack.sh"
+    "pack": "node build.mjs && node build.mjs --hub && node scripts/pack.mjs",
+    "build:hub": "node build.mjs --hub",
+    "pack:setup": "bash scripts/pack.sh"
   },
   "engines": {
     "node": ">=20"
