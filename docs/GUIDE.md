@@ -445,6 +445,8 @@ npm run pack          # dist.zip — боевая сборка для серве
 npm run pack:setup    # out/apple-drop-test-setup.zip — расширение + extension-dev + мок + README тестов (ручные тесты на Mac)
 ```
 
+Результат — `out/apple-drop-test-setup.zip`. Внутри папка `apple-drop-test-setup`: в корне боевая сборка (её и выбирать в Chrome), `extension-dev/`, `live/`, `mock/` (конфиг, `run-mock.command` / `run-mock.bat`, `mock-server.mjs`), `hub/` (хаб одним файлом `hub.cjs` со всеми зависимостями, `run-hub.command` / `run-hub.bat`), README тестов, `КАК-УСТАНОВИТЬ.txt`, INSTALL, FEATURES, GUIDE, RESEARCH.
+
 ## 2.13 Git
 
 - Репозиторий `georgii-korzion/applebot`; ветка флота — `claude/project-thread-9714u4` (от `claude/modest-goldberg-8ufyyx`).
