@@ -136,8 +136,12 @@ Dev-сборку ставить только в отдельный профил�
 
 ## 1.6 Хаб
 
+Из архива (нужен только Node.js 20+): двойной клик `hub/run-hub.command` на Mac или `hub/run-hub.bat` на Windows, окно не закрывать.
+
+Из исходников:
+
 ```
-npm i          # один раз, в папке исходников
+npm i          # один раз
 npm run hub    # держать Терминал открытым
 ```
 
@@ -444,7 +448,7 @@ scenarios['my-case'] = async () => {
 npm run pack
 ```
 
-Результат — `out/apple-drop-test-setup.zip`. Внутри папка `apple-drop-test-setup`: в корне боевая сборка (её и выбирать в Chrome), `extension-dev/`, `live/`, `mock/` (конфиг, `run-mock.command`, `mock-server.mjs`), README тестов, `КАК-УСТАНОВИТЬ.txt`, FEATURES, GUIDE, RESEARCH.
+Результат — `out/apple-drop-test-setup.zip`. Внутри папка `apple-drop-test-setup`: в корне боевая сборка (её и выбирать в Chrome), `extension-dev/`, `live/`, `mock/` (конфиг, `run-mock.command` / `run-mock.bat`, `mock-server.mjs`), `hub/` (хаб одним файлом `hub.cjs` со всеми зависимостями, `run-hub.command` / `run-hub.bat`), README тестов, `КАК-УСТАНОВИТЬ.txt`, INSTALL, FEATURES, GUIDE, RESEARCH.
 
 ## 2.13 Git
 
