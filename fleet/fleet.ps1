@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Флот профилей Chrome на Windows-сервере (FLEET-SPEC §5). PowerShell 5+, без зависимостей.
 

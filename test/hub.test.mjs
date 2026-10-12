@@ -175,3 +175,12 @@ test('fleet-from-csv: понятные ошибки — дубль профил�
   const { warnings } = fleetFromRows([['profile'], ['s1-p01']], base);
   assert.ok(warnings.some((w) => /нет колонок контакта/.test(w)));
 });
+
+// ---- fleet.ps1 для Windows PowerShell 5.1 ----
+import { readFileSync } from 'node:fs';
+
+test('fleet.ps1: начинается с UTF-8 BOM (Windows PowerShell 5.1 без BOM читает файл в ANSI, кириллица и «—» ломают разбор)', () => {
+  const b = readFileSync(new URL('../fleet/fleet.ps1', import.meta.url));
+  assert.deepEqual([...b.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+  assert.equal(b.indexOf(Buffer.from([0xef, 0xbb, 0xbf]), 3), -1, 'BOM только в начале');
+});
