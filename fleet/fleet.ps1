@@ -156,7 +156,8 @@ function Launch-Url($cfg, $p) {
 function Window-Slots($n) {
   Add-Type -AssemblyName System.Windows.Forms
   $screens = [System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.Bounds.X }
-  if (-not $screens) { return @(1..$n | ForEach-Object { @{ x = 0; y = 0; w = 1280; h = 900 } }) }
+  # «,» перед массивом: иначе PowerShell разворачивает массив из одного элемента и для одного окна $slots[0] пуст
+  if (-not $screens) { return ,@(1..$n | ForEach-Object { @{ x = 0; y = 0; w = 1280; h = 900 } }) }
   $perScreen = [math]::Ceiling($n / $screens.Count)
   $cols = [math]::Max(1, [math]::Min($Cols, $perScreen))
   $rows = [math]::Max(1, [math]::Ceiling($perScreen / $cols))
@@ -171,7 +172,7 @@ function Window-Slots($n) {
       }
     }
   }
-  return $slots
+  return ,$slots
 }
 
 function Start-Profile($cfg, $p, $slot) {
