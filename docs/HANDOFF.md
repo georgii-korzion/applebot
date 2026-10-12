@@ -133,10 +133,14 @@ GET https://www.apple.com/ae/shop/fulfillment-messages
 
 - До 3 партов в запросе (`parts.0..2`).
 - Запрос из страницы apple.com — same-origin, с cookie.
-- Открыто, если `body.content.deliveryMessage["<PART>"].compact.buyability.isBuyable === true` (или в `regular`).
+- Открыто (`openSignal`, с 12.10): `pickup` (по умолчанию) — `pickupDisplay === "available"` хотя бы в одном магазине заказа;
+  `delivery` — `body.content.deliveryMessage["<PART>"].compact.buyability.isBuyable === true` (или в `regular`); `any` — любое.
 - Самовывоз: `body.content.pickupMessage.stores[].partsAvailability["<PART>"].pickupDisplay` = `available` / `unavailable` / `ineligible`.
+- Фазы (12.10, товар продавался за 4 дня до дропа квоты самовывоза): до `openAt − 60 с` OPEN не объявляется и активная Add to Bag
+  не нажимается; в последнюю минуту OPEN только по фронту сигнала; после `openAt` — пока сигнал есть. Опрос до `openAt − 60 с` раз в
+  `armedPollMs` (20 с). На `HTTP 541` (IP не пускают) — повторы 5→30 с и подсказка сменить прокси.
 - Опрос раз в ~1,2 с ±30 %, не чаще раза в секунду.
-- Запасной сигнал: в HTML страницы товара появилась `data-autom="add-to-cart"`, пропала `data-autom="continueButton"` и строка `Pre-order starting` (проверяется реже: раз в ~30 с задолго до старта, раз в ~6 с в последнюю минуту).
+- Запасной сигнал: в HTML страницы товара появилась `data-autom="add-to-cart"`, пропала `data-autom="continueButton"` и строка `Pre-order starting` (раз в ~6 с, только с последней минуты до старта; до того не проверяется — товар может продаваться задолго до дропа).
 - Если JSON отвечает не-JSON или ошибкой — магазин закрыт; продолжать опрос.
 
 **Роли вкладок:** одна вкладка-наблюдатель опрашивает JSON и не перезагружается; остальные («гонщики») перезагружаются по фазам. Если наблюдатель заторможен браузером, опрос перехватывает service worker.

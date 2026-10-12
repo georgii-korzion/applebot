@@ -32,11 +32,34 @@ export function busyMs(c: Ctl): number {
 }
 
 /**
+ * HTTP 541 (живой тест 12.10 с сервера AWS: fulfillment-messages, Add to Bag, updateSummary — с IP сервера и через прокси,
+ * который с мака работал; на сервере 541 даже в гостевом окне Chrome без расширения): Apple не пускает саму машину/сеть,
+ * а не «занято». Повторять чаще бесполезно — это не очередь.
+ */
+export const HINT_541 = 'HTTP 541 — Apple не пускает это окружение к магазину (12.10: сервер AWS — 541 с IP сервера и через прокси, '
+  + 'даже без расширения; с мака из ОАЭ всё работало); повторы реже (5→30 с). Помогает другая машина/сеть: обычный компьютер '
+  + 'или другой хостер + резидентный прокси ОАЭ — Stop, сменить, Start';
+
+/** Бэкофф после 541: 5, 10, 20, 30 с (с джиттером). */
+export function blockedMs(c: Ctl): number {
+  const n = c.ts.http541InRow++;
+  if (!c.ts.hint541) { c.ts.hint541 = true; c.log(HINT_541, 'warn'); }
+  void c.save();
+  return Math.min(Math.max(c.jit(5000 * 2 ** n), c.t.minReloadMs), 30000);
+}
+
+/**
  * Заглушка «Almost there» и т.п. (§3.10, FLEET-SPEC §4.2):
  * refresh — после старта не реже раза в 4 с (очередь Apple пускает волнами), до старта — по фазам;
  * hold — заглушку с meta refresh не трогаем, без meta ждём holdBusyWaitSec и делаем один рефреш.
  */
 export function busyBackoff(c: Ctl, page?: PageInfo): void {
+  if (page?.status === 541) {
+    const ms = blockedMs(c);
+    c.setState('BUSY', `HTTP 541 (${c.ts.http541InRow}) — Apple не пускает этот IP; рефреш через ${(ms / 1000).toFixed(0)} с`);
+    c.scheduleReload(ms, 'http-541');
+    return;
+  }
   if (c.ts.mode === 'checkout') {
     const n = c.ts.busyInRow;
     const ms = busyMs(c);

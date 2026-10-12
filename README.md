@@ -2,7 +2,7 @@
 
 Реализация ТЗ v3 ([docs/SPEC.md](docs/SPEC.md)). Расширение работает в обычных профилях Chrome, прямо на страницах Apple, без CDP/WebDriver:
 
-- ловит открытие продаж (JSON `fulfillment-messages` + запасной сигнал по HTML);
+- ловит открытие продаж (JSON `fulfillment-messages`: самовывоз доступен / `isBuyable` — `openSignal`; запасной сигнал по HTML); до `openAt − 60 с` OPEN не объявляет и активную Add to Bag не трогает (товар может продаваться задолго до дропа);
 - рефрешит вкладки по фазам (ARMED → PRE_RELOAD → FAST_RELOAD) с джиттером и лимитами;
 - обрабатывает выбор страны, заглушки «Almost there», 404 на Add to Bag (с диагностикой);
 - кладёт товар в корзину (одна вкладка по локу), проверяет корзину, Check Out, Continue as Guest;

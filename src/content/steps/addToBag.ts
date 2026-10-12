@@ -9,7 +9,7 @@ import { assistClick } from '../assist';
 import { cookieNames, isChecked, isEnabled, pickRadio, q, waitForResource } from '../dom';
 import { findEl, waitEl, waitEnabled } from '../find';
 import { scheduleByPhase } from './preopen';
-import { becomeStopped, busyMs } from './common';
+import { HINT_541, becomeStopped, blockedMs, busyMs } from './common';
 
 export async function atbFlow(c: Ctl): Promise<void> {
   const sig = c.signal;
@@ -46,8 +46,13 @@ export async function atbFlow(c: Ctl): Promise<void> {
   // 5. кнопка активируется сама (disabled руками не снимаем)
   btn = await waitEnabled('addToBag', 12000, sig);
   if (!btn) {
-    c.setState('FAST_RELOAD', 'Add to Bag не активировалась за 12 с');
-    c.scheduleReload(c.jit(c.t.postOpenReloadMs), 'atb-disabled');
+    // updateSummary мог ответить 541 (IP не пускают) — тогда не долбить раз в 1,5 с, а ждать по бэкоффу 541
+    const net = (await c.request({ t: 'DIAG_REQ' }, 'DIAG', 1500))?.net ?? [];
+    const blocked = net.some((n) => n.status === 541 && /updateSummary|fulfillment|buy-iphone/.test(n.url));
+    const ms = blocked ? blockedMs(c) : c.jit(c.t.postOpenReloadMs);
+    if (blocked) c.log(`Add to Bag не активировалась: updateSummary ответил HTTP 541. ${HINT_541}`, 'warn');
+    c.setState('FAST_RELOAD', `Add to Bag не активировалась за 12 с${blocked ? ' (HTTP 541)' : ''}, повтор через ${(ms / 1000).toFixed(1)} с`);
+    c.scheduleReload(ms, blocked ? 'atb-disabled-541' : 'atb-disabled');
     return;
   }
   // 6. лок SW
@@ -87,7 +92,7 @@ export async function atbResult(c: Ctl, page: PageInfo): Promise<boolean> {
       return true;
     case 'busy':
     case 'closed':
-      await atbFail(c, 'BUSY');
+      await atbFail(c, 'BUSY', undefined, false, page.status);
       return true;
     case 'queue': {
       // очередь после клика: страница сама вернёт на add-to-cart — не уходим и не рефрешим
@@ -124,7 +129,7 @@ async function atbOk(c: Ctl, page: PageInfo): Promise<void> {
 }
 
 /** Неудача Add to Bag: лок освободить, бэкофф, повтор с URL цели. */
-export async function atbFail(c: Ctl, outcome: AtbOutcome, diag?: AtbDiag, stay = false): Promise<void> {
+export async function atbFail(c: Ctl, outcome: AtbOutcome, diag?: AtbDiag, stay = false, status?: number): Promise<void> {
   c.ts.atbPendingSince = undefined;
   c.ts.lastOutcome = outcome;
   if (outcome === 'ATB_404') {
@@ -139,9 +144,10 @@ export async function atbFail(c: Ctl, outcome: AtbOutcome, diag?: AtbDiag, stay 
     return;
   }
   if (stay) { await c.save(); return; }
-  const backoff = outcome === 'BUSY' ? busyMs(c) : c.jit(c.t.atb404BackoffMs);
+  const blocked = outcome === 'BUSY' && status === 541;
+  const backoff = blocked ? blockedMs(c) : outcome === 'BUSY' ? busyMs(c) : c.jit(c.t.atb404BackoffMs);
   const assistNote = c.assistFor('atb') ? ' · дальше режим ассистента' : '';
-  c.setState('FAST_RELOAD', `${outcome}, повтор через ${backoff} мс${assistNote}`);
+  c.setState('FAST_RELOAD', `${outcome}${blocked ? ` (HTTP 541 после Add to Bag, ${c.ts.http541InRow})` : ''}, повтор через ${backoff} мс${assistNote}`);
   await c.save();
   c.timer(backoff, () => { void c.navigate(c.targetUrl(), `повтор после ${outcome}`, true); });
 }

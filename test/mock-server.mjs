@@ -33,6 +33,11 @@
 //   APPLEPAY_TRUSTED_ONLY=0  «Continue with Pay» открывает лист только по настоящему клику (event.isTrusted)
 //   APPLEPAY_SHEET_TTL_MS=0  лист Apple Pay сам закрывается через N мс без заказа (повтор QR)
 //   PROXY_REQUIRED_HEADER=0  без заголовка X-Mock-Proxy все запросы → 403 (e2e поднимает локальный прокси, который его ставит)
+//   FM_STATUS=0            fulfillment-messages отвечает этим HTTP-статусом (541 — как Apple IP дата-центра, живой тест 12.10)
+//   ATB_STATUS=0           Add to Bag (add-to-cart=) отвечает этим статусом страницей без разметки (541)
+//   SUMMARY_STATUS=0       updateSummary отвечает этим статусом (кнопка Add to Bag не активируется)
+//   PICKUP_AFTER_OPEN=0    самовывоз (pickupDisplay и магазины в чекауте) доступен только после openAt — дроп квоты
+//                          самовывоза на товаре, который уже продаётся (18 Pro, 16.10); доставка при этом buyable всегда
 // Служебное: GET /__state, POST /__reset, POST /__config, POST /__admit, GET /__ip ({ip, country}: через прокси — ОАЭ, иначе NL)
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -66,7 +71,12 @@ const S = {
   applePayTrustedOnly: env.APPLEPAY_TRUSTED_ONLY === '1',
   applePaySheetTtlMs: num(env.APPLEPAY_SHEET_TTL_MS, 0),
   proxyRequiredHeader: env.PROXY_REQUIRED_HEADER === '1',
+  fmStatus: num(env.FM_STATUS, 0),
+  atbStatus: num(env.ATB_STATUS, 0),
+  summaryStatus: num(env.SUMMARY_STATUS, 0),
+  pickupAfterOpen: env.PICKUP_AFTER_OPEN === '1',
 };
+let fmHits = 0;
 const admittedManually = new Set();
 let sessionSeq = 0;
 let openAt = Date.now() + S.openAfter * 1000;
@@ -119,7 +129,7 @@ function session(req, res) {
   let sid = ck.sid;
   if (!sid || !sessions.has(sid)) {
     sid = crypto.randomBytes(8).toString('hex');
-    sessions.set(sid, { sid, idx: ++sessionSeq, created: Date.now(), hits: [], bag: [], busyShown: false, queueLeft: null, lastQueueUrl: null, queueReloads: 0, queuePassed: 0, fulfillErr: 0, contactErr: 0, atbAttempts: 0, atb: crypto.randomBytes(20).toString('hex'), atbOk: 0, atb404: 0, checkout: {}, geo: null, pending: null });
+    sessions.set(sid, { sid, idx: ++sessionSeq, created: Date.now(), hits: [], bag: [], busyShown: false, queueLeft: null, lastQueueUrl: null, queueReloads: 0, queuePassed: 0, fulfillErr: 0, contactErr: 0, atbAttempts: 0, atbTimes: [], atb: crypto.randomBytes(20).toString('hex'), atbOk: 0, atb404: 0, checkout: {}, geo: null, pending: null });
     res.appendHeader('set-cookie', `sid=${sid}; Path=/; HttpOnly; SameSite=Lax`);
   }
   const s = sessions.get(sid);
@@ -155,6 +165,8 @@ function page(s, title, body, { status, scripts = '' } = {}) {
 <nav id="globalnav"><a href="/ae/">Apple</a><a href="/ae/iphone/">iPhone</a><a href="/ae/shop/bag">Bag</a></nav>${banner}
 <main id="main">${body}</main>${scripts}</body></html>` };
 }
+/** Ответ «IP не пускают» (живой тест 12.10: HTTP 541 без разметки магазина). */
+const blocked = (s, status) => page(s, 'Apple Store', '<h1>Service Unavailable</h1>', { status });
 const notFound = (s) => page(s, 'Page Not Found - Apple (AE)', '<h1>The page you’re looking for can’t be found.</h1><p>Page Not Found</p>', { status: 404 });
 const busy = (s) => page(s, 'Apple Store', `<h1>We’re busy right now.</h1><p>Almost there — so are we. Please try again in a moment.</p>${S.busyMeta > 0 ? `<meta http-equiv="refresh" content="${S.busyMeta}">` : ''}`, { status: 503 });
 // текст снят с apple.com (US) перед предзаказом iPhone 17/18 Pro
@@ -163,6 +175,8 @@ const backSoon = (s, status = 503) => page(s, 'Apple Store', '<h1>We love that e
 const queuePage = (s, nextUrl, step) => page(s, 'Apple Store', `<h1>You’re in line.</h1><p>We’ll take you to the store when it’s your turn (step ${step}). Please don’t refresh this page.</p>`
   + `<meta http-equiv="refresh" content="2;url=${nextUrl}">`);
 const storeOpen = () => Date.now() >= openAt;
+/** Самовывоз: по умолчанию вместе с товаром; PICKUP_AFTER_OPEN — только после openAt (квота самовывоза). */
+const pickupOpen = () => !S.pickupAfterOpen || storeOpen();
 
 function productPage(s, p) {
   const open = isOpen(p, s);
@@ -282,7 +296,7 @@ function checkoutPage(s) {
     return { day: String(d.getDate()), label: d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }), iso: d.toISOString().slice(0, 10) };
   });
   const boot = {
-    stores: STORES.map((x, i) => ({ ...x, available: !S.unavailableStores.includes(x.id), dist: (2.1 + i * 7.3).toFixed(1) })),
+    stores: STORES.map((x, i) => ({ ...x, available: !S.unavailableStores.includes(x.id) && pickupOpen(), dist: (2.1 + i * 7.3).toFixed(1) })),
     cities: CITIES, defaultCity: S.defaultCity, dates, slots: Object.fromEntries(dates.map((d, i) => [d.day, slotsFor(i, d.day)])),
     items: bagJson(s).items, cardDelayMs: S.cardDelayMs, threeDsMs: S.threeDsMs,
     apTrustedOnly: S.applePayTrustedOnly, apSheetTtlMs: S.applePaySheetTtlMs,
@@ -536,7 +550,7 @@ function fulfillmentMessages(q, s) {
     storeNumber: st.id, storeName: st.name.replace(/^Apple /, ''),
     partsAvailability: Object.fromEntries(parts.map((p) => {
       const open = PARTS[p] ? isOpen(PARTS[p], s) : false;
-      const av = open && !S.unavailableStores.includes(st.id);
+      const av = open && !S.unavailableStores.includes(st.id) && pickupOpen();
       return [p, { pickupDisplay: !open ? 'ineligible' : av ? 'available' : 'unavailable', pickupSearchQuote: !open ? 'Currently unavailable' : av ? 'Available Today' : 'Currently unavailable' }];
     })),
   }));
@@ -562,15 +576,15 @@ const server = http.createServer(async (req, res) => {
     // служебное
     if (path === '/__state') {
       return json(res, {
-        open: Date.now() >= openAt, openAt, settings: S,
+        open: Date.now() >= openAt, openAt, settings: S, fmHits,
         sessions: [...sessions.values()].map((s) => ({
           sid: s.sid, idx: s.idx, admitted: admitted(s), geo: s.geo, bag: s.bag.map((i) => ({ part: i.part, qty: i.qty })), atbOk: s.atbOk, atb404: s.atb404,
-          checkout: s.checkout, busyShown: s.busyShown, hits: s.hits, queueReloads: s.queueReloads, queuePassed: s.queuePassed, atbAttempts: s.atbAttempts,
+          checkout: s.checkout, busyShown: s.busyShown, hits: s.hits, queueReloads: s.queueReloads, queuePassed: s.queuePassed, atbAttempts: s.atbAttempts, atbTimes: s.atbTimes,
         })),
         orders,
       });
     }
-    if (path === '/__reset' && req.method === 'POST') { sessions.clear(); orders.length = 0; admittedManually.clear(); sessionSeq = 0; return json(res, { ok: true }); }
+    if (path === '/__reset' && req.method === 'POST') { sessions.clear(); orders.length = 0; admittedManually.clear(); sessionSeq = 0; fmHits = 0; return json(res, { ok: true }); }
     if (path === '/__admit' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)) || '{}');
       for (const x of b.sids ?? []) admittedManually.add(String(x));
@@ -610,8 +624,16 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(302, { location: S.storeClosed === 'offsite' ? '/shop/backsoon' : '/ae/shop/backsoon' });
       return res.end();
     }
-    if (path === '/ae/shop/fulfillment-messages') return json(res, fulfillmentMessages(q, s));
-    if (path === '/ae/shop/updateSummary') { await sleep(S.acpartDelayMs); return json(res, { head: { status: 200 }, body: { summary: { acpart: q.get('acpart') ?? null } } }); }
+    if (path === '/ae/shop/fulfillment-messages') {
+      fmHits++;
+      if (S.fmStatus) return send(res, blocked(s, S.fmStatus));
+      return json(res, fulfillmentMessages(q, s));
+    }
+    if (path === '/ae/shop/updateSummary') {
+      await sleep(S.acpartDelayMs);
+      if (S.summaryStatus) return send(res, blocked(s, S.summaryStatus));
+      return json(res, { head: { status: 200 }, body: { summary: { acpart: q.get('acpart') ?? null } } });
+    }
     if (path === '/ae/shop/updateSEO' || path === '/ae/shop/dc' || path === '/ae/shop/bag/status') return json(res, { ok: true, items: s.bag.length });
     if (path === '/ae/shop/beacon/atb') {
       const t = q.get('t');
@@ -645,7 +667,7 @@ const server = http.createServer(async (req, res) => {
       if (a === 'continueFromFulfillmentToPickupContact') {
         const slot = body['checkout.fulfillment.pickupTab.pickup.timeSlot.dateTimeSlots.timeSlotValue'] ?? '';
         const store = body['checkout.fulfillment.pickupTab.pickup.storeLocator.selectStore'];
-        if (S.unavailableStores.includes(store)) return json(res, { ok: false, error: 'This store is not available for pickup.' });
+        if (S.unavailableStores.includes(store) || !pickupOpen()) return json(res, { ok: false, error: 'This store is not available for pickup.' });
         if (S.checkoutErrFirst && s.fulfillErr++ === 0) return json(res, { ok: false, generic: true, error: 'We’re sorry, something went wrong. Please try again.' });
         const firstOfDay = /-16:15-16:30$/.test(slot);
         if (S.takenFirstSlot && firstOfDay) return json(res, { ok: false, error: 'The pickup time you selected is no longer available. Please choose another time.' });
@@ -688,6 +710,8 @@ const server = http.createServer(async (req, res) => {
       const p = partBySlug(m[1], m[2]);
       if (!p) return send(res, notFound(s));
       if (q.get('add-to-cart') === 'add-to-cart') {
+        s.atbTimes.push(Date.now());
+        if (S.atbStatus) return send(res, blocked(s, S.atbStatus));
         const bad = q.get('acpart') !== 'none' || !q.get('atbtoken') || q.get('atbtoken') !== s.atb || (q.get('product') ?? '').toUpperCase() !== p.part
           || (S.requireTrusted && q.get('hx') !== '1') || !isOpen(p, s) || s.atb404 < S.atb404First || Math.random() < S.atb404Rate;
         if (bad) { s.atb404++; return send(res, notFound(s)); }

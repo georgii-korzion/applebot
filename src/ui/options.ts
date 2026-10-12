@@ -77,6 +77,7 @@ function render(): void {
   $('openAt').value = cfg.openAt;
   $<HTMLSelectElement>('mode').value = cfg.mode;
   $<HTMLSelectElement>('strategy').value = cfg.strategy;
+  $<HTMLSelectElement>('openSignal').value = cfg.openSignal;
   $('autoStart').checked = cfg.autoStart;
   $('baseUrl').value = cfg.baseUrl;
   const px = cfg.proxy;
@@ -106,6 +107,8 @@ function readForm(): void {
   cfg.openAt = $('openAt').value.trim();
   cfg.mode = $<HTMLSelectElement>('mode').value === 'assist' ? 'assist' : 'auto';
   cfg.strategy = $<HTMLSelectElement>('strategy').value === 'hold' ? 'hold' : 'refresh';
+  const sig = $<HTMLSelectElement>('openSignal').value;
+  cfg.openSignal = sig === 'delivery' || sig === 'any' ? sig : 'pickup';
   cfg.autoStart = $('autoStart').checked;
   cfg.baseUrl = $('baseUrl').value.trim().replace(/\/$/, '');
   const host = $('p_host').value.trim();

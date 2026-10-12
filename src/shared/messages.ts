@@ -24,6 +24,14 @@ export interface TabState {
   busyHoldSince?: number;
   /** hold не дождался своего OPEN за holdFallbackSec — дальше как refresh (флаг переживает перезагрузку). */
   holdFallback?: boolean;
+  /** Подряд HTTP 541 (Apple не пускает этот IP: дата-центр/прокси) — бэкофф отдельный, длиннее заглушки. */
+  http541InRow: number;
+  /** Подсказка про 541 и смену прокси уже писалась в лог этой вкладки. */
+  hint541?: boolean;
+  /** Fulfillment: с какого момента ждём окна самовывоза (повторы страницы до pickupWaitSec). */
+  pickupWaitSince?: number;
+  /** Add to Bag была активна задолго до openAt — страницу уже обновили один раз в последнюю минуту. */
+  freshBeforeOpen?: boolean;
   fails: Record<string, number>;
   checkoutRetries: number;
   lastOutcome?: string;
@@ -60,7 +68,7 @@ export interface TabState {
 export function newTabState(mode: Mode = 'idle', extra: Partial<TabState> = {}): TabState {
   return {
     mode, state: mode === 'idle' ? 'IDLE' : 'INIT', reloads: 0, atb404InRow: 0, countryInRow: 0,
-    busyInRow: 0, fails: {}, checkoutRetries: 0, emptyBagInRow: 0, updatedAt: Date.now(), ...extra,
+    busyInRow: 0, http541InRow: 0, fails: {}, checkoutRetries: 0, emptyBagInRow: 0, updatedAt: Date.now(), ...extra,
   };
 }
 
@@ -90,6 +98,8 @@ export interface OrderState {
   watch?: Record<string, { isBuyable: boolean; reason?: string; quote?: string; at: number }>;
   watchAt?: number;
   watchSource?: 'tab' | 'sw';
+  /** Последний результат сигнала OPEN по JSON (для фронта «не было → появилось» в последнюю минуту, §7.3). */
+  sigJson?: boolean;
   /** Кого-то из флота уже пустили (OPEN_SEEN от хаба) — только для плашки, на поведение не влияет. */
   fleetOpen?: { profile: string; at: number; sinceOpenAt?: number };
   timestamps: Record<string, number>;
@@ -122,8 +132,10 @@ export type C2S =
   | { t: 'HELLO'; url: string; kind: string; mode?: Mode; state?: string }
   | { t: 'IDENTITY'; profileId: string; hubUrl: string }
   | { t: 'STATE'; state: string; mode: Mode; detail?: string; outcome?: string; counters?: { reloads: number; atb404: number } }
+  /** OPEN по сигналу, который решает сама вкладка (html); по JSON решает SW по WATCH.open. */
   | { t: 'OPEN'; source: string; buyable: string[] }
-  | { t: 'WATCH'; statuses: Record<string, { isBuyable: boolean; reason?: string; quote?: string }>; pickup?: string }
+  /** Результат опроса JSON: open — парты, по которым выполнен сигнал cfg.openSignal (SW решает, объявлять ли OPEN). */
+  | { t: 'WATCH'; statuses: Record<string, { isBuyable: boolean; reason?: string; quote?: string }>; pickup?: string; open: string[] }
   | { t: 'WATCH_TICK'; ok: boolean }
   | { t: 'ATB_LOCK_REQ'; ttl: number }
   | { t: 'ATB_RESULT'; ok: boolean; outcome: AtbOutcome; diag?: AtbDiag }

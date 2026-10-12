@@ -59,7 +59,7 @@ async function dispatch(c: Ctl): Promise<void> {
     busyBackoff(c, page);
     return;
   }
-  if (c.ts.busyInRow || c.ts.busyHoldSince) { c.ts.busyInRow = 0; c.ts.busyHoldSince = undefined; void c.save(); }
+  if (c.ts.busyInRow || c.ts.busyHoldSince || c.ts.http541InRow) { c.ts.busyInRow = 0; c.ts.busyHoldSince = undefined; c.ts.http541InRow = 0; void c.save(); }
   switch (c.ts.mode) {
     case 'race': return raceStep(c, page);
     case 'checkout': return checkoutStep(c, page);

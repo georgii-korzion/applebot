@@ -82,6 +82,7 @@ function isMockBase(baseUrl) {
   return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(baseUrl.replace(/\/$/, ""));
 }
 var STRATEGIES = ["refresh", "hold"];
+var OPEN_SIGNALS = ["pickup", "delivery", "any"];
 var DEFAULT_TIMING = {
   pollMs: 1200,
   preOpenReloadMs: 3e3,
@@ -103,7 +104,10 @@ var DEFAULT_TIMING = {
   checkoutErrorRetries: 2,
   cardWaitMs: 9e4,
   checkoutPageWaitMs: 6e4,
-  continueWaitMs: 6e4
+  continueWaitMs: 6e4,
+  armedPollMs: 2e4,
+  pickupWaitSec: 600,
+  pickupRetryMs: 5e3
 };
 function defaultOrder(id = "A") {
   return {
@@ -137,6 +141,7 @@ function defaultConfig() {
     openAt: "2026-10-16T16:00:00+04:00",
     mode: "auto",
     strategy: "refresh",
+    openSignal: "pickup",
     proxy: null,
     autoStart: false,
     version: 0,
@@ -236,6 +241,7 @@ function normalizeConfig(raw) {
     openAt: str(r.openAt, d.openAt),
     mode: r.mode === "assist" ? "assist" : "auto",
     strategy: r.strategy === "hold" ? "hold" : "refresh",
+    openSignal: OPEN_SIGNALS.includes(r.openSignal) ? r.openSignal : d.openSignal,
     proxy: normalizeProxy(r.proxy),
     autoStart: !!r.autoStart,
     version: Math.max(0, Math.round(num(r.version, 0))),
@@ -299,6 +305,7 @@ function validateConfig(cfg, now = Date.now()) {
   if (!Number.isFinite(openAt)) errors.push("openAt \u2014 \u043D\u0435 \u0434\u0430\u0442\u0430 ISO");
   else if (openAt <= now) warnings.push("openAt \u0432 \u043F\u0440\u043E\u0448\u043B\u043E\u043C \u2014 \u0441\u0442\u0430\u0440\u0442 \u0441\u0440\u0430\u0437\u0443 \u0432 \u0440\u0435\u0436\u0438\u043C\u0435 \xAB\u043F\u043E\u0441\u043B\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u044F\xBB (\u0442\u0430\u043A \u0438 \u043D\u0443\u0436\u043D\u043E \u0434\u043B\u044F \u0442\u0435\u0441\u0442\u043E\u0432 \u043D\u0430 \u0436\u0438\u0432\u043E\u043C \u0442\u043E\u0432\u0430\u0440\u0435)");
   if (!STRATEGIES.includes(cfg.strategy)) errors.push(`strategy \xAB${cfg.strategy}\xBB \u2014 \u0442\u043E\u043B\u044C\u043A\u043E refresh \u0438\u043B\u0438 hold`);
+  if (!OPEN_SIGNALS.includes(cfg.openSignal)) errors.push(`openSignal \xAB${cfg.openSignal}\xBB \u2014 \u0442\u043E\u043B\u044C\u043A\u043E pickup, delivery \u0438\u043B\u0438 any`);
   if (cfg.strategy === "hold" && cfg.timing.holdFallbackSec < 60) warnings.push(`strategy=hold \u043F\u0440\u0438 holdFallbackSec=${cfg.timing.holdFallbackSec} \u2014 \u0447\u0435\u0440\u0435\u0437 ${cfg.timing.holdFallbackSec} \u0441 \u043F\u043E\u0441\u043B\u0435 openAt \u043F\u0440\u043E\u0444\u0438\u043B\u044C \u0432\u0441\u0451 \u0440\u0430\u0432\u043D\u043E \u043F\u0435\u0440\u0435\u0439\u0434\u0451\u0442 \u043D\u0430 refresh`);
   if (cfg.proxy) {
     const p = cfg.proxy;
@@ -310,6 +317,9 @@ function validateConfig(cfg, now = Date.now()) {
   if (cfg.timing.minReloadMs < 1500) errors.push("timing.minReloadMs < 1500 \u2014 \u043D\u0435 \u0447\u0430\u0449\u0435 \u0440\u0430\u0437\u0430 \u0432 1,5 \u0441 (\xA70)");
   if (cfg.timing.postOpenReloadMs < cfg.timing.minReloadMs) warnings.push("postOpenReloadMs < minReloadMs \u2014 \u0431\u0443\u0434\u0435\u0442 \u043F\u043E\u0434\u043D\u044F\u0442 \u0434\u043E minReloadMs");
   if (cfg.timing.pollMs < 1e3) errors.push("timing.pollMs < 1000 \u2014 \u043D\u0430\u0431\u043B\u044E\u0434\u0430\u0442\u0435\u043B\u044C \u043D\u0435 \u0447\u0430\u0449\u0435 \u0440\u0430\u0437\u0430 \u0432 \u0441\u0435\u043A\u0443\u043D\u0434\u0443 (\xA77.1)");
+  if (cfg.timing.armedPollMs < cfg.timing.pollMs) errors.push("timing.armedPollMs < pollMs \u2014 \u0434\u043E openAt\u221260 \u0441 \u043E\u043F\u0440\u043E\u0441 \u043D\u0435 \u0447\u0430\u0449\u0435, \u0447\u0435\u043C \u0432 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044E\u044E \u043C\u0438\u043D\u0443\u0442\u0443");
+  if (cfg.timing.pickupWaitSec > 0 && cfg.timing.pickupRetryMs < 1500) errors.push("timing.pickupRetryMs < 1500 \u2014 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 Fulfillment \u043D\u0435 \u0447\u0430\u0449\u0435 \u0440\u0430\u0437\u0430 \u0432 1,5 \u0441 (\xA70)");
+  if (cfg.timing.pickupWaitSec < 0) errors.push("timing.pickupWaitSec \u2014 0 \u0438\u043B\u0438 \u0431\u043E\u043B\u044C\u0448\u0435");
   if (cfg.timing.closedReloadMs < 5e3) errors.push("timing.closedReloadMs < 5000 \u2014 \u0437\u0430\u043A\u0440\u044B\u0442\u044B\u0439 \u043C\u0430\u0433\u0430\u0437\u0438\u043D \u0434\u043E \u0441\u0442\u0430\u0440\u0442\u0430 \u043D\u0435 \u0447\u0430\u0449\u0435 \u0440\u0430\u0437\u0430 \u0432 5 \u0441");
   if (cfg.timing.queueMaxWaitSec < 10) errors.push("timing.queueMaxWaitSec < 10 \u2014 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u043E\u0447\u0435\u0440\u0435\u0434\u0438 Apple \u043D\u0435\u043B\u044C\u0437\u044F \u0434\u0451\u0440\u0433\u0430\u0442\u044C \u0447\u0430\u0449\u0435");
   if (cfg.timing.holdQueueWaitSec < 10) errors.push("timing.holdQueueWaitSec < 10 \u2014 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u043E\u0447\u0435\u0440\u0435\u0434\u0438 Apple \u043D\u0435\u043B\u044C\u0437\u044F \u0434\u0451\u0440\u0433\u0430\u0442\u044C \u0447\u0430\u0449\u0435");

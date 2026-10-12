@@ -1,7 +1,7 @@
 // Оркестратор профиля (§5.1, FLEET-SPEC §2): конфиг, состояние заказа, лок Add to Bag, победитель среди вкладок
 // профиля, оплата, хаб. Профиль автономен: хаб только наблюдает, ни один шаг покупки его ответа не ждёт.
 import {
-  K, closedReloadMs, configUrlFromHub, isMockBase, loadConfig, normalizeConfig, orderFor, serverOf, validateConfig,
+  K, closedReloadMs, configUrlFromHub, isMockBase, loadConfig, normalizeConfig, orderFor, phaseOf, serverOf, validateConfig,
   type CfgMeta, type Config, type OrderCfg, type Strategy,
 } from '../shared/config';
 import { LogStore, fmtLine, maskUrl, registerSecret, scrub } from '../shared/log';
@@ -10,7 +10,7 @@ import {
   type C2S, type Cmd, type Egress, type Hub2S, type HubCmd, type Mode, type OrderRecord, type OrderState, type Role, type S2C, type TabRow, type TabState,
 } from '../shared/messages';
 import { partLabel, partUrl, storeName } from '../shared/parts';
-import { pollFm } from '../shared/watch';
+import { openEdge, openParts, pollFm } from '../shared/watch';
 import { HubClient } from './hubClient';
 import { notify, playSound } from './notify';
 import { focusTab } from './windows';
@@ -67,6 +67,8 @@ export class Orchestrator {
   private swWatchTimer: ReturnType<typeof setTimeout> | undefined;
   private swWatchErrors = 0;
   private swWatchBusy = false;
+  private swHint541 = false;
+  private watchPickup = '';
   private proxyApplied: string | null = null;
   /** ipCheckUrl последней проверки — чтобы перепроверить выход, когда адрес сменился. */
   private ipCheckedUrl = '';
@@ -212,6 +214,7 @@ export class Orchestrator {
         break;
       case 'WATCH':
         this.recordWatch(tabId, m.statuses, m.pickup, 'tab');
+        this.considerOpen('json', m.open);
         break;
       case 'WATCH_TICK':
         if (m.ok) this.tabTickAt = Date.now();
@@ -225,6 +228,9 @@ export class Orchestrator {
           this.os.lock = { tabId, until: Date.now() + 30_000 };
           this.os.timestamps.atbOk ??= Date.now();
           this.log(tabId, 'ATB_RESULT', 'OK — step=attach/корзина');
+          // Add to Bag прошёл без OPEN по JSON/HTML (JSON слепой — 541, или кнопка была активна и нажата ровно в openAt):
+          // это и есть открытие для профиля — отметить, остановить опрос, оповестить хаб и остальные вкладки
+          if (!this.os.openedAt) await this.onOpen('atb', []);
         } else {
           if (this.os.lock?.tabId === tabId) this.os.lock = undefined;
           const d = m.diag;
@@ -405,11 +411,31 @@ export class Orchestrator {
     const txt = Object.entries(statuses).map(([p, s]) => `${p} ${s.isBuyable ? 'BUYABLE' : s.reason ?? '?'}${s.quote ? ` «${s.quote}»` : ''}`).join('; ');
     const prev = JSON.stringify(Object.fromEntries(Object.entries(this.os.watch ?? {}).map(([p, s]) => [p, [s.isBuyable, s.reason, s.quote]])));
     const next = JSON.stringify(Object.fromEntries(Object.entries(statuses).map(([p, s]) => [p, [s.isBuyable, s.reason, s.quote]])));
+    const pickupChanged = (pickup ?? '') !== this.watchPickup;
+    this.watchPickup = pickup ?? '';
     this.os.watch = Object.fromEntries(Object.entries(statuses).map(([p, s]) => [p, { ...s, at }]));
     this.os.watchAt = at;
     this.os.watchSource = source;
-    if (prev !== next || source === 'tab') this.log(from, 'WATCH', `${source === 'sw' ? '[sw] ' : ''}${txt}${pickup ? ` | pickup ${pickup}` : ''}`);
+    // вкладка шлёт WATCH на каждый опрос (SW решает про OPEN) — в лог только изменения
+    if (prev !== next || pickupChanged) this.log(from, 'WATCH', `${source === 'sw' ? '[sw] ' : ''}${txt}${pickup ? ` | pickup ${pickup}` : ''}`);
     void this.saveOs();
+  }
+
+  /**
+   * Сигнал OPEN по JSON (openSignal: pickup/delivery/any) с учётом фазы (§7.3): до openAt−60 с не объявляем (товар
+   * может продаваться за дни до дропа), в последнюю минуту — только по фронту, после openAt — пока сигнал есть.
+   * Один счётчик на оба поллера (вкладка и SW), переживает перезапуск SW (в os).
+   */
+  private considerOpen(source: 'json' | 'sw-json', open: string[]): void {
+    if (this.os.openedAt || !this.os.armed) return;
+    const now = open.length > 0;
+    const fire = openEdge(this.os.sigJson, now, phaseOf(this.cfg, this.os.openedAt));
+    if (this.os.sigJson !== now) {
+      this.os.sigJson = now;
+      void this.saveOs();
+      if (now && !fire) this.log('sw', 'WATCH', `сигнал ${this.cfg.openSignal} есть (${open.join(',')}), но до openAt−60 с OPEN не объявляем — ждём openAt`);
+    }
+    if (fire) void this.onOpen(source, open);
   }
 
   // ---------- страховочный поллер OPEN в SW ----------
@@ -425,21 +451,31 @@ export class Orchestrator {
   private async swWatchTick(): Promise<void> {
     if (this.swWatchBusy) return;
     this.swWatchBusy = true;
-    let delay = this.cfg.timing.pollMs;
+    const phase = phaseOf(this.cfg, this.os.openedAt);
+    // до openAt−60 с опрашиваем редко (armedPollMs), но не проспать начало последней минуты
+    let delay = phase === 'armed' ? this.cfg.timing.armedPollMs : this.cfg.timing.pollMs;
     try {
-      const tabFresh = Date.now() - this.tabTickAt < 3500;
+      const tabFresh = Date.now() - this.tabTickAt < (phase === 'armed' ? this.cfg.timing.armedPollMs + 1000 : 3500);
       if (!tabFresh && this.order) {
         try {
           const r = await pollFm(this.cfg.baseUrl, this.order.targets, this.order.stores);
           this.swWatchErrors = 0;
           this.recordWatch('sw', r.statuses, r.pickup, 'sw');
           if (this.os.watcherTabId !== undefined) this.sendTab(this.os.watcherTabId, { t: 'SW_WATCH', at: Date.now(), ok: true }, false);
-          if (r.buyable.length) await this.onOpen('sw-json', r.buyable);
+          this.considerOpen('sw-json', openParts(r, this.cfg.openSignal, this.order.targets));
         } catch (e) {
           this.swWatchErrors++;
           if (this.swWatchErrors === 1 || this.swWatchErrors % 20 === 0) this.log('sw', 'WATCH', `[sw] ошибка опроса (${this.swWatchErrors}): ${e}`, 'warn');
-          if (this.swWatchErrors >= 3) delay = Math.min(10_000, this.cfg.timing.pollMs * 4);
+          if (/HTTP 541/.test(String(e)) && !this.swHint541) {
+            this.swHint541 = true;
+            this.log('sw', 'WATCH', '[sw] HTTP 541 на fulfillment-messages — Apple не пускает это окружение (12.10: сервер AWS даже через рабочий прокси); опрос реже, нужна другая машина/сеть', 'warn');
+          }
+          if (this.swWatchErrors >= 3 && phase !== 'armed') delay = Math.min(10_000, this.cfg.timing.pollMs * 4);
         }
+      }
+      if (phase === 'armed') {
+        const untilPre = Date.parse(this.cfg.openAt) - 60_000 - Date.now();
+        if (Number.isFinite(untilPre)) delay = Math.min(delay, Math.max(untilPre, 1000));
       }
     } finally {
       this.swWatchBusy = false;

@@ -7,7 +7,7 @@ import { PARTS, getPart, matchBagName, partByPath, partUrl } from '../src/shared
 import { fmtLine, maskEmail, maskPhone, maskUrl, registerSecret, rel, scrub } from '../src/shared/log';
 import { orderWindows, parseSlot } from '../src/content/slots';
 import { routeKey } from '../src/content/router';
-import { fmUrl, parseFm } from '../src/shared/watch';
+import { fmUrl, openEdge, openParts, parseFm } from '../src/shared/watch';
 
 const validOrder = () => ({
   ...defaultOrder('A'),
@@ -158,9 +158,40 @@ test('watch: разбор fulfillment-messages', () => {
   assert.equal(r.statuses['MK254AH/A'].reason, 'COMING_SOON');
   assert.equal(r.statuses['MJR54AH/A'].isBuyable, true);
   assert.deepEqual(r.pick, ['R597:MJR54AH/A=available']);
+  assert.deepEqual(r.pickupParts, ['MJR54AH/A'], 'самовывоз доступен только в магазине из конфига');
   assert.match(fmUrl('https://www.apple.com', ['MK254AH/A'], 'R597'), /parts\.0=MK254AH%2FA&searchNearby=true&store=R597$/);
   const closed = parseFm('<!doctype html>', ['MK254AH/A'], ['R597']);
   assert.equal(closed.statuses['MK254AH/A'].isBuyable, false);
+});
+
+test('watch: сигнал OPEN — pickup/delivery/any и фазы §7.3 (товар в продаже до дропа)', () => {
+  const r = { buyable: ['A', 'B'], pickupParts: ['B'] };
+  assert.deepEqual(openParts(r, 'pickup', ['A', 'B', 'C']), ['B']);
+  assert.deepEqual(openParts(r, 'delivery', ['A', 'B', 'C']), ['A', 'B']);
+  assert.deepEqual(openParts(r, 'any', ['C', 'B', 'A']), ['B', 'A'], 'порядок как в targets');
+  assert.deepEqual(openParts({ buyable: [], pickupParts: [] }, 'any', ['A']), []);
+  // до openAt−60 с — никогда, даже если сигнал есть
+  assert.equal(openEdge(undefined, true, 'armed'), false);
+  assert.equal(openEdge(false, true, 'armed'), false);
+  // последняя минута — только фронт «не было → появилось»
+  assert.equal(openEdge(false, true, 'pre'), true);
+  assert.equal(openEdge(true, true, 'pre'), false, 'было доступно и раньше — это не открытие дропа');
+  assert.equal(openEdge(undefined, true, 'pre'), false, 'первый опрос без истории — ждём openAt');
+  assert.equal(openEdge(false, false, 'pre'), false);
+  // после openAt — пока сигнал есть
+  assert.equal(openEdge(true, true, 'post'), true);
+  assert.equal(openEdge(undefined, true, 'post'), true);
+  assert.equal(openEdge(true, false, 'post'), false);
+  // конфиг: openSignal и новые тайминги
+  assert.equal(normalizeConfig({}).openSignal, 'pickup');
+  assert.equal(normalizeConfig({ openSignal: 'any' }).openSignal, 'any');
+  assert.equal(normalizeConfig({ openSignal: 'weird' }).openSignal, 'pickup');
+  const t = normalizeConfig({}).timing;
+  assert.deepEqual([t.armedPollMs, t.pickupWaitSec, t.pickupRetryMs], [20000, 600, 5000]);
+  const base = { profileId: 'x', orders: [validOrder()] };
+  assert.ok(validateConfig(normalizeConfig({ ...base, timing: { pickupRetryMs: 1000 } })).errors.some((e) => /pickupRetryMs/.test(e)));
+  assert.ok(validateConfig(normalizeConfig({ ...base, timing: { armedPollMs: 500 } })).errors.some((e) => /armedPollMs/.test(e)));
+  assert.ok(!validateConfig(normalizeConfig({ ...base, timing: { pickupWaitSec: 0, pickupRetryMs: 100 } })).errors.some((e) => /pickup/.test(e)), 'pickupWaitSec=0 — повторов нет, интервал не проверяем');
 });
 
 // ---------- FLEET-SPEC ----------

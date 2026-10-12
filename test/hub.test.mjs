@@ -47,6 +47,9 @@ test('hub: конфиг профиля — один заказ = профиль,
   assert.equal(c.version, 7);
   assert.equal(c.cfgHash, 'deadbeef');
   assert.equal(c.strategy, 'hold');
+  assert.equal(c.openSignal, 'pickup', 'сигнал OPEN по умолчанию — самовывоз');
+  assert.equal(buildProfileConfig({ ...f, openSignal: 'delivery' }, 'nl1-p01', {}).config.openSignal, 'delivery', 'openSignal с верхнего уровня fleet.json');
+  assert.equal(buildProfileConfig({ ...f, openSignal: 'delivery', profiles: { ...f.profiles, 'nl1-p01': { ...f.profiles['nl1-p01'], openSignal: 'any' } } }, 'nl1-p01', {}).config.openSignal, 'any', 'профиль перекрывает');
   assert.equal(c.autoStart, true);
   assert.equal(c.openAt, f.openAt);
   assert.equal(c.baseUrl, 'https://www.apple.com');

@@ -42,6 +42,9 @@
         <label for="strategy">Стратегия ожидания</label>
         <select id="strategy"><option value="refresh">refresh — перезагружать страницу по фазам</option><option value="hold">hold — не трогать страницу, ждать свой OPEN по JSON</option></select>
         <div class="hint">hold: без рефреша до holdFallbackSec после openAt (300 с), потом как refresh. Меняется и из popup, и командой хаба.</div>
+        <label for="openSignal">Сигнал OPEN по JSON</label>
+        <select id="openSignal"><option value="pickup">pickup — самовывоз доступен в магазине из заказа</option><option value="delivery">delivery — isBuyable (доставка)</option><option value="any">any — любое из двух</option></select>
+        <div class="hint">16.10: товар уже в продаже, открывается квота самовывоза — pickup. До openAt−60 с OPEN не объявляется и Add to Bag не нажимается, даже если кнопка активна.</div>
         <label for="autoStart">autoStart</label><input id="autoStart" type="checkbox" style="justify-self:start">
         <div class="hint">Start выполняется само при запуске Chrome — один раз на openAt. На серверах флота включено через fleet.json.</div>
         <label for="baseUrl">baseUrl</label><input id="baseUrl" placeholder="https://www.apple.com">

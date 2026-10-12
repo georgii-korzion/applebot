@@ -24,7 +24,7 @@ for (const id of ids) {
   const srv = id.includes('-') ? id.slice(0, id.indexOf('-')) : id;
   byServer.set(srv, (byServer.get(srv) ?? 0) + 1);
   const card = o.payment === 'manual' ? (o.card.number ? ` карта ****${o.card.number.slice(-4)}` : ' карта НЕ задана') : '';
-  console.log(`${id.padEnd(12)} ${c.strategy.padEnd(7)} ${o.payment.padEnd(8)}${card.padEnd(18)} ${mask(c.proxy).padEnd(36)} ${o.targets.join(',')} · ${o.contact.firstName} ${o.contact.lastName}${c.autoStart ? '' : ' · autoStart выкл'}`);
+  console.log(`${id.padEnd(12)} ${c.strategy.padEnd(7)} ${c.openSignal.padEnd(8)} ${o.payment.padEnd(8)}${card.padEnd(18)} ${mask(c.proxy).padEnd(36)} ${o.targets.join(',')} · ${o.contact.firstName} ${o.contact.lastName}${c.autoStart ? '' : ' · autoStart выкл'}`);
   for (const e of v.errors) console.log(`    ✗ ${e}`);
   for (const w of v.warnings) console.log(`    ! ${w}`);
   if (v.errors.length) bad++;

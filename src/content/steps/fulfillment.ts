@@ -37,11 +37,27 @@ export async function fulfillmentStep(c: Ctl): Promise<void> {
   // 4. магазины по порядку
   if (listed) {
     for (const sid of o.stores) {
-      if (await tryStore(c, sid)) return;
+      if (await tryStore(c, sid)) { c.ts.pickupWaitSince = undefined; return; }
     }
   }
 
-  // 5. самовывоза нет
+  // 5. самовывоза нет: на дропе квоты самовывоза (16.10) окна появляются не сразу — перезагружаем страницу
+  // раз в pickupRetryMs до pickupWaitSec, потом фолбэки / STUCK
+  if (c.t.pickupWaitSec > 0) {
+    c.ts.pickupWaitSince ??= Date.now();
+    const waited = Date.now() - c.ts.pickupWaitSince;
+    const left = c.t.pickupWaitSec * 1000 - waited;
+    if (left > 0) {
+      const ms = Math.max(c.jit(c.t.pickupRetryMs), c.t.minReloadMs);
+      if (waited < 1000) c.log(`нет самовывоза ни в одном магазине (${o.stores.join(', ')}) — повторяю страницу раз в ~${Math.round(c.t.pickupRetryMs / 1000)} с до ${Math.round(c.t.pickupWaitSec / 60)} мин`, 'warn');
+      c.setState('FULFILLMENT', `нет самовывоза — повтор через ${(ms / 1000).toFixed(1)} с (ждём окна ещё ${Math.round(left / 1000)} с)`);
+      await c.save();
+      c.scheduleReload(ms, 'pickup-retry');
+      return;
+    }
+    c.log(`окна самовывоза не появились за ${c.t.pickupWaitSec} с`, 'warn');
+    c.ts.pickupWaitSince = undefined;
+  }
   if (o.deliveryFallback) {
     await deliveryFallback(c);
     return;

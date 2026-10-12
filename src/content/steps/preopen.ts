@@ -3,14 +3,14 @@ import { SEL } from '../../shared/selectors';
 import { phaseOf } from '../../shared/config';
 import { waitPlan } from '../../shared/strategy';
 import { normPart, partUrl } from '../../shared/parts';
-import { pollFm } from '../../shared/watch';
+import { openEdge, openParts, pollFm } from '../../shared/watch';
 import type { Ctl } from '../ctl';
 import type { PageInfo } from '../classify';
 import { Aborted, sleep, waitUntil, yieldTask } from '../dom';
 import { findEl } from '../find';
 import { atbFlow } from './addToBag';
 import { closedStep, reportStore } from './closed';
-import { effectiveStrategy, holdFallback } from './common';
+import { HINT_541, effectiveStrategy, holdFallback } from './common';
 import { hasProductBootstrap, isBlankPage } from '../classify';
 
 const PRE_WINDOW_MS = 60_000;
@@ -34,10 +34,38 @@ export async function productStep(c: Ctl, page: PageInfo): Promise<void> {
     () => (findEl('addToBag') ? 'atb' : findEl('continueDisabled') || page.preorder ? 'pre' : null),
     wait, c.signal,
   );
-  if (what === 'atb') { reportStore(c, false, 'Add to Bag'); return atbFlow(c); }
+  if (what === 'atb') {
+    reportStore(c, false, 'Add to Bag');
+    // товар уже в продаже задолго до дропа (18 Pro перед 16.10) — кнопку не трогаем до openAt или своего OPEN (§7.3)
+    if (!c.os.openedAt && phaseOf(c.cfg, c.os.openedAt) !== 'post') { waitOpenAtWithAtb(c); return; }
+    return atbFlow(c);
+  }
   if (what === 'pre') { reportStore(c, false, 'страница товара до старта'); scheduleByPhase(c); return; }
   // ни формы покупки, ни «Continue»: магазин закрыт / пустая страница / заглушка без текста
   closedStep(c, page, isBlankPage() ? 'пустая страница' : 'нет формы покупки');
+}
+
+/**
+ * Add to Bag активна, но до openAt ещё далеко: ждём openAt (или OPEN по JSON — его принесёт SW) без кликов и без
+ * рефреша по фазам; за минуту до старта один раз обновляем страницу, чтобы форма была свежей, и жмём ровно в openAt.
+ */
+function waitOpenAtWithAtb(c: Ctl): void {
+  const now = Date.now();
+  const openAt = Date.parse(c.cfg.openAt);
+  const phase = phaseOf(c.cfg, c.os.openedAt, now);
+  const at = new Date(openAt).toLocaleTimeString();
+  if (phase === 'pre' && performance.timeOrigin < openAt - PRE_WINDOW_MS - 1000 && !c.ts.freshBeforeOpen) {
+    // страница загружена задолго до старта — одна перезагрузка в последнюю минуту (а не каждые 3 с: кнопка уже есть)
+    c.ts.freshBeforeOpen = true;
+    c.setState('PRE_RELOAD', `Add to Bag уже активна — обновляю страницу один раз перед openAt ${at}`);
+    c.scheduleReload(0, 'fresh-before-open');
+    return;
+  }
+  if (c.ts.state !== 'ARMED') c.log(`Add to Bag уже активна, но до openAt ${at} ещё ${Math.round((openAt - now) / 60000)} мин — не жму, жду openAt или OPEN по JSON`, 'warn');
+  c.setState('ARMED', `Add to Bag активна — жму в openAt ${at} (или по OPEN)`);
+  c.renderOverlay({ countdownTo: openAt, timerSince: undefined });
+  const next = phase === 'armed' ? openAt - PRE_WINDOW_MS : openAt;
+  c.timer(Math.min(Math.max(next - now, 500), 3_600_000), () => c.rerun(`phase:${phase}:atb`));
 }
 
 /**
@@ -130,8 +158,10 @@ export function ensureWatcher(c: Ctl): void {
 }
 
 /** Опрос только своих целей: чужие профили за свои сессии отвечают сами (FLEET-SPEC §3). */
-function pollJson(c: Ctl) {
-  return pollFm(c.base, c.order?.targets ?? [], c.order?.stores ?? []);
+async function pollJson(c: Ctl) {
+  const targets = c.order?.targets ?? [];
+  const r = await pollFm(c.base, targets, c.order?.stores ?? []);
+  return { ...r, open: openParts(r, c.cfg.openSignal, targets) };
 }
 
 /**
@@ -149,39 +179,45 @@ async function pollHtml(c: Ctl): Promise<boolean> {
 }
 
 const SW_TICK_FRESH_MS = 3500;
+/** После стольких ошибок подряд JSON опрашиваем реже: IP, которому Apple отвечает 541, чаще дёргать незачем. */
+const ERR_SLOW_AFTER = 3;
+const ERR_SLOW_MS = 5000;
+/** Запасной сигнал по HTML — не чаще раза в 6 с (страница тяжёлая), независимо от интервала JSON. */
+const HTML_EVERY_MS = 6000;
 
 async function watchLoop(c: Ctl, signal: AbortSignal): Promise<void> {
-  let cycle = 0;
   let errors = 0;
-  let last = '';
+  let htmlPrev: boolean | undefined;
+  // первый опрос HTML — через HTML_EVERY_MS после старта наблюдателя: сразу после загрузки страницы (в т.ч. страницы
+  // очереди Apple) лишний запрос страницы товара не нужен
+  let htmlAt = Date.now();
   c.log('наблюдатель запущен');
   while (!signal.aborted && !c.os.openedAt) {
-    cycle++;
+    const phase = phaseOf(c.cfg, c.os.openedAt);
     // страховочный поллер в SW уже опрашивает (эта вкладка, видимо, заторможена браузером) — не дублировать запросы
-    const swFresh = Date.now() - c.swWatchAt < SW_TICK_FRESH_MS;
+    const swFresh = Date.now() - c.swWatchAt < (phase === 'armed' ? c.t.armedPollMs + 1000 : SW_TICK_FRESH_MS);
     if (!swFresh) {
       try {
-        const { statuses, pickup, buyable } = await pollJson(c);
+        const { statuses, pickup, open } = await pollJson(c);
         errors = 0;
         c.send({ t: 'WATCH_TICK', ok: true });
-        const sig = JSON.stringify(statuses) + pickup;
-        if (sig !== last) {
-          last = sig;
-          c.send({ t: 'WATCH', statuses, pickup });
-        }
-        if (buyable.length) {
-          c.send({ t: 'OPEN', source: 'json', buyable });
-          break;
-        }
+        // объявлять ли OPEN, решает SW (фазы, фронт сигнала в последнюю минуту) — у него один счётчик на оба поллера
+        c.send({ t: 'WATCH', statuses, pickup, open });
       } catch (e) {
         errors++;
         c.send({ t: 'WATCH_TICK', ok: false });
         if (errors === 1 || errors % 10 === 0) c.log(`наблюдатель: ошибка опроса (${errors}): ${e}`, 'warn');
+        if (/HTTP 541/.test(String(e)) && !c.ts.hint541) { c.ts.hint541 = true; void c.save(); c.log(HINT_541, 'warn'); }
       }
-      // HTML страницы товара тяжёлый: задолго до старта — раз в ~30 с, в последнюю минуту и после — раз в ~6 с
-      if (cycle % (phaseOf(c.cfg, c.os.openedAt) === 'armed' ? 25 : 5) === 0) {
+      // запасной сигнал по HTML страницы товара (тяжёлый): только с последней минуты, раз в ~6 с; до того товар может
+      // быть в продаже неделями — это не открытие дропа
+      if (phase !== 'armed' && Date.now() - htmlAt >= HTML_EVERY_MS) {
+        htmlAt = Date.now();
         try {
-          if (await pollHtml(c)) {
+          const open = await pollHtml(c);
+          const fire = openEdge(htmlPrev, open, phase);
+          htmlPrev = open;
+          if (fire) {
             c.send({ t: 'OPEN', source: 'html', buyable: [] });
             break;
           }
@@ -190,6 +226,10 @@ async function watchLoop(c: Ctl, signal: AbortSignal): Promise<void> {
     }
     // разорвать цепочку таймеров: у скрытой вкладки Chrome через 5 минут режет цепочки setTimeout до 1 раза в минуту
     await yieldTask();
-    await sleep(Math.max(1000, c.jit(c.t.pollMs)), signal);
+    const base = phase === 'armed' ? c.t.armedPollMs : errors >= ERR_SLOW_AFTER ? Math.max(c.t.pollMs, ERR_SLOW_MS) : c.t.pollMs;
+    // до openAt−60 с не проспать смену фазы: следующий опрос не позже начала последней минуты
+    const untilPre = Date.parse(c.cfg.openAt) - PRE_WINDOW_MS - Date.now();
+    const ms = phase === 'armed' && Number.isFinite(untilPre) ? Math.min(c.jit(base), Math.max(untilPre, 1000)) : c.jit(base);
+    await sleep(Math.max(1000, ms), signal);
   }
 }

@@ -1016,9 +1016,111 @@ scenarios.acceptance = async () => {
   } catch (e) { await dumpOnFail(profiles, 'acceptance'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
+// ---------- живой тест 12.10 с сервера: товар уже в продаже, JSON/Add to Bag отвечают 541, самовывоза нет ----------
+
+/**
+ * Товар продаётся задолго до дропа (18 Pro перед 16.10): Add to Bag активна, JSON buyable, а открывается квота
+ * самовывоза. До openAt — ни одного клика и ни одного OPEN; за минуту до старта один рефреш; клик ровно в openAt.
+ */
+scenarios['atb-before-open'] = async () => {
+  const OPEN_IN = 70;
+  await startServers({ OPEN_AFTER: String(OPEN_IN), BUSY_FIRST: '0', PICKUP_AFTER_OPEN: '1' });
+  const p = await launchProfile('atb-before-open');
+  const profiles = [p];
+  try {
+    const openAt = Date.now() + OPEN_IN * 1000;
+    await mockConfig({ openAfter: OPEN_IN });
+    // openSignal any: по JSON доставка buyable с самого начала — сигнал есть, но до openAt−60 с OPEN не объявляется
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 2, targets: ['MJR54AH/A'], payment: 'applepay' })], { openInSec: OPEN_IN, extra: { openSignal: 'any' } }));
+    assert.ok((await p.cmd({ cmd: 'start' })).ok);
+    await waitFor(async () => /Add to Bag уже активна, но до openAt/.test(await p.log()) || null, 25000, 'лог: кнопка активна, ждём openAt', 500);
+    await waitFor(async () => /OPEN не объявляем/.test(await p.log()) || null, 25000, 'лог: сигнал по JSON есть, но до openAt−60 с не считается', 500);
+    const st0 = await p.status();
+    assert.ok(!st0.os.openedAt, 'OPEN до старта нет');
+    assert.ok(st0.tabs.every((t) => t.mode !== 'race' || /ARMED|PRE_RELOAD|WATCHING|INIT/.test(t.state)), `вкладки ждут: ${st0.tabs.map((t) => t.state).join(', ')}`);
+    const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, (OPEN_IN + 60) * 1000, 'Billing после openAt', 500);
+    const ms = await mockState();
+    const early = ms.sessions.flatMap((x) => x.atbTimes).filter((t) => t < openAt - 500);
+    const first = Math.min(...ms.sessions.flatMap((x) => x.atbTimes));
+    const hits = ms.sessions.flatMap((x) => x.hits).filter((h) => h < openAt - 500);
+    say(`atb-before-open: до openAt Add to Bag ${early.length} раз, загрузок товара ${hits.length}; первый клик +${((first - openAt) / 1000).toFixed(1)} с, OPEN +${((st.os.openedAt - openAt) / 1000).toFixed(1)} с (${st.os.openSource}), Billing +${((st.os.billingReadyAt - openAt) / 1000).toFixed(1)} с от openAt`);
+    assert.equal(early.length, 0, 'ни одного Add to Bag до openAt');
+    assert.ok(st.os.openedAt >= openAt - 500, 'OPEN не раньше openAt');
+    assert.ok(first - openAt < 4000, 'клик в первые секунды после openAt');
+    assert.ok(hits.length <= 6, `до старта страница товара грузилась редко на 2 вкладки (${hits.length})`);
+    assert.ok(/обновляю страницу один раз перед openAt/.test(await p.log()), 'один рефреш в последнюю минуту');
+  } catch (e) { await dumpOnFail(profiles, 'atb-before-open'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+/** fulfillment-messages отвечает 541 всем (IP дата-центра): наблюдатель слепой, но опрос редкий, подсказка в логе, покупка идёт через страницу. */
+scenarios['fm-541'] = async () => {
+  const OPEN_IN = 8;
+  await startServers({ OPEN_AFTER: String(OPEN_IN), BUSY_FIRST: '0', FM_STATUS: '541' });
+  const p = await launchProfile('fm-541');
+  const profiles = [p];
+  try {
+    const openAt = Date.now() + OPEN_IN * 1000;
+    await mockConfig({ openAfter: OPEN_IN });
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 2 })], { openInSec: OPEN_IN }));
+    assert.ok((await p.cmd({ cmd: 'start' })).ok);
+    const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, (OPEN_IN + 60) * 1000, 'Billing при слепом JSON', 500);
+    const ms = await mockState();
+    const log = await p.log();
+    say(`fm-541: OPEN +${((st.os.openedAt - openAt) / 1000).toFixed(1)} с (${st.os.openSource}), опросов JSON ${ms.fmHits}, подсказок ${(log.match(/Apple не пускает/g) ?? []).length}`);
+    assert.ok(/HTTP 541/.test(log), 'ошибка 541 в логе');
+    assert.ok(/Apple не пускает/.test(log), 'подсказка про окружение/прокси');
+    assert.ok((log.match(/Apple не пускает/g) ?? []).length <= 4, 'подсказка не спамит');
+    assert.ok(!['json', 'sw-json'].includes(st.os.openSource), `OPEN не по JSON (${st.os.openSource})`);
+    assert.ok(ms.fmHits <= 40, `опрос JSON с бэкоффом (${ms.fmHits} запросов)`);
+  } catch (e) { await dumpOnFail(profiles, 'fm-541'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+/** Add to Bag отвечает 541: не долбить раз в 1,5 с — бэкофф 5→30 с и подсказка; IP «отпустили» → покупка. */
+scenarios['atb-541'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', ATB_STATUS: '541' });
+  const p = await launchProfile('atb-541');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1 })], { openInSec: -5 }));
+    assert.ok((await p.cmd({ cmd: 'start' })).ok);
+    const ms1 = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.atbTimes.length >= 2) ? m : null; }, 40000, 'две попытки Add to Bag', 500);
+    const times = ms1.sessions.find((s) => s.atbTimes.length >= 2).atbTimes;
+    const gap = times[1] - times[0];
+    const log1 = await p.log();
+    say(`atb-541: интервал между попытками ${gap} мс`);
+    assert.ok(gap >= 3000, `после 541 повтор не раньше ~5 с (${gap} мс)`);
+    assert.ok(/HTTP 541 после Add to Bag/.test(log1), 'исход помечен как 541');
+    assert.ok(/Apple не пускает/.test(log1), 'подсказка про 541 и окружение');
+    await mockConfig({ atbStatus: 0 });
+    const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, 60000, 'Billing после снятия блокировки', 500);
+    say(`atb-541: после снятия 541 — Billing, попыток Add to Bag всего ${(await mockState()).sessions.find((s) => s.bag.length).atbTimes.length}`);
+    assert.ok(st.os.billingReadyAt);
+  } catch (e) { await dumpOnFail(profiles, 'atb-541'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+/** Самовывоза нет ни в одном магазине: не STUCK, а повтор страницы Fulfillment раз в pickupRetryMs, пока окна не появятся. */
+scenarios['pickup-retry'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', UNAVAILABLE_STORES: 'R597,R596,R706' });
+  const p = await launchProfile('pickup-retry');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1 })], { openInSec: -5, timing: { pickupRetryMs: 2000, pickupWaitSec: 90 } }));
+    assert.ok((await p.cmd({ cmd: 'start' })).ok);
+    await waitFor(async () => /нет самовывоза ни в одном магазине .*повторяю страницу/.test(await p.log()) || null, 60000, 'лог: ждём окна самовывоза', 500);
+    await sleep(5000); // минимум два повтора
+    const st0 = await p.status();
+    assert.ok(st0.tabs.every((t) => t.state !== 'STUCK'), 'не STUCK');
+    await mockConfig({ unavailableStores: ['R597'] });
+    const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, 60000, 'Billing после появления окон', 500);
+    const sess = (await mockState()).sessions.find((s) => s.bag.length);
+    say(`pickup-retry: Billing через ${((st.os.billingReadyAt - st.os.openedAt) / 1000).toFixed(1)} с после OPEN, магазин ${sess.checkout.fulfillment.store}`);
+    assert.equal(sess.checkout.fulfillment.store, 'R596', 'первый доступный магазин после ожидания');
+  } catch (e) { await dumpOnFail(profiles, 'pickup-retry'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
 const list = want.length ? want : [
   'single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-fallback', 'auto-place',
-  'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank',
+  'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'atb-before-open', 'fm-541', 'atb-541', 'pickup-retry',
   'ordered-stays', 'no-cross-profile-blocking', 'fleet-identity', 'fleet-strategies', 'hold-fallback', 'hub-down', 'config-update', 'proxy', 'applepay-retry', 'card-slow-90s', 'acceptance',
 ];
 let failed = 0;

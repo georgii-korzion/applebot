@@ -16,6 +16,13 @@ export type PaymentMode = 'manual' | 'applepay';
 /** Ожидание открытия (FLEET-SPEC §4): refresh — перезагружать страницу, hold — ждать, опрашивая только JSON. */
 export type Strategy = 'refresh' | 'hold';
 export const STRATEGIES: Strategy[] = ['refresh', 'hold'];
+/**
+ * Что считать открытием по JSON fulfillment-messages (§3.0): pickup — самовывоз доступен в одном из магазинов заказа
+ * (дроп 16.10: товар давно в продаже, открывается квота самовывоза); delivery — isBuyable (старое поведение, дропы
+ * предзаказа); any — любое из двух.
+ */
+export type OpenSignal = 'pickup' | 'delivery' | 'any';
+export const OPEN_SIGNALS: OpenSignal[] = ['pickup', 'delivery', 'any'];
 
 /** Прокси профиля (FLEET-SPEC §7) — ставит само расширение через chrome.proxy. */
 export interface ProxyCfg {
@@ -87,6 +94,11 @@ export interface Timing {
   checkoutPageWaitMs: number;
   /** Ожидание исхода Continue на шаге чекаута, Review Your Order, step=attach после Add to Bag. */
   continueWaitMs: number;
+  /** Опрос JSON до openAt−60 с (товар могут открыть за дни до дропа — часто опрашивать незачем); с последней минуты — pollMs. */
+  armedPollMs: number;
+  /** Fulfillment без самовывоза ни в одном магазине: перезагружать страницу раз в pickupRetryMs, пока не появятся окна, до pickupWaitSec. 0 — сразу STUCK. */
+  pickupWaitSec: number;
+  pickupRetryMs: number;
 }
 
 export interface Config {
@@ -96,6 +108,8 @@ export interface Config {
   mode: 'auto' | 'assist';
   /** Стратегия ожидания открытия этого профиля (FLEET-SPEC §4). */
   strategy: Strategy;
+  /** Сигнал OPEN по JSON (§3.0): pickup (по умолчанию) | delivery | any. */
+  openSignal: OpenSignal;
   /** Прокси профиля; null — напрямую. */
   proxy: ProxyCfg | null;
   /** Start выполняет само расширение при запуске (один раз на openAt, FLEET-SPEC §5.4). */
@@ -118,6 +132,7 @@ export const DEFAULT_TIMING: Timing = {
   atb404MaxInRow: 5, manualPayTimeoutSec: 1800, assistAfterFailures: 3,
   closedReloadMs: 30000, queueMaxWaitSec: 180, holdQueueWaitSec: 600, holdBusyWaitSec: 120, holdFallbackSec: 300,
   hydrateWaitMs: 20000, checkoutErrorRetries: 2, cardWaitMs: 90000, checkoutPageWaitMs: 60000, continueWaitMs: 60000,
+  armedPollMs: 20000, pickupWaitSec: 600, pickupRetryMs: 5000,
 };
 
 export function defaultOrder(id = 'A'): OrderCfg {
@@ -153,6 +168,7 @@ export function defaultConfig(): Config {
     openAt: '2026-10-16T16:00:00+04:00',
     mode: 'auto',
     strategy: 'refresh',
+    openSignal: 'pickup',
     proxy: null,
     autoStart: false,
     version: 0,
@@ -257,6 +273,7 @@ export function normalizeConfig(raw: unknown): Config {
     openAt: str(r.openAt, d.openAt),
     mode: r.mode === 'assist' ? 'assist' : 'auto',
     strategy: r.strategy === 'hold' ? 'hold' : 'refresh',
+    openSignal: OPEN_SIGNALS.includes(r.openSignal) ? r.openSignal as OpenSignal : d.openSignal,
     proxy: normalizeProxy(r.proxy),
     autoStart: !!r.autoStart,
     version: Math.max(0, Math.round(num(r.version, 0))),
@@ -324,6 +341,7 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   if (!Number.isFinite(openAt)) errors.push('openAt — не дата ISO');
   else if (openAt <= now) warnings.push('openAt в прошлом — старт сразу в режиме «после открытия» (так и нужно для тестов на живом товаре)');
   if (!STRATEGIES.includes(cfg.strategy)) errors.push(`strategy «${cfg.strategy}» — только refresh или hold`);
+  if (!OPEN_SIGNALS.includes(cfg.openSignal)) errors.push(`openSignal «${cfg.openSignal}» — только pickup, delivery или any`);
   if (cfg.strategy === 'hold' && cfg.timing.holdFallbackSec < 60) warnings.push(`strategy=hold при holdFallbackSec=${cfg.timing.holdFallbackSec} — через ${cfg.timing.holdFallbackSec} с после openAt профиль всё равно перейдёт на refresh`);
   if (cfg.proxy) {
     const p = cfg.proxy;
@@ -335,6 +353,9 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   if (cfg.timing.minReloadMs < 1500) errors.push('timing.minReloadMs < 1500 — не чаще раза в 1,5 с (§0)');
   if (cfg.timing.postOpenReloadMs < cfg.timing.minReloadMs) warnings.push('postOpenReloadMs < minReloadMs — будет поднят до minReloadMs');
   if (cfg.timing.pollMs < 1000) errors.push('timing.pollMs < 1000 — наблюдатель не чаще раза в секунду (§7.1)');
+  if (cfg.timing.armedPollMs < cfg.timing.pollMs) errors.push('timing.armedPollMs < pollMs — до openAt−60 с опрос не чаще, чем в последнюю минуту');
+  if (cfg.timing.pickupWaitSec > 0 && cfg.timing.pickupRetryMs < 1500) errors.push('timing.pickupRetryMs < 1500 — страницу Fulfillment не чаще раза в 1,5 с (§0)');
+  if (cfg.timing.pickupWaitSec < 0) errors.push('timing.pickupWaitSec — 0 или больше');
   if (cfg.timing.closedReloadMs < 5000) errors.push('timing.closedReloadMs < 5000 — закрытый магазин до старта не чаще раза в 5 с');
   if (cfg.timing.queueMaxWaitSec < 10) errors.push('timing.queueMaxWaitSec < 10 — страницу очереди Apple нельзя дёргать чаще');
   if (cfg.timing.holdQueueWaitSec < 10) errors.push('timing.holdQueueWaitSec < 10 — страницу очереди Apple нельзя дёргать чаще');
