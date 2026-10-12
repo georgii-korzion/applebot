@@ -24,6 +24,7 @@ cp test/mock-server.mjs "$T/mock/"
 mkdir -p "$T/hub"
 # ESM, не CJS: хаб v2 берёт dashboard.html рядом с собой через import.meta.url
 npx esbuild hub/server.mjs --bundle --platform=node --format=esm --target=node20 \
+  --banner:js="import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" \
   --external:bufferutil --external:utf-8-validate --log-level=warning --outfile="$T/hub/hub.mjs"
 cp hub/dashboard.html hub/README.md "$T/hub/"
 cp fleet.example.json "$T/hub/fleet.example.json"
