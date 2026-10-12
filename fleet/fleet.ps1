@@ -51,6 +51,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Без этого Invoke-WebRequest и Expand-Archive в Windows PowerShell 5.1 рисуют прогресс и работают в десятки раз медленнее
+$ProgressPreference = 'SilentlyContinue'
 $DefaultRoot = 'C:\drop'
 $DefaultUrl = 'https://www.apple.com/ae/shop/buy-iphone/iphone-18-pro'
 
