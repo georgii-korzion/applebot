@@ -97,7 +97,8 @@ function Save-Local($cfg) {
 function Profile-Name($cfg, $p) { "$($cfg.prefix)-$p" }
 
 function Profile-Dirs($cfg) {
-  Get-ChildItem -Path $cfg.root -Directory -Filter 'p[0-9][0-9]*' -ErrorAction SilentlyContinue | Sort-Object Name
+  # -Filter файловой системы понимает только * и ?, классов [0-9] там нет — отбираем по имени регуляркой
+  Get-ChildItem -Path $cfg.root -Directory -Filter 'p*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^p\d{2,}$' } | Sort-Object Name
 }
 
 function Select-Profiles($cfg) {
