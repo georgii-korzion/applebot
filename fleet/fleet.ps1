@@ -322,7 +322,8 @@ switch ($Command) {
     foreach ($lf in @('lockfile', 'SingletonLock')) { if (Test-Path (Join-Path $tpl $lf)) { Warn "в шаблоне остался $lf — Chrome закрыт некорректно; удаляю"; Remove-Item -Force (Join-Path $tpl $lf) } }
     $prefs = @((Join-Path $tpl 'Default\Preferences'), (Join-Path $tpl 'Default\Secure Preferences')) | Where-Object { Test-Path $_ }
     if (-not $prefs) { Fail "в $tpl\Default нет Preferences — Chrome с шаблоном ни разу не открывался?" }
-    $extEsc = ($cfg.ext -replace '\\', '\\\\')
+    # В Preferences путь лежит как в JSON: C:\\drop\\ext. Строка замены .NET буквальная, поэтому '\\' (два символа), а не четыре.
+    $extEsc = ($cfg.ext -replace '\\', '\\')
     $found = $false
     foreach ($f in $prefs) { if ((Get-Content -Raw -Encoding UTF8 $f) -match [regex]::Escape($extEsc)) { $found = $true } }
     if ($found) { Say "✓ расширение из $($cfg.ext) есть в настройках шаблона" } else { $ok = $false; Warn "в Preferences шаблона нет пути $($cfg.ext) — расширение не загружено (chrome://extensions → Load unpacked)" }
