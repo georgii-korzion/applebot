@@ -102,3 +102,76 @@ test('hub: разбор fleet.json — понятные ошибки, стаби
   assert.throws(() => parseFleet('{"openAt":"x","profiles":{"bad name!":{}}}'), /недопустимое имя/);
   assert.throws(() => parseFleet('{"openAt":"x","profiles":{"a":1}}'), /должен быть объектом/);
 });
+
+// ---- таблица → fleet.json (hub/fleet-from-csv.mjs) ----
+import { fleetFromRows, parseCsv, parseProxy } from '../hub/fleet-from-csv.mjs';
+
+test('fleet-from-csv: разбор CSV — разделитель по заголовку, кавычки, CRLF, BOM', () => {
+  const rows = parseCsv('﻿a;b;c\r\n1;"x;y";"he said ""hi"""\r\n\r\n2;;3\n');
+  assert.deepEqual(rows, [['a', 'b', 'c'], ['1', 'x;y', 'he said "hi"'], ['2', '', '3']]);
+  assert.deepEqual(parseCsv('a,b\n"1,5",2'), [['a', 'b'], ['1,5', '2']]);
+  assert.deepEqual(parseCsv('a\tb\n1\t2'), [['a', 'b'], ['1', '2']]);
+});
+
+test('fleet-from-csv: прокси в одной ячейке → ProxyCfg, none → null, мусор → ошибка', () => {
+  assert.deepEqual(parseProxy('http://u1:Qw7Zx-test-pass@proxy.example.com:8000'), { scheme: 'http', host: 'proxy.example.com', port: 8000, username: 'u1', password: 'Qw7Zx-test-pass' });
+  assert.deepEqual(parseProxy('u1:p@10.0.0.5:3128'), { scheme: 'http', host: '10.0.0.5', port: 3128, username: 'u1', password: 'p' });
+  assert.deepEqual(parseProxy('socks5://10.0.0.5:1080'), { scheme: 'socks5', host: '10.0.0.5', port: 1080 });
+  assert.deepEqual(parseProxy('proxy.example.com:8000/'), { scheme: 'http', host: 'proxy.example.com', port: 8000 });
+  assert.equal(parseProxy(''), null);
+  assert.equal(parseProxy('none'), null);
+  assert.equal(parseProxy(' - '), null);
+  assert.throws(() => parseProxy('ftp://x'), /не разобран/);
+  assert.throws(() => parseProxy('host without port'), /не разобран/);
+});
+
+test('fleet-from-csv: строки → профили: автонумерация по server, синонимы колонок, пусто = как в defaults, валидация хабом', () => {
+  const base = fleet();
+  const rows = [
+    ['Сервер', 'Профиль', 'стратегия', 'Оплата', 'Имя', 'Фамилия', 'Email', 'Телефон', 'Карта', 'Срок', 'CVV', 'имя на карте', 'прокси', 'магазины', 'placeorder', 'комментарий', 'Левая колонка'],
+    ['s1', '', 'hold', 'apple pay', 'Ahmed', 'Test', 'a@example.com', '050 123 4567', '', '', '', '', '', 'r597 r596', '', 'сам сканирует', 'x'],
+    ['s1', '', '', 'карта', 'Maria', 'Test', 'm@example.com', '0529876543', '4111 1111 1111 1111', '12/29', '123', 'MARIA TEST', 'none', '', 'yes', '', ''],
+    ['l1', 'l1-p07', 'refresh', '', 'Omar', 'Test', 'o@example.com', '0551112233', '', '', '', '', 'u:p@10.0.0.9:8000', 'R706', 'no', '', ''],
+  ];
+  const { fleet: f, warnings } = fleetFromRows(rows, base, { version: 9 });
+  assert.deepEqual(Object.keys(f.profiles), ['s1-p01', 's1-p02', 'l1-p07']);
+  assert.equal(f.version, 9);
+  assert.equal(f.openAt, base.openAt, 'верх взят из базы');
+  assert.deepEqual(f.defaults, base.defaults, 'defaults взяты из базы');
+  const p1 = f.profiles['s1-p01'];
+  assert.equal(p1.strategy, 'hold');
+  assert.equal(p1.payment, 'applepay');
+  assert.deepEqual(p1.contact, { firstName: 'Ahmed', lastName: 'Test', email: 'a@example.com', phone: '0501234567' }, 'телефон без пробелов');
+  assert.deepEqual(p1.stores, ['R597', 'R596']);
+  assert.equal('proxy' in p1, false, 'пустая ячейка прокси — наследует defaults');
+  assert.equal('card' in p1, false);
+  const p2 = f.profiles['s1-p02'];
+  assert.equal(p2.payment, 'manual');
+  assert.equal(p2.proxy, null, 'none → без прокси');
+  assert.deepEqual(p2.card, { number: '4111111111111111', expiry: '12/29', cvv: '123', name: 'MARIA TEST' });
+  assert.equal(p2.autoPlaceOrder, true);
+  assert.equal('strategy' in p2, false);
+  const p3 = f.profiles['l1-p07'];
+  assert.deepEqual(p3.proxy, { scheme: 'http', host: '10.0.0.9', port: 8000, username: 'u', password: 'p' });
+  assert.equal(p3.autoPlaceOrder, false);
+  assert.ok(warnings.some((w) => /Левая колонка/.test(w)), `предупреждение о лишней колонке: ${warnings}`);
+  const all = buildAll(f, { version: 9, hash: 'h' });
+  for (const id of Object.keys(all)) assert.deepEqual(all[id].validation.errors, [], `${id}: ${all[id].validation.errors}`);
+  assert.equal(all['s1-p01'].config.proxy.host, 'proxy.example.com', 'прокси из defaults базы');
+  assert.equal(all['s1-p02'].config.orders[0].card.number, '4111111111111111');
+  assert.equal(all['l1-p07'].config.strategy, 'refresh');
+});
+
+test('fleet-from-csv: понятные ошибки — дубль профиля, нет profile/server, плохая стратегия или оплата', () => {
+  const base = fleet();
+  const h = ['profile', 'firstName', 'lastName', 'email', 'phone', 'strategy', 'payment'];
+  const row = (id, extra = {}) => [id, 'A', 'B', 'a@b.c', '0501234567', extra.strategy ?? '', extra.payment ?? ''];
+  assert.throws(() => fleetFromRows([h, row('s1-p01'), row('s1-p01')], base), /дважды/);
+  assert.throws(() => fleetFromRows([h, row('')], base), /нет ни profile, ни server/);
+  assert.throws(() => fleetFromRows([h, row('s1-p01', { strategy: 'fast' })], base), /hold или refresh/);
+  assert.throws(() => fleetFromRows([h, row('s1-p01', { payment: 'cash' })], base), /applepay или manual/);
+  assert.throws(() => fleetFromRows([['note'], ['x']], base), /нужна колонка profile/);
+  assert.throws(() => fleetFromRows([h], base), /ни одной строки/);
+  const { warnings } = fleetFromRows([['profile'], ['s1-p01']], base);
+  assert.ok(warnings.some((w) => /нет колонок контакта/.test(w)));
+});

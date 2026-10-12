@@ -8,13 +8,14 @@
 #   fleet.sh status
 #   fleet.sh reset --only p03 [--force]
 #   fleet.sh template
+#   fleet.sh update-ext --zip ~/Downloads/dist.zip [--no-start]   заменить расширение в ext/ (клоны пересоздавать не надо)
 # Прокси скрипт НЕ ставит — прокси берётся из конфига расширения (§7). --proxy-flag — запасной путь для всего экземпляра.
 set -euo pipefail
 
 DEFAULT_ROOT="$HOME/drop"
 DEFAULT_URL="https://www.apple.com/ae/shop/buy-iphone/iphone-18-pro"
 CMD="${1:-help}"; shift || true
-PREFIX=""; HUB=""; ROOT=""; EXT=""; URL=""; COUNT=0; ONLY=""; COLS=3; PROXY_FLAG=""; FORCE=0
+PREFIX=""; HUB=""; ROOT=""; EXT=""; URL=""; COUNT=0; ONLY=""; COLS=3; PROXY_FLAG=""; FORCE=0; ZIP=""; NO_START=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --prefix) PREFIX="$2"; shift 2;;
@@ -27,6 +28,8 @@ while [ $# -gt 0 ]; do
     --cols) COLS="$2"; shift 2;;
     --proxy-flag) PROXY_FLAG="$2"; shift 2;;
     --force) FORCE=1; shift;;
+    --zip) ZIP="$2"; shift 2;;
+    --no-start) NO_START=1; shift;;
     *) echo "неизвестный аргумент: $1" >&2; exit 1;;
   esac
 done
@@ -108,7 +111,7 @@ screen_size() {
 }
 
 case "$CMD" in
-  help|-h|--help) sed -n '2,12p' "$0"; exit 0;;
+  help|-h|--help) sed -n '2,13p' "$0"; exit 0;;
 
   init)
     [ -n "$PREFIX" ] || fail "нужен --prefix (имя сервера, например nl1 — профили будут nl1-p01…)"
@@ -226,6 +229,38 @@ case "$CMD" in
       copy_template "$L_ROOT/$p"
       say "  $p заменён свежей копией шаблона (сессия Apple, лог и записи заказов этого профиля удалены)"
     done
+    ;;
+
+  # Новая версия расширения: распаковать архив в тот же путь ext/. Путь не меняется, поэтому шаблон и клоны
+  # подхватывают новые файлы при следующем запуске Chrome — reset клонов (и новая сессия Apple) не нужен.
+  update-ext)
+    load_local
+    [ -n "$ZIP" ] || fail "нужен --zip <dist.zip> (npm run pack) или ext.zip из архива установки"
+    [ -f "$ZIP" ] || fail "нет файла $ZIP"
+    command -v unzip >/dev/null || fail "нужен unzip"
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/drop-ext.XXXXXX")"
+    unzip -q "$ZIP" -d "$tmp" || fail "архив $ZIP не распакован"
+    src="$tmp"
+    if [ ! -f "$src/manifest.json" ]; then
+      cand="$(find "$tmp" -maxdepth 3 -name manifest.json | head -1)"
+      [ -n "$cand" ] || { rm -rf "$tmp"; fail "в $ZIP нет manifest.json"; }
+      src="$(dirname "$cand")"
+    fi
+    ver="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version||"?")' "$src/manifest.json")"
+    old="—"; [ -f "$L_EXT/manifest.json" ] && old="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version||"?")' "$L_EXT/manifest.json")"
+    running=""
+    for p in $(profile_dirs); do [ -n "$(chrome_pids "$L_ROOT/$p")" ] && running="$running $p"; done
+    for p in $running; do stop_profile "$L_ROOT/$p" >/dev/null; done
+    [ -z "$(chrome_pids "$TPL")" ] || stop_profile "$TPL" >/dev/null
+    [ -n "$running" ] && say "остановлены:$running"
+    if [ -d "$L_EXT" ]; then bak="$L_EXT.bak-$(date +%Y%m%d-%H%M%S)"; mv "$L_EXT" "$bak"; say "  старое расширение ($old) → $bak"; fi
+    mkdir -p "$(dirname "$L_EXT")"; cp -R "$src" "$L_EXT"; rm -rf "$tmp"
+    say "✓ расширение $ver в $L_EXT — путь прежний, шаблон и клоны подхватят при запуске, reset не нужен"
+    if [ -n "$running" ] && [ $NO_START = 0 ]; then
+      only="$(echo $running | tr ' ' ',')"
+      say "запускаю снова: $only"
+      exec bash "$0" start --only "$only" ${ROOT:+--root "$ROOT"} ${COLS:+--cols "$COLS"} ${PROXY_FLAG:+--proxy-flag "$PROXY_FLAG"}
+    fi
     ;;
 
   *) fail "неизвестная команда: $CMD (fleet.sh help)";;

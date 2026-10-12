@@ -1,6 +1,6 @@
 # Apple Drop Assistant — настройка и доработка
 
-Рабочая инструкция: как настроить расширение под дроп и как его менять. Что расширение умеет — в `docs/FEATURES.md`. Подробно как устроен сайт Apple по шагам и что подтверждено вживую — в `docs/HANDOFF.md`. **Флот на серверах** (много профилей, хаб в интернете, `fleet.json`, день дропа по шагам) — в `docs/FLEET-RUNBOOK.md`; деплой хаба — `hub/README.md`.
+Рабочая инструкция: как настроить расширение под дроп и как его менять. Что расширение умеет — в `docs/FEATURES.md`. Подробно как устроен сайт Apple по шагам и что подтверждено вживую — в `docs/HANDOFF.md`. **Флот на серверах** (много профилей, хаб в интернете, `fleet.json`, день дропа по шагам) — в `docs/FLEET-RUNBOOK.md`; сколько это времени и людей на 40–50 аккаунтов — `docs/FLEET-PLAN-50.md`; деплой хаба — `hub/README.md`.
 
 **Часть 1 — Настройка:** установка, профили, все поля, тайминги, готовые конфигурации, хаб, проверка, чтение лога.
 **Часть 2 — Доработка:** окружение, где что лежит, как менять селекторы, поля настроек, шаги, мок, тесты, сборка архива, правила.
@@ -214,8 +214,9 @@ HUB_TOKEN=… HUB_DASH_TOKEN=… npm run hub  # локально можно бе
 | `npm run mock` | мок-сервер на `http://127.0.0.1:4777` (переключатели — §2.9) |
 | `npm run hub` | хаб на `ws://127.0.0.1:8765/ws` (`FLEET_FILE=./fleet.json`) |
 | `node hub/check.mjs fleet.json` | проверить fleet.json без запуска хаба |
-| `npm run pack` | `dist.zip` — боевая сборка для серверов (распаковать в `C:\drop\ext`) |
-| `npm run pack:setup` | старый архив `out/apple-drop-test-setup.zip` с мок-окружением и README тестов |
+| `node hub/fleet-from-csv.mjs accounts.csv --out fleet.json` | таблица аккаунтов (CSV из Google Sheets, образец `fleet.example.csv`) → fleet.json; верх и defaults из `--base` (по умолчанию `fleet.example.json`) |
+| `npm run pack` | `dist.zip` — боевая сборка для серверов (распаковать в `C:\drop\ext`, обновить — `fleet.ps1 update-ext -Zip`) |
+| `npm run pack:setup` | архив `out/apple-drop-test-setup.zip`: расширение, `ext.zip`, `fleet/` (скрипты), `hub/` (хаб одним файлом, check, fleet-from-csv), мок-окружение, документы |
 
 Перед каждым коммитом: `npm run typecheck && npm test && npm run test:e2e`.
 
@@ -252,13 +253,15 @@ src/ui/                      popup, options, offscreen (звук), ui.css
 hub/                         хаб v2: server.mjs (http+ws), config.mjs (fleet.json → конфиг), store.mjs (runtime/),
                              dashboard.html, check.mjs (проверка fleet.json), lib/shared.mjs (сгенерировано), Dockerfile, README.md
 fleet.example.json           образец fleet.json (плейсхолдеры); настоящий fleet.json — в .gitignore
-fleet/fleet.ps1, fleet.sh    шаблон → клоны → запуск окон плиткой (Windows / Mac)
+fleet/fleet.ps1, fleet.sh    bootstrap сервера (Windows) → шаблон → клоны → запуск окон плиткой → update-ext (Windows / Mac)
+hub/check.mjs, fleet-from-csv.mjs   проверка fleet.json; таблица CSV → fleet.json (образец fleet.example.csv)
 test/mock-server.mjs         мок apple.com/ae
 test/e2e.mjs                 e2e-сценарии (поднимает мок, хаб, локальный прокси)
 test/unit.test.ts            юнит-тесты расширения; test/hub.test.mjs — юнит-тесты хаба
 test-setup/                  README для тестов, live-конфиги, мок-конфиг, КАК-УСТАНОВИТЬ.txt
 scripts/                     pack.mjs (dist.zip), pack.sh (архив с мок-окружением), open-profiles.command (macOS)
-docs/                        SPEC (ТЗ v3), HANDOFF, FEATURES, GUIDE, RESEARCH, FLEET-RUNBOOK (флот на серверах)
+docs/                        SPEC (ТЗ v3), HANDOFF, FEATURES, GUIDE, RESEARCH, FLEET-RUNBOOK (флот на серверах), FLEET-PLAN-50 (время и люди на 40–50 аккаунтов);
+                             INSTALL и PLAN-50 — старая схема «хаб на каждой машине», оставлены для сравнения
 ```
 
 ### Хочу поменять → куда идти
@@ -442,10 +445,10 @@ scenarios['my-case'] = async () => {
 
 ```
 npm run pack          # dist.zip — боевая сборка для серверов: распаковать в C:\drop\ext, дальше fleet.ps1 init
-npm run pack:setup    # out/apple-drop-test-setup.zip — расширение + extension-dev + мок + README тестов (ручные тесты на Mac)
+npm run pack:setup    # out/apple-drop-test-setup.zip — всё для раскатки: расширение, ext.zip, fleet/, hub/, мок, документы
 ```
 
-Результат — `out/apple-drop-test-setup.zip`. Внутри папка `apple-drop-test-setup`: в корне боевая сборка (её и выбирать в Chrome), `extension-dev/`, `live/`, `mock/` (конфиг, `run-mock.command` / `run-mock.bat`, `mock-server.mjs`), `hub/` (хаб одним файлом `hub.cjs` со всеми зависимостями, `run-hub.command` / `run-hub.bat`), README тестов, `КАК-УСТАНОВИТЬ.txt`, INSTALL, FEATURES, GUIDE, RESEARCH.
+Результат — `out/apple-drop-test-setup.zip`. Внутри папка `apple-drop-test-setup`: в корне боевая сборка (её и выбирать в Chrome), `ext.zip` (она же архивом — для `fleet.ps1 bootstrap -Zip` / `update-ext -Zip`), `fleet/` (`fleet.ps1`, `fleet.sh`), `hub/` (хаб одним файлом `hub.mjs` со всеми зависимостями, `dashboard.html`, `check.mjs`, `fleet-from-csv.mjs`, `fleet.example.json`, `fleet.example.csv`, `run-hub.command` / `run-hub.bat`, README хаба), `extension-dev/`, `live/`, `mock/` (конфиг, `run-mock.command` / `run-mock.bat`, `mock-server.mjs`), README тестов, `КАК-УСТАНОВИТЬ.txt`, FLEET-RUNBOOK, FLEET-PLAN-50, INSTALL, FEATURES, GUIDE, RESEARCH.
 
 ## 2.13 Git
 

@@ -3,7 +3,10 @@
   Флот профилей Chrome на Windows-сервере (FLEET-SPEC §5). PowerShell 5+, без зависимостей.
 
 .DESCRIPTION
-  Команды (одинаковые с fleet.sh):
+  Команды (одинаковые с fleet.sh; bootstrap — только Windows):
+    bootstrap      [-Zip C:\drop\dist.zip] [-Root C:\drop]   один раз на сервере, PowerShell от администратора:
+                   часовой пояс Dubai, время, не спать/не блокировать экран, Chrome (ставит, если нет), автообновление
+                   Chrome выкл., исключение Defender для C:\drop, расширение из -Zip в C:\drop\ext
     init           -Prefix nl1 -Hub "wss://hub.example.com/ws?token=XYZ" [-Root C:\drop] [-Ext C:\drop\ext] [-Url <страница товара>]
                    проверяет Chrome, создаёт папки, пишет fleet.local.json, открывает шаблон tpl для Load unpacked
     check-template проверяет шаблон: Chrome закрыт, расширение загружено, cookies без apple.com, нет lockfile
@@ -12,22 +15,26 @@
     stop           [-Only …]            завершает Chrome только этих профилей
     status                              таблица: профиль, PID, запущен, размер папки
     reset          -Only p03            закрыть и заменить папку свежей копией шаблона
-    template       открыть Chrome с шаблоном tpl ещё раз (например, обновить расширение)
+    template       открыть Chrome с шаблоном tpl ещё раз
+    update-ext     -Zip C:\drop\dist.zip [-NoStart]   новая версия расширения в тот же C:\drop\ext: останавливает окна,
+                   подменяет файлы, запускает снова; клоны пересоздавать (reset) не надо — путь не меняется
 
   Прокси скрипт НЕ ставит — прокси берётся из конфига расширения (§7). -ProxyFlag — запасной путь для всего экземпляра.
 
 .EXAMPLE
+  .\fleet.ps1 bootstrap -Zip C:\drop\dist.zip
   .\fleet.ps1 init -Prefix nl1 -Hub "wss://hub.example.com/ws?token=XYZ"
   .\fleet.ps1 check-template
   .\fleet.ps1 clone -Count 10
   .\fleet.ps1 start
   .\fleet.ps1 start -Only p03,p07
   .\fleet.ps1 stop
+  .\fleet.ps1 update-ext -Zip C:\drop\dist-new.zip
 #>
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('init', 'check-template', 'clone', 'start', 'stop', 'status', 'reset', 'template', 'help')]
+  [ValidateSet('bootstrap', 'init', 'check-template', 'clone', 'start', 'stop', 'status', 'reset', 'template', 'update-ext', 'help')]
   [string]$Command = 'help',
   [string]$Prefix,
   [string]$Hub,
@@ -38,6 +45,8 @@ param(
   [string[]]$Only,
   [int]$Cols = 3,
   [string]$ProxyFlag,
+  [string]$Zip,
+  [switch]$NoStart,
   [switch]$Force
 )
 
@@ -179,8 +188,96 @@ function Start-Profile($cfg, $p, $slot) {
   Say "  $p → $(Profile-Name $cfg $p) · окно $($slot.w)x$($slot.h) @ $($slot.x),$($slot.y)"
 }
 
+# Распаковать архив расширения (dist.zip из `npm run pack` или ext.zip из архива установки) в $ext. Старая папка → $ext.bak-<дата>.
+# Путь $ext не меняется, поэтому шаблон и клоны (Load unpacked по этому пути) подхватят новые файлы при следующем запуске.
+function Install-Ext($zip, $ext) {
+  if (-not (Test-Path -LiteralPath $zip)) { Fail "нет архива $zip" }
+  $tmp = Join-Path $env:TEMP ('drop-ext-' + [guid]::NewGuid().ToString('N'))
+  Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+  $src = $tmp
+  if (-not (Test-Path (Join-Path $src 'manifest.json'))) {
+    $m = Get-ChildItem -Path $tmp -Filter manifest.json -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $m) { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue; Fail "в $zip нет manifest.json" }
+    $src = $m.DirectoryName
+  }
+  $ver = (Get-Content -Raw -Encoding UTF8 (Join-Path $src 'manifest.json') | ConvertFrom-Json).version
+  if (Test-Path -LiteralPath $ext) {
+    $old = '?'
+    if (Test-Path (Join-Path $ext 'manifest.json')) { $old = (Get-Content -Raw -Encoding UTF8 (Join-Path $ext 'manifest.json') | ConvertFrom-Json).version }
+    $bak = "$ext.bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
+    Move-Item -LiteralPath $ext -Destination $bak
+    Say "  старое расширение ($old) → $bak"
+  }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ext) | Out-Null
+  Copy-Item -LiteralPath $src -Destination $ext -Recurse
+  Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+  Say "✓ расширение $ver в $ext"
+  return $ver
+}
+
 switch ($Command) {
   'help' { Get-Help $MyInvocation.MyCommand.Path -Detailed; exit 0 }
+
+  # Один раз на новом Windows-сервере, PowerShell от администратора. Повторный запуск безвреден.
+  'bootstrap' {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) { Fail 'bootstrap запускать в PowerShell от администратора (правой кнопкой → Run as administrator)' }
+    $r = if ($Root) { $Root } else { $DefaultRoot }
+    New-Item -ItemType Directory -Force -Path $r | Out-Null
+    # 1. часовой пояс и время
+    try {
+      if ((Get-TimeZone).Id -ne 'Arabian Standard Time') { Set-TimeZone -Id 'Arabian Standard Time'; Say '✓ часовой пояс → Arabian Standard Time (Asia/Dubai)' }
+      else { Say '✓ часовой пояс уже Arabian Standard Time' }
+    } catch { Warn "часовой пояс не выставлен: $_ — Set-TimeZone 'Arabian Standard Time' руками" }
+    try { Start-Service W32Time -ErrorAction SilentlyContinue; & w32tm /resync /nowait | Out-Null; Say '✓ время: w32tm /resync' } catch { Warn "w32tm /resync не удался: $_" }
+    # 2. не спать, не гасить экран, не блокировать (Chrome за заблокированным/спящим экраном душит таймеры)
+    foreach ($a in @(@('monitor-timeout-ac', '0'), @('standby-timeout-ac', '0'), @('hibernate-timeout-ac', '0'), @('disk-timeout-ac', '0'))) { & powercfg /change $a[0] $a[1] | Out-Null }
+    Say '✓ powercfg: сон, гибернация, отключение экрана и диска выключены'
+    try {
+      New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization' -Force | Out-Null
+      Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization' -Name 'NoLockScreen' -Value 1 -Type DWord
+      Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name 'ScreenSaveActive' -Value '0'
+      Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name 'ScreenSaverIsSecure' -Value '0'
+      New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop' -Force | Out-Null
+      Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop' -Name 'ScreenSaveActive' -Value '0'
+      Say '✓ экран блокировки и заставка выключены'
+    } catch { Warn "реестр (экран блокировки): $_" }
+    # 3. Chrome: обычный Google Chrome; если нет — тихая установка enterprise-MSI
+    $chrome = Find-Chrome
+    if (-not $chrome) {
+      Say 'Chrome не найден — скачиваю googlechromestandaloneenterprise64.msi и ставлю тихо…'
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      $msi = Join-Path $env:TEMP 'googlechromestandaloneenterprise64.msi'
+      Invoke-WebRequest -Uri 'https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi' -OutFile $msi -UseBasicParsing
+      $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', "`"$msi`"", '/qn', '/norestart') -Wait -PassThru
+      if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { Fail "msiexec завершился с кодом $($p.ExitCode) — поставь Chrome руками (https://www.google.com/chrome/) и повтори" }
+      $chrome = Find-Chrome
+      if (-not $chrome) { Fail 'Chrome не найден после установки — поставь руками и повтори' }
+    }
+    Say "✓ Chrome: $chrome ($((Get-Item $chrome).VersionInfo.ProductVersion))"
+    # 4. автообновление Chrome выключить: обновление посреди 15–16.10 перезапустит окна
+    foreach ($svcName in @('gupdate', 'gupdatem')) {
+      $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+      if ($svc) { Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue; Set-Service -Name $svcName -StartupType Disabled -ErrorAction SilentlyContinue }
+    }
+    try {
+      New-Item -Path 'HKLM:\SOFTWARE\Policies\Google\Update' -Force | Out-Null
+      Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Google\Update' -Name 'UpdateDefault' -Value 0 -Type DWord
+      Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Google\Update' -Name 'AutoUpdateCheckPeriodMinutes' -Value 0 -Type DWord
+    } catch { Warn "политика Google Update: $_" }
+    Get-ScheduledTask -TaskName 'GoogleUpdateTask*' -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
+    Say '✓ автообновление Chrome выключено (службы gupdate/gupdatem, политика UpdateDefault=0, задачи планировщика)'
+    # 5. Defender: исключение для папки флота — клонирование и запуск 8 Chrome заметно быстрее
+    try { Add-MpPreference -ExclusionPath $r -ErrorAction Stop; Say "✓ Defender: исключение для $r" } catch { Warn "исключение Defender не добавлено ($_) — не критично" }
+    # 6. расширение
+    $e = Join-Path $r 'ext'
+    if ($Zip) { $null = Install-Ext $Zip $e }
+    elseif (-not (Test-Path (Join-Path $e 'manifest.json'))) { Warn "расширения в $e ещё нет: распакуй dist.zip туда или повтори с -Zip C:\drop\dist.zip" }
+    else { Say "✓ расширение уже в $e" }
+    Say ''
+    Say 'Готово. RDP-сессию во время дропа не отключать (сворачивать окно, не разрывать). Дальше:'
+    Say "  .\fleet.ps1 init -Prefix s1 -Hub `"wss://hub.example.com/ws?token=…`""
+  }
 
   'init' {
     if (-not $Prefix) { Fail 'нужен -Prefix (имя сервера, например nl1 — профили будут nl1-p01…)' }
@@ -312,6 +409,25 @@ switch ($Command) {
       Remove-Item -Recurse -Force $dir
       Copy-Template $cfg $dir
       Say "  $p заменён свежей копией шаблона (сессия Apple, лог и записи заказов этого профиля удалены)"
+    }
+  }
+
+  'update-ext' {
+    $cfg = Load-Local
+    if (-not $Zip) { Fail 'нужен -Zip C:\drop\dist.zip (npm run pack) или ext.zip из архива установки' }
+    $running = @(Profile-Dirs $cfg | Where-Object { (Chrome-Procs $_.FullName).Count } | ForEach-Object { $_.Name })
+    foreach ($p in $running) { $null = Stop-Profile (Join-Path $cfg.root $p) }
+    $null = Stop-Profile (Join-Path $cfg.root 'tpl')
+    if ($running.Count) { Say "остановлены: $($running -join ', ')" }
+    $null = Install-Ext $Zip $cfg.ext
+    Say "Путь $($cfg.ext) прежний — шаблон и клоны подхватят новую версию при запуске, reset не нужен."
+    if ($running.Count -and -not $NoStart) {
+      Say "запускаю снова: $($running -join ', ')"
+      $slots = Window-Slots $running.Count
+      for ($i = 0; $i -lt $running.Count; $i++) {
+        Start-Profile $cfg $running[$i] $slots[$i]
+        if ($i -lt $running.Count - 1) { Start-Sleep -Milliseconds 1500 }
+      }
     }
   }
 }

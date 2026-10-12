@@ -1,0 +1,5 @@
+profile,server,strategy,payment,firstName,lastName,email,phone,card,expiry,cvv,cardName,billingTitle,billingStreet,billingArea,billingCity,proxy,targets,stores,city,autoPlaceOrder,note
+,s1,hold,applepay,Ahmed,Example,ahmed@example.com,050 123 4567,,,,,Mr.,Sheikh Zayed Rd 1,Downtown,Dubai,http://PROXY_USER:PROXY_PASSWORD@PROXY_HOST:8000,"MJR54AH/A, MJX54AH/A",R597 R596,Dubai,,Ахмед сканирует QR сам
+,s1,refresh,card,Maria,Example,maria@example.com,0529876543,4111 1111 1111 1111,12/29,123,MARIA EXAMPLE,Ms.,Al Wasl Rd 10,Jumeirah,Dubai,http://PROXY_USER:PROXY_PASSWORD@PROXY_HOST:8000,,R596 R597,Dubai,yes,банк подтверждает push
+,s1,refresh,card,Omar,Example,omar@example.com,0551112233,4111111111111111,11/28,321,OMAR EXAMPLE,Mr.,Corniche Rd 5,Al Markaziyah,Abu Dhabi,PROXY_USER2:PROXY_PASSWORD2@PROXY_HOST2:8000,,R706 R595,Abu Dhabi,yes,
+l1-p01,l1,hold,applepay,Sara,Example,sara@example.com,0561234567,,,,,Ms.,Hessa St 3,Al Barsha,Dubai,none,,R597,Dubai,,"домашний интернет, без прокси"

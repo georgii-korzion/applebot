@@ -1,7 +1,8 @@
 #!/bin/bash
 # Собрать архив для установки: out/apple-drop-test-setup.zip.
 # Корень папки apple-drop-test-setup — само расширение (боевая сборка, рядом manifest.json),
-# в extension-dev/ — dev-сборка для мока, в live/ и mock/ — конфиги и мок-сервер, в hub/ — хаб одним файлом (hub.mjs + dashboard.html + fleet.example.json).
+# в extension-dev/ — dev-сборка для мока, в live/ и mock/ — конфиги и мок-сервер, в hub/ — хаб одним файлом (hub.mjs + dashboard.html +
+# check.mjs + fleet-from-csv.mjs + fleet.example.json/csv), в fleet/ — fleet.ps1 и fleet.sh, ext.zip — расширение архивом для fleet.ps1 bootstrap/update-ext.
 #   npm run pack            (или ./scripts/pack.sh)
 #   OUT=/путь npm run pack  — другая папка для результата
 set -euo pipefail
@@ -16,7 +17,10 @@ cp -R dist/. "$T/"
 cp -R dist-dev/. "$T/extension-dev/"
 cp test-setup/README.md "$T/README.md"
 cp test-setup/КАК-УСТАНОВИТЬ.txt "$T/"
-cp docs/INSTALL.md docs/FEATURES.md docs/GUIDE.md docs/RESEARCH-iphone18-preorder.md "$T/"
+cp docs/FLEET-RUNBOOK.md docs/FLEET-PLAN-50.md docs/INSTALL.md docs/FEATURES.md docs/GUIDE.md docs/RESEARCH-iphone18-preorder.md "$T/"
+mkdir -p "$T/fleet" && cp fleet/fleet.ps1 fleet/fleet.sh "$T/fleet/"
+# расширение ещё и архивом: fleet.ps1 bootstrap -Zip … / update-ext -Zip … (dist.zip — тот же, что npm run pack)
+node scripts/pack.mjs >/dev/null && cp dist.zip "$T/ext.zip"
 cp test-setup/live/*.json "$T/live/"
 cp test-setup/mock/* "$T/mock/"
 cp test/mock-server.mjs "$T/mock/"
@@ -27,7 +31,11 @@ npx esbuild hub/server.mjs --bundle --platform=node --format=esm --target=node20
   --banner:js="import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" \
   --external:bufferutil --external:utf-8-validate --log-level=warning --outfile="$T/hub/hub.mjs"
 cp hub/dashboard.html hub/README.md "$T/hub/"
-cp fleet.example.json "$T/hub/fleet.example.json"
+cp fleet.example.json fleet.example.csv "$T/hub/"
+# check.mjs и fleet-from-csv.mjs тоже одним файлом каждый (внутри config.mjs + lib/shared.mjs)
+for f in check fleet-from-csv; do
+  npx esbuild "hub/$f.mjs" --bundle --platform=node --format=esm --target=node20 --log-level=warning --outfile="$T/hub/$f.mjs"
+done
 cat > "$T/hub/run-hub.command" <<'SH'
 #!/bin/bash
 # Хаб v2: fleet.json рядом (см. fleet.example.json), HUB_TOKEN/HUB_DASH_TOKEN в окружении. Окно Терминала не закрывать. Ctrl+C — стоп.
