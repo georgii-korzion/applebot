@@ -184,3 +184,15 @@ test('fleet.ps1: начинается с UTF-8 BOM (Windows PowerShell 5.1 бе�
   assert.deepEqual([...b.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
   assert.equal(b.indexOf(Buffer.from([0xef, 0xbb, 0xbf]), 3), -1, 'BOM только в начале');
 });
+
+test('fleet.ps1: в строках нет «$имя:» — Windows PowerShell читает это как область/диск и не разбирает файл (нужно ${имя}:)', () => {
+  const text = readFileSync(new URL('../fleet/fleet.ps1', import.meta.url), 'utf8');
+  const bad = [];
+  text.split('\n').forEach((line, i) => {
+    for (const m of line.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*):/g)) {
+      if (['env', 'script', 'global', 'local', 'private', 'using'].includes(m[1])) continue;
+      bad.push(`${i + 1}: ${line.trim()}`);
+    }
+  });
+  assert.deepEqual(bad, []);
+});

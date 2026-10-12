@@ -375,7 +375,7 @@ switch ($Command) {
     $total = 0
     foreach ($p in $list) {
       $n = Stop-Profile (Join-Path $cfg.root $p)
-      if ($n) { Say "  $p: завершено процессов $n" }
+      if ($n) { Say "  ${p}: завершено процессов $n" }
       $total += $n
     }
     Say "остановлено процессов: $total (чужой Chrome не тронут)"
