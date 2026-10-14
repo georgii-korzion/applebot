@@ -1,7 +1,7 @@
 // Оркестратор профиля (§5.1, FLEET-SPEC §2): конфиг, состояние заказа, лок Add to Bag, победитель среди вкладок
 // профиля, оплата, хаб. Профиль автономен: хаб только наблюдает, ни один шаг покупки его ответа не ждёт.
 import {
-  K, closedReloadMs, configUrlFromHub, isMockBase, loadConfig, normalizeConfig, orderFor, phaseOf, serverOf, validateConfig,
+  K, closedReloadMs, configUrlFromHub, huntStage, isMockBase, loadConfig, normalizeConfig, orderFor, phaseOf, serverOf, validateConfig,
   type CfgMeta, type Config, type OrderCfg, type Strategy,
 } from '../shared/config';
 import { LogStore, fmtLine, maskUrl, registerSecret, scrub } from '../shared/log';
@@ -10,7 +10,7 @@ import {
   type C2S, type Cmd, type Egress, type Hub2S, type HubCmd, type Mode, type OrderRecord, type OrderState, type Role, type S2C, type TabRow, type TabState,
 } from '../shared/messages';
 import { partLabel, partUrl, storeName } from '../shared/parts';
-import { openEdge, openParts, pollFm } from '../shared/watch';
+import { fmUrl, openEdge, openParts, parseStores, pollFm, type FoundStore } from '../shared/watch';
 import { HubClient } from './hubClient';
 import { notify, playSound } from './notify';
 import { focusTab } from './windows';
@@ -261,8 +261,10 @@ export class Orchestrator {
           this.os.timestamps.atbOk ??= Date.now();
           this.log(tabId, 'ATB_RESULT', 'OK — step=attach/корзина');
           // Add to Bag прошёл без OPEN по JSON/HTML (JSON слепой — 541, или кнопка была активна и нажата ровно в openAt):
-          // это и есть открытие для профиля — отметить, остановить опрос, оповестить хаб и остальные вкладки
-          if (!this.os.openedAt) await this.onOpen('atb', []);
+          // это и есть открытие для профиля — отметить, остановить опрос, оповестить хаб и остальные вкладки.
+          // До openAt (Add to Bag при Start, v5) — не открытие: товар в корзине, окна самовывоза ждём на Fulfillment
+          if (!this.os.openedAt && phaseOf(this.cfg, undefined) === 'post') await this.onOpen('atb', []);
+          else if (!this.os.openedAt) this.log(tabId, 'ATB_RESULT', `товар в корзине до openAt (Add to Bag при Start) — OPEN не объявляю, окна самовывоза жду на Fulfillment`);
         } else {
           if (this.os.lock?.tabId === tabId) this.os.lock = undefined;
           const d = m.diag;
@@ -374,7 +376,7 @@ export class Orchestrator {
     if (n === 2) void this.onStore(tabId, true, `редирект вне /ae/: ${u.pathname}`);
     if (n === 3) void notify({ id: `away-${tabId}`, title: `${this.cfg.profileId}: вкладку уводит с /ae/`, message: 'Возвращаю на страницу товара по расписанию. Если это не закрытие магазина — проверь прокси/гео.', tabId });
     // hold до своего OPEN: не чаще closedReloadMs, фаза не важна (FLEET-SPEC §4.2)
-    const ms = this.cfg.strategy === 'hold' && !this.os.openedAt ? this.cfg.timing.closedReloadMs : closedReloadMs(this.cfg, this.os.openedAt);
+    const ms = this.cfg.strategy === 'hold' && !this.os.openedAt ? this.cfg.timing.holdReloadMs : closedReloadMs(this.cfg, this.os.openedAt);
     this.scheduleBack(tabId, n === 1 ? 0 : ms);
   }
 
@@ -502,7 +504,7 @@ export class Orchestrator {
             this.swHint541 = true;
             this.log('sw', 'WATCH', '[sw] HTTP 541 на fulfillment-messages — Apple не пускает это окружение (12.10: сервер AWS даже через рабочий прокси); опрос реже, нужна другая машина/сеть', 'warn');
           }
-          if (this.swWatchErrors >= 3 && phase !== 'armed') delay = Math.min(10_000, this.cfg.timing.pollMs * 4);
+          if (this.swWatchErrors >= 3 && phase !== 'armed') delay = Math.min(5000, this.cfg.timing.pollMs * 4);
         }
       }
       if (phase === 'armed') {
@@ -741,6 +743,7 @@ export class Orchestrator {
       setStrategy: { cmd: 'setStrategy', strategy: args.strategy === 'hold' ? 'hold' : 'refresh' },
       focus: { cmd: 'focus' },
       checkIp: { cmd: 'checkIp' },
+      restock: { cmd: 'restock' },
     };
     const c = map[cmd];
     if (!c) { this.log('sw', 'HUB', `неизвестная команда хаба: ${String(cmd)}`, 'warn'); return; }
@@ -944,6 +947,8 @@ export class Orchestrator {
       }
       case 'setStrategy': return this.setStrategy(c.strategy);
       case 'checkIp': return { ok: true, egress: await this.checkIp() };
+      case 'restock': return this.restock();
+      case 'findStores': return this.findStores();
       case 'fetchConfig': return this.fetchConfigFromHub('popup');
       case 'focus': {
         const id = this.os.winnerTabId ?? this.os.raceTabs.find((x) => this.tabs.has(x)) ?? [...this.tabs.keys()][0];
@@ -977,6 +982,9 @@ export class Orchestrator {
       mode: this.cfg.mode,
       strategy: this.cfg.strategy,
       autoStart: this.cfg.autoStart,
+      atbAtStart: this.cfg.atbAtStart,
+      restockAt: this.cfg.restockAt,
+      hunt: this.os.armed ? huntStage(this.cfg, this.os.startedAt) : null,
       openAt: this.cfg.openAt,
       baseUrl: this.cfg.baseUrl,
       mock: isMockBase(this.cfg.baseUrl),
@@ -997,12 +1005,19 @@ export class Orchestrator {
   }
 
   private async start(source: string): Promise<unknown> {
+    // обычный Start снимает прогон «Рестоки» (openAt снова из конфига)
+    if (source !== 'restock') await chrome.storage.local.remove(K.restockAt);
     // конфиг с хаба перед каждым Start (5 с, не блокирует); autoStart после IDENTITY конфиг уже получил
-    if (source !== 'auto' && this.cfg.hubUrl && this.cfg.profileId) await this.fetchConfigFromHub('start');
+    if (source !== 'auto' && source !== 'restock' && this.cfg.hubUrl && this.cfg.profileId) await this.fetchConfigFromHub('start');
     this.cfg = await loadConfig();
     this.order = orderFor(this.cfg) ?? null;
     const v = validateConfig(this.cfg);
-    if (v.errors.length) return { ok: false, error: v.errors.join('\n') };
+    if (v.errors.length) {
+      if (source === 'restock') await chrome.storage.local.remove(K.restockAt);
+      return { ok: false, error: v.errors.join('\n') };
+    }
+    // открытые вкладки (их переиспользуем) должны видеть тот же openAt, что и SW (прогон «Рестоки» его подменяет)
+    this.broadcast({ t: 'CONFIG', cfg: this.cfg, order: this.order }, (t) => !!t.port);
     const o = this.order;
     if (!o) return { ok: false, error: `профиль ${this.cfg.profileId} не назначен ни одному заказу` };
     if (isMockBase(this.cfg.baseUrl) && !(await this.mockAlive())) {
@@ -1038,6 +1053,7 @@ export class Orchestrator {
     await this.saveOs(true);
     this.tabTickAt = 0;
     this.ensureSwWatch();
+    if (source === 'restock') this.log('sw', 'RESTOCK', `рестоки: охота ${this.cfg.timing.restockMin} мин (до ${new Date(Date.now() + this.cfg.timing.restockMin * 60_000).toLocaleTimeString()}), цели ${o.targets.join(', ')}, магазины ${o.stores.join(', ')}`);
     this.log('sw', 'START', `${source}: ${want} вкладок (${reuse.length} переиспользовано), цель ${partLabel(target)}, openAt ${this.cfg.openAt}, стратегия ${this.cfg.strategy}, режим ${this.cfg.mode}, конфиг v${this.cfg.version}`);
     if (this.hub.connected) this.register();
     assignRoles(this);
@@ -1053,9 +1069,46 @@ export class Orchestrator {
     }
   }
 
+  /** «Рестоки» (v5): охота за вернувшимися слотами прямо сейчас — openAt на этот прогон = сейчас, окно restockMin. */
+  private async restock(): Promise<unknown> {
+    if (this.cfg.timing.restockMin <= 0) return { ok: false, error: 'timing.restockMin = 0 — рестоки выключены в настройках' };
+    if (this.os.armed) await this.stop();
+    await chrome.storage.local.set({ [K.restockAt]: Date.now() });
+    return this.start('restock');
+  }
+
+  /**
+   * «Найти магазины» в настройках: fulfillment-messages с searchNearby от нескольких опорных магазинов (Дубай, Абу-Даби,
+   * Аль-Айн) — Apple отдаёт ближайшие магазины с кодами. Найденное сохраняется в storage (K.storesFound).
+   */
+  private async findStores(): Promise<{ ok: boolean; stores: FoundStore[]; errors: string[] }> {
+    const part = this.order?.targets[0] ?? 'MJR54AH/A';
+    const anchors = [...new Set([...(this.order?.stores ?? []), 'R597', 'R596', 'R706', 'R595', 'R785'])];
+    const found = new Map<string, FoundStore>();
+    const errors: string[] = [];
+    for (const a of anchors) {
+      try {
+        const r = await fetch(fmUrl(this.cfg.baseUrl, [part], a), { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+        if (!r.ok) { errors.push(`${a}: HTTP ${r.status}`); continue; }
+        for (const st of parseStores(await r.json())) if (!found.has(st.id) || (!found.get(st.id)!.city && st.city)) found.set(st.id, st);
+      } catch (e) {
+        errors.push(`${a}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    const stores = [...found.values()].sort((x, y) => x.city.localeCompare(y.city) || x.id.localeCompare(y.id));
+    if (stores.length) await chrome.storage.local.set({ [K.storesFound]: stores });
+    this.log('sw', 'STORES', `найдено магазинов: ${stores.length}${stores.length ? ` — ${stores.map((x) => x.id).join(', ')}` : ''}${errors.length ? ` · ошибки: ${errors.join('; ')}` : ''}`, stores.length ? 'info' : 'warn');
+    return { ok: stores.length > 0, stores, errors };
+  }
+
   private async stop(): Promise<unknown> {
     this.os.armed = false;
     await this.saveOs(true);
+    if (this.cfg.restockAt) {
+      await chrome.storage.local.remove(K.restockAt);
+      this.cfg = await loadConfig();
+      this.order = orderFor(this.cfg) ?? null;
+    }
     this.broadcast({ t: 'STOP', reason: 'Stop' }, (t) => t.mode !== 'idle');
     this.payQueue = [];
     this.payActive = null;

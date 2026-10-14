@@ -28,8 +28,13 @@ export interface TabState {
   http541InRow: number;
   /** Подсказка про 541 и смену прокси уже писалась в лог этой вкладки. */
   hint541?: boolean;
-  /** Fulfillment: с какого момента ждём окна самовывоза (повторы страницы до pickupWaitSec). */
+  /** Проверка Add to Bag при Start (v5, atbAtStart): true — кнопка была активна в первую минуту после Start, жмём до openAt;
+   *  false — не было, ждём openAt. undefined — ещё не проверяли. */
+  atStart?: boolean;
+  /** Fulfillment: с какого момента ждём окна самовывоза (повторы страницы до конца охоты, huntStage). */
   pickupWaitSince?: number;
+  /** Стадия охоты на прошлой загрузке Fulfillment (before/drop/restock) — чтобы писать в лог только смену. */
+  pickupStage?: string;
   /** Add to Bag была активна задолго до openAt — страницу уже обновили один раз в последнюю минуту. */
   freshBeforeOpen?: boolean;
   fails: Record<string, number>;
@@ -172,7 +177,7 @@ export type S2C =
   | { t: 'MODE'; mode: Mode; extra?: Partial<TabState> };
 
 // ---------- хаб v2 (FLEET-SPEC §9.3): хаб только наблюдает, ни одно сообщение не блокирует покупку ----------
-export type HubCmd = 'start' | 'stop' | 'prepare' | 'cleanBag' | 'reloadConfig' | 'setStrategy' | 'focus' | 'checkIp';
+export type HubCmd = 'start' | 'stop' | 'prepare' | 'cleanBag' | 'reloadConfig' | 'setStrategy' | 'focus' | 'checkIp' | 'restock';
 
 export type Hub2S =
   | { t: 'WELCOME'; serverTime: number; cfgVersion: number | null }
@@ -235,6 +240,8 @@ export interface OrderRecord {
 export type Cmd =
   | { cmd: 'status' }
   | { cmd: 'start'; source?: string }
+  | { cmd: 'restock' }
+  | { cmd: 'findStores' }
   | { cmd: 'stop' }
   | { cmd: 'prepare' }
   | { cmd: 'cleanBag' }

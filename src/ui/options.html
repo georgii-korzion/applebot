@@ -41,18 +41,27 @@
         <select id="mode"><option value="auto">auto — клики делает расширение</option><option value="assist">assist — критичные кнопки жмёт человек</option></select>
         <label for="strategy">Стратегия ожидания</label>
         <select id="strategy"><option value="refresh">refresh — перезагружать страницу по фазам</option><option value="hold">hold — не трогать страницу, ждать свой OPEN по JSON</option></select>
-        <div class="hint">hold: без рефреша до holdFallbackSec после openAt (300 с), потом как refresh. Меняется и из popup, и командой хаба.</div>
+        <div class="hint">refresh — заглушку и страницу товара обновляет по фазам, с началом дропа — каждые 1,5 с. hold — стоит на стартовом окне, пока не пустят: заглушку очереди не трогает, закрытый магазин проверяет раз в минуту, обновляет страницу по сигналу OPEN из JSON (timing.holdFallbackSec &gt; 0 — через столько секунд после openAt переходит на refresh). Меняется и из popup, и командой хаба.</div>
         <label for="openSignal">Сигнал OPEN по JSON</label>
         <select id="openSignal"><option value="pickup">pickup — самовывоз доступен в магазине из заказа</option><option value="delivery">delivery — isBuyable (доставка)</option><option value="any">any — любое из двух</option></select>
-        <div class="hint">16.10: товар уже в продаже, открывается квота самовывоза — pickup. До openAt−60 с OPEN не объявляется и Add to Bag не нажимается, даже если кнопка активна.</div>
+        <div class="hint">16.10: товар уже в продаже, открывается квота самовывоза — pickup. До openAt−60 с OPEN не объявляется.</div>
+        <label for="atbAtStart">Add to Bag при Start</label><input id="atbAtStart" type="checkbox" style="justify-self:start">
+        <div class="hint">Включено: если при Start кнопка Add to Bag уже активна — жмёт сразу и ждёт окна самовывоза на странице Fulfillment (как 3.0); если нет — ждёт openAt. Выключено: до openAt не жмёт никогда.</div>
         <label for="autoStart">autoStart</label><input id="autoStart" type="checkbox" style="justify-self:start">
-        <div class="hint">Start выполняется само при запуске Chrome — один раз на openAt. На серверах флота включено через fleet.json.</div>
+        <div class="hint">Start выполняется само при запуске Chrome — один раз на openAt (не после оформленного заказа и не после ручного Stop). Выключено — Start руками.</div>
+        <label for="pickupWaitMin">Окна самовывоза, мин</label><input id="pickupWaitMin" type="number" min="0" step="1">
+        <div class="hint">Сколько минут после начала дропа (openAt или Start, что позже) обновлять Fulfillment и искать окна (раз в ~3 с, timing.pickupRetryMs).</div>
+        <label for="restockMin">Рестоки, мин</label><input id="restockMin" type="number" min="0" step="1">
+        <div class="hint">Слоты возвращают после того, как они кончились: охота продолжается до этого числа минут после начала (раз в ~5 с, timing.restockRetryMs). Кнопка «Рестоки» в popup запускает такую охоту сразу. 0 — без рестоков.</div>
         <label for="baseUrl">baseUrl</label><input id="baseUrl" placeholder="https://www.apple.com">
         <div class="hint">Для мок-сервера: http://127.0.0.1:4777 (нужна dev-сборка).</div>
       </div>
 
       <h2>Прокси профиля</h2>
       <div class="form">
+        <label for="p_line">Строкой</label>
+        <div class="row"><input id="p_line" placeholder="http://логин:пароль@хост:порт" autocomplete="off" style="flex:1"><button id="p_parse" type="button">Разобрать</button></div>
+        <div class="hint">Вставь прокси одной строкой (http://user:pass@host:port, user:pass@host:port, socks5://host:port) — поля ниже заполнятся сами. Пусто или none — напрямую.</div>
         <label for="p_scheme">Схема</label>
         <select id="p_scheme"><option value="http">http</option><option value="socks5">socks5</option></select>
         <label for="p_host">Хост</label><input id="p_host" placeholder="пусто — напрямую" autocomplete="off">
@@ -78,6 +87,8 @@
         <label for="o_targets">targets</label><input id="o_targets" placeholder="MK254AH/A, MK244AH/A">
         <div class="hint">Парт-номера по приоритету. Список ниже.</div>
         <label for="o_stores">stores</label><input id="o_stores" placeholder="R597, R596, R706">
+        <div class="hint">Порядок = приоритет. Отметь магазины ниже или впиши коды. «Найти магазины» спрашивает у Apple ближайшие магазины по всем эмиратам (нужен доступ к apple.com с этого компьютера).</div>
+        <div></div><div><div id="storePick" class="row" style="flex-wrap:wrap;gap:4px 12px"></div><button id="findStores" type="button" style="margin-top:4px">Найти магазины</button> <span id="findStoresMsg" class="muted"></span></div>
         <div class="hint">R597 Dubai Mall · R596 Mall of the Emirates · R706 Al Maryah · R595 Yas Mall · R785 Al Jimi</div>
         <label for="o_city">Город</label>
         <select id="o_city"><option>Dubai</option><option>Abu Dhabi</option><option>Sharjah</option><option>Al Ain</option></select>

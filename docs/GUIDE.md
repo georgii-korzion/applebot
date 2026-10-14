@@ -87,23 +87,33 @@ Dev-сборку ставить только в отдельный профил�
 
 | Ключ | По умолчанию | Нижний предел | Что это | Когда менять |
 |---|---|---|---|---|
-| `pollMs` | 1200 | 1000 | опрос «открылось ли» | не трогать |
+| `pollMs` | 1200 | 1000 | опрос «открылось ли» в последнюю минуту и после старта | не трогать |
+| `armedPollMs` | 20000 | 5000 | опрос JSON задолго до старта | не трогать |
 | `closedReloadMs` | 30000 | 5000 | рефреш закрытого магазина задолго до старта | не трогать |
 | `preOpenReloadMs` | 3000 | — | рефреш в последнюю минуту | не трогать |
 | `postOpenReloadMs` | 1500 | `minReloadMs` | рефреш после старта | не трогать |
 | `minReloadMs` | 1500 | 1500 | минимум между рефрешами вкладки | не трогать |
 | `jitterPct` | 30 | — | разброс интервалов, % | не трогать |
 | `graceSec` | 20 | — | через сколько после `openAt` без сигнала перейти на быстрый рефреш | — |
-| `hydrateWaitMs` | 12000 | — | ожидание формы покупки под нагрузкой | увеличить, если в логе «нет формы покупки» при живом сайте |
-| `atbTimeoutMs` | 15000 | — | ответ на Add to Bag | — |
+| `hydrateWaitMs` | 20000 | — | ожидание формы покупки под нагрузкой | увеличить, если в логе «нет формы покупки» при живом сайте |
+| `atbTimeoutMs` | 60000 | — | ожидание `step=attach` после Add to Bag | — |
 | `atb404BackoffMs` | 1500 | — | пауза после 404 на Add to Bag | — |
 | `atb404MaxInRow` | 5 | — | 404 подряд до стопа | — |
 | `assistAfterFailures` | 3 | — | неудач подряд до режима ассистента | 1, если хочешь сразу жать сам |
-| `queueMaxWaitSec` | 90 | 10 | терпение на странице очереди | увеличить, если очередь Apple дольше |
+| `queueMaxWaitSec` | 180 | 10 | refresh: терпение на странице очереди Apple | увеличить, если очередь Apple дольше |
+| `holdQueueWaitSec` | 1800 | 10 | hold: то же — стоит в очереди, пока не пустят | — |
+| `holdBusyWaitSec` | 120 | — | hold: заглушка без автообновления — один рефреш раз в столько | — |
+| `holdReloadMs` | 60000 | 5000 | hold: закрытый магазин / пустая страница — проверка раз в столько | — |
+| `holdFallbackSec` | 0 | — | hold без своего OPEN столько секунд после `openAt` → refresh; 0 — не переходить | 300, если нужен откат как в 4.0 |
+| `checkoutPageWaitMs` / `continueWaitMs` | 60000 | — | ожидание страниц чекаута | — |
+| `pickupWaitMin` | 30 | — | нет окон самовывоза на Fulfillment: столько минут после старта (или Start) обновлять раз в `pickupRetryMs`; 0 — сразу STUCK | — |
+| `pickupRetryMs` | 3000 | 1500 | интервал поиска окон в первые `pickupWaitMin` минут | — |
+| `restockMin` | 60 | — | сколько минут от старта ловить рестоки (вернувшиеся слоты); кнопка «Рестоки» — столько минут от нажатия | 0 — без рестоков |
+| `restockRetryMs` | 5000 | 1500 | интервал обновления на рестоках | — |
 | `checkoutErrorRetries` | 2 | — | повторы при «unexpected error» | 3–4, если на дропе сыплются общие ошибки |
-| `cardWaitMs` | 10000 | 3000 | ожидание блока карты | 15000, если в логе «появились через 8–10 с» |
+| `cardWaitMs` | 90000 | 3000 | ожидание блока карты на Billing | — |
 | `holdLoserBagSec` | 90 | — | запасной профиль держит товар | — |
-| `manualPayTimeoutSec` | 600 | — | ждать подтверждения оплаты | — |
+| `manualPayTimeoutSec` | 1800 | — | ждать подтверждения оплаты | — |
 
 Пределы проверяются при сохранении: чаще нельзя, чтобы не перегружать сайт Apple и не попасть под ограничения.
 
@@ -429,7 +439,7 @@ scenarios['my-case'] = async () => {
 
 и добавить имя в список `list` внизу файла.
 
-Текущие сценарии: `single`, `hostile`, `assist`, `prepare`, `queue`, `checkout-errors`, `renamed-selectors`, `applepay-turn`, `card-slow`, `card-fallback`, `auto-place`, `closed-backsoon`, `closed-redirect`, `closed-offsite`, `closed-blank`; флот: `ordered-stays`, `no-cross-profile-blocking`, `card-slow-90s`, `fleet-identity`, `fleet-strategies` (= `fleet-refresh`/`fleet-hold`), `hold-fallback`, `hub-down`, `config-update`, `proxy`, `applepay-retry`, `acceptance` (6 клонов через адрес запуска и autoStart).
+Текущие сценарии: `single`, `hostile`, `assist`, `prepare`, `queue`, `checkout-errors`, `renamed-selectors`, `applepay-turn`, `card-slow`, `card-fallback`, `auto-place`, `closed-backsoon`, `closed-redirect`, `closed-offsite`, `closed-blank`, `atb-before-open`, `atb-wait-open`, `fm-541`, `atb-541`, `pickup-retry`, `restock`, `baked-profile`; флот: `ordered-stays`, `no-cross-profile-blocking`, `card-slow-90s`, `fleet-identity`, `fleet-strategies` (= `fleet-refresh`/`fleet-hold`), `hold-fallback`, `hub-down`, `config-update`, `proxy`, `applepay-retry`, `acceptance` (6 клонов через адрес запуска и autoStart).
 
 Юнит-тесты (`npm test`): `test/unit.test.ts` — конфиг, валидация, слоты, маскирование секретов, разбор JSON, роутер, фазы, таблица стратегий §4.2, identity из хеша; `test/hub.test.mjs` — fleet.json → конфиг профиля (слияние defaults, ошибки, хеш).
 

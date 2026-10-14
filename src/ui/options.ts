@@ -1,6 +1,7 @@
 // Options (§7.9): форма заказа + JSON-редактор с валидацией, импорт/экспорт, адрес хаба.
-import { K, defaultConfig, defaultOrder, normalizeConfig, validateConfig, type Config, type OrderCfg } from '../shared/config';
-import { PARTS, partLabel } from '../shared/parts';
+import { K, defaultConfig, defaultOrder, normalizeConfig, parseProxyLine, validateConfig, type Config, type OrderCfg } from '../shared/config';
+import { PARTS, STORES, partLabel } from '../shared/parts';
+import type { FoundStore } from '../shared/watch';
 
 const $ = <T extends HTMLElement = HTMLInputElement>(id: string) => document.getElementById(id) as T;
 
@@ -16,6 +17,7 @@ function orderToForm(o: OrderCfg): void {
   $('o_racers').value = String(o.racersPerProfile);
   $('o_targets').value = o.targets.join(', ');
   $('o_stores').value = o.stores.join(', ');
+  renderStorePick();
   $<HTMLSelectElement>('o_city').value = o.city;
   $('o_day').value = o.slot.day ?? '';
   $('o_after').value = o.slot.after ?? '';
@@ -79,6 +81,9 @@ function render(): void {
   $<HTMLSelectElement>('strategy').value = cfg.strategy;
   $<HTMLSelectElement>('openSignal').value = cfg.openSignal;
   $('autoStart').checked = cfg.autoStart;
+  $('atbAtStart').checked = cfg.atbAtStart;
+  $('pickupWaitMin').value = String(cfg.timing.pickupWaitMin);
+  $('restockMin').value = String(cfg.timing.restockMin);
   $('baseUrl').value = cfg.baseUrl;
   const px = cfg.proxy;
   $<HTMLSelectElement>('p_scheme').value = px?.scheme ?? 'http';
@@ -110,6 +115,11 @@ function readForm(): void {
   const sig = $<HTMLSelectElement>('openSignal').value;
   cfg.openSignal = sig === 'delivery' || sig === 'any' ? sig : 'pickup';
   cfg.autoStart = $('autoStart').checked;
+  cfg.atbAtStart = $('atbAtStart').checked;
+  const pw = Number($('pickupWaitMin').value);
+  if ($('pickupWaitMin').value.trim() !== '' && Number.isFinite(pw)) cfg.timing.pickupWaitMin = pw;
+  const rm = Number($('restockMin').value);
+  if ($('restockMin').value.trim() !== '' && Number.isFinite(rm)) cfg.timing.restockMin = rm;
   cfg.baseUrl = $('baseUrl').value.trim().replace(/\/$/, '');
   const host = $('p_host').value.trim();
   cfg.proxy = host ? {
@@ -248,6 +258,74 @@ $('import').onchange = async () => {
   }
   $('import').value = '';
 };
+
+// ---------- магазины: встроенный список + найденные кнопкой «Найти магазины» ----------
+let found: FoundStore[] = [];
+
+function allStores(): FoundStore[] {
+  const out: FoundStore[] = STORES.map((x) => ({ id: x.id, name: x.name, city: x.city }));
+  for (const f of found) if (!out.some((x) => x.id === f.id)) out.push(f);
+  return out;
+}
+
+function renderStorePick(): void {
+  const box = $('storePick');
+  box.textContent = '';
+  const chosen = list($('o_stores').value).map((x) => x.toUpperCase());
+  for (const st of allStores()) {
+    const l = document.createElement('label');
+    l.style.display = 'inline-flex';
+    l.style.gap = '4px';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = chosen.includes(st.id);
+    cb.onchange = () => {
+      const now = list($('o_stores').value).map((x) => x.toUpperCase()).filter((x) => x !== st.id);
+      if (cb.checked) now.push(st.id);
+      $('o_stores').value = now.join(', ');
+      readForm();
+      syncJson();
+    };
+    const nm = st.name.replace(/^Apple /, '');
+    l.append(cb, document.createTextNode(`${st.id} ${nm}${st.city && !nm.includes(st.city) ? ` · ${st.city}` : ''}`));
+    box.append(l);
+  }
+}
+
+$('o_stores').addEventListener('change', renderStorePick);
+
+$('findStores').onclick = async () => {
+  const msg = $('findStoresMsg');
+  msg.textContent = 'спрашиваю Apple…';
+  const r = (await chrome.runtime.sendMessage({ cmd: 'findStores' })) as { ok: boolean; stores?: FoundStore[]; errors?: string[] } | undefined;
+  if (r?.stores?.length) {
+    found = r.stores;
+    const fresh = r.stores.filter((x) => !STORES.some((y) => y.id === x.id));
+    msg.textContent = `найдено ${r.stores.length}: ${r.stores.map((x) => x.id).join(', ')}${fresh.length ? ` · новые: ${fresh.map((x) => x.id).join(', ')}` : ''}`;
+    renderStorePick();
+  } else msg.textContent = `не нашёл: ${r?.errors?.join('; ') || 'нет ответа'}`;
+};
+
+$('p_parse').onclick = () => {
+  try {
+    const p = parseProxyLine($('p_line').value);
+    $<HTMLSelectElement>('p_scheme').value = p?.scheme ?? 'http';
+    $('p_host').value = p?.host ?? '';
+    $('p_port').value = p?.port ? String(p.port) : '';
+    $('p_user').value = p?.username ?? '';
+    $('p_pass').value = p?.password ?? '';
+    $('p_line').value = '';
+    readForm();
+    syncJson();
+    show(p ? `Прокси: ${p.scheme}://${p.username ? `${p.username}:***@` : ''}${p.host}:${p.port} — сохрани` : 'Прокси снят — напрямую. Сохрани.', 'ok');
+  } catch (e) {
+    show(String(e instanceof Error ? e.message : e), 'err');
+  }
+};
+
+void chrome.storage.local.get(K.storesFound).then((s) => {
+  if (Array.isArray(s[K.storesFound])) { found = s[K.storesFound] as FoundStore[]; renderStorePick(); }
+});
 
 // справочник партов
 const parts = $('parts');

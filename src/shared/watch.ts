@@ -48,6 +48,23 @@ export function parseFm(j: unknown, parts: string[], stores: string[]): { status
   return { statuses, pick, pickupParts };
 }
 
+export interface FoundStore { id: string; name: string; city: string }
+
+/** Магазины из ответа fulfillment-messages (searchNearby): код, название, город — для «Найти магазины» в настройках. */
+export function parseStores(j: unknown): FoundStore[] {
+  const root = j as { body?: { content?: unknown }; content?: unknown } | null;
+  const content = (root?.body?.content ?? root?.content ?? {}) as { pickupMessage?: { stores?: Record<string, any>[] } };
+  const out: FoundStore[] = [];
+  for (const s of content.pickupMessage?.stores ?? []) {
+    const id = String(s?.storeNumber ?? '').toUpperCase();
+    if (!/^R\d{3,4}$/.test(id) || out.some((x) => x.id === id)) continue;
+    const name = String(s.storeName ?? s.retailStore?.name ?? s.storeDisplayName ?? '').trim();
+    const city = String(s.city ?? s.address?.city ?? s.retailStore?.address?.city ?? s.storeCity ?? '').trim();
+    out.push({ id, name: name ? (/^Apple /.test(name) ? name : `Apple ${name}`) : id, city });
+  }
+  return out;
+}
+
 /** Опросить все targets (по 3 за запрос). Бросает при HTTP-ошибке или не-JSON (закрытый магазин). */
 export async function pollFm(base: string, targets: string[], stores: string[], fetchFn: typeof fetch = fetch): Promise<WatchResult> {
   const statuses: Record<string, Buy> = {};

@@ -9,7 +9,8 @@ import { assistClick } from '../assist';
 import { cookieNames, isChecked, isEnabled, pickRadio, q, waitForResource } from '../dom';
 import { findEl, waitEl, waitEnabled } from '../find';
 import { scheduleByPhase } from './preopen';
-import { HINT_541, becomeStopped, blockedMs, busyMs } from './common';
+import { HINT_541, becomeStopped, blockedMs, busyMs, huntOver } from './common';
+import { closedReloadMs, huntStage, phaseOf } from '../../shared/config';
 
 export async function atbFlow(c: Ctl): Promise<void> {
   const sig = c.signal;
@@ -49,7 +50,12 @@ export async function atbFlow(c: Ctl): Promise<void> {
     // updateSummary мог ответить 541 (IP не пускают) — тогда не долбить раз в 1,5 с, а ждать по бэкоффу 541
     const net = (await c.request({ t: 'DIAG_REQ' }, 'DIAG', 1500))?.net ?? [];
     const blocked = net.some((n) => n.status === 541 && /updateSummary|fulfillment|buy-iphone/.test(n.url));
-    const ms = blocked ? blockedMs(c) : c.jit(c.t.postOpenReloadMs);
+    // до openAt (Add to Bag при Start) — по фазам, не чаще; после — как раньше, на рестоках реже, после охоты — стоп
+    const before = !c.os.openedAt && phaseOf(c.cfg, c.os.openedAt) !== 'post';
+    const h = huntStage(c.cfg, c.os.startedAt);
+    if (!blocked && !before && h.stage === 'over') { huntOver(c); return; }
+    const ms = blocked ? blockedMs(c) : before ? closedReloadMs(c.cfg, c.os.openedAt)
+      : Math.max(c.jit(h.stage === 'restock' ? c.t.restockRetryMs : c.t.postOpenReloadMs), c.t.minReloadMs);
     if (blocked) c.log(`Add to Bag не активировалась: updateSummary ответил HTTP 541. ${HINT_541}`, 'warn');
     c.setState('FAST_RELOAD', `Add to Bag не активировалась за 12 с${blocked ? ' (HTTP 541)' : ''}, повтор через ${(ms / 1000).toFixed(1)} с`);
     c.scheduleReload(ms, blocked ? 'atb-disabled-541' : 'atb-disabled');

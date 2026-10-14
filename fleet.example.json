@@ -12,6 +12,7 @@
     "strategy": "refresh",
     "racersPerProfile": 1,
     "autoStart": true,
+    "atbAtStart": true,
     "targets": ["MJR54AH/A", "MJX54AH/A"],
     "stores": ["R597", "R596", "R706"],
     "city": "Dubai",

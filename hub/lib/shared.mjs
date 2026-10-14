@@ -90,24 +90,27 @@ var DEFAULT_TIMING = {
   minReloadMs: 1500,
   jitterPct: 30,
   graceSec: 20,
-  atbTimeoutMs: 3e4,
+  atbTimeoutMs: 6e4,
   atb404BackoffMs: 1500,
   atb404MaxInRow: 5,
   manualPayTimeoutSec: 1800,
   assistAfterFailures: 3,
   closedReloadMs: 3e4,
   queueMaxWaitSec: 180,
-  holdQueueWaitSec: 600,
+  holdQueueWaitSec: 1800,
   holdBusyWaitSec: 120,
-  holdFallbackSec: 300,
+  holdFallbackSec: 0,
+  holdReloadMs: 6e4,
   hydrateWaitMs: 2e4,
   checkoutErrorRetries: 2,
   cardWaitMs: 9e4,
   checkoutPageWaitMs: 6e4,
   continueWaitMs: 6e4,
   armedPollMs: 2e4,
-  pickupWaitSec: 600,
-  pickupRetryMs: 5e3
+  pickupWaitMin: 30,
+  pickupRetryMs: 3e3,
+  restockMin: 60,
+  restockRetryMs: 5e3
 };
 function defaultOrder(id = "A") {
   return {
@@ -143,7 +146,8 @@ function defaultConfig() {
     strategy: "refresh",
     openSignal: "pickup",
     proxy: null,
-    autoStart: false,
+    autoStart: true,
+    atbAtStart: true,
     version: 0,
     cfgHash: "",
     ipCheckUrl: DEFAULT_IP_CHECK_URL,
@@ -235,6 +239,7 @@ function normalizeConfig(raw) {
   const t = r.timing ?? {};
   const timing = { ...DEFAULT_TIMING };
   for (const k of Object.keys(DEFAULT_TIMING)) timing[k] = num(t[k], DEFAULT_TIMING[k]);
+  if (t.pickupWaitMin === void 0 && t.pickupWaitSec !== void 0) timing.pickupWaitMin = num(t.pickupWaitSec, 0) / 60;
   return {
     profileId: str(r.profileId, d.profileId),
     hubUrl: str(r.hubUrl),
@@ -243,7 +248,8 @@ function normalizeConfig(raw) {
     strategy: r.strategy === "hold" ? "hold" : "refresh",
     openSignal: OPEN_SIGNALS.includes(r.openSignal) ? r.openSignal : d.openSignal,
     proxy: normalizeProxy(r.proxy),
-    autoStart: !!r.autoStart,
+    autoStart: r.autoStart === void 0 ? d.autoStart : !!r.autoStart,
+    atbAtStart: r.atbAtStart === void 0 ? d.atbAtStart : !!r.atbAtStart,
     version: Math.max(0, Math.round(num(r.version, 0))),
     cfgHash: str(r.cfgHash),
     ipCheckUrl: str(r.ipCheckUrl) || d.ipCheckUrl,
@@ -279,7 +285,10 @@ function validateConfig(cfg, now = Date.now()) {
     if (!o.targets.length) errors.push(`${p} \u043D\u0435\u0442 targets`);
     for (const t of o.targets) if (!PARTS[t]) errors.push(`${p} \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u043F\u0430\u0440\u0442 ${t}`);
     if (!o.stores.length) errors.push(`${p} \u043D\u0435\u0442 stores`);
-    for (const s of o.stores) if (!STORES.some((x) => x.id === s)) errors.push(`${p} \u043C\u0430\u0433\u0430\u0437\u0438\u043D ${s} \u043D\u0435 \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430 \xA72.2`);
+    for (const s of o.stores) {
+      if (!/^R\d{3,4}$/.test(s)) errors.push(`${p} \u043A\u043E\u0434 \u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0430 \xAB${s}\xBB \u2014 \u0432\u0438\u0434\u0430 R597`);
+      else if (!STORES.some((x) => x.id === s)) warnings.push(`${p} \u043C\u0430\u0433\u0430\u0437\u0438\u043D ${s} \u043D\u0435 \u0438\u0437 \u0432\u0441\u0442\u0440\u043E\u0435\u043D\u043D\u043E\u0433\u043E \u0441\u043F\u0438\u0441\u043A\u0430 \u2014 \u043F\u0440\u043E\u0432\u0435\u0440\u044C \u043A\u043E\u0434 (\xAB\u041D\u0430\u0439\u0442\u0438 \u043C\u0430\u0433\u0430\u0437\u0438\u043D\u044B\xBB \u0432 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430\u0445)`);
+    }
     if (o.slot.after && !HHMM.test(o.slot.after)) errors.push(`${p} slot.after \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C HH:MM`);
     if (o.slot.before && !HHMM.test(o.slot.before)) errors.push(`${p} slot.before \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C HH:MM`);
     if (o.slot.day && !/^\d{1,2}$/.test(o.slot.day)) errors.push(`${p} slot.day \u2014 \u0447\u0438\u0441\u043B\u043E \u043C\u0435\u0441\u044F\u0446\u0430`);
@@ -306,7 +315,7 @@ function validateConfig(cfg, now = Date.now()) {
   else if (openAt <= now) warnings.push("openAt \u0432 \u043F\u0440\u043E\u0448\u043B\u043E\u043C \u2014 \u0441\u0442\u0430\u0440\u0442 \u0441\u0440\u0430\u0437\u0443 \u0432 \u0440\u0435\u0436\u0438\u043C\u0435 \xAB\u043F\u043E\u0441\u043B\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u044F\xBB (\u0442\u0430\u043A \u0438 \u043D\u0443\u0436\u043D\u043E \u0434\u043B\u044F \u0442\u0435\u0441\u0442\u043E\u0432 \u043D\u0430 \u0436\u0438\u0432\u043E\u043C \u0442\u043E\u0432\u0430\u0440\u0435)");
   if (!STRATEGIES.includes(cfg.strategy)) errors.push(`strategy \xAB${cfg.strategy}\xBB \u2014 \u0442\u043E\u043B\u044C\u043A\u043E refresh \u0438\u043B\u0438 hold`);
   if (!OPEN_SIGNALS.includes(cfg.openSignal)) errors.push(`openSignal \xAB${cfg.openSignal}\xBB \u2014 \u0442\u043E\u043B\u044C\u043A\u043E pickup, delivery \u0438\u043B\u0438 any`);
-  if (cfg.strategy === "hold" && cfg.timing.holdFallbackSec < 60) warnings.push(`strategy=hold \u043F\u0440\u0438 holdFallbackSec=${cfg.timing.holdFallbackSec} \u2014 \u0447\u0435\u0440\u0435\u0437 ${cfg.timing.holdFallbackSec} \u0441 \u043F\u043E\u0441\u043B\u0435 openAt \u043F\u0440\u043E\u0444\u0438\u043B\u044C \u0432\u0441\u0451 \u0440\u0430\u0432\u043D\u043E \u043F\u0435\u0440\u0435\u0439\u0434\u0451\u0442 \u043D\u0430 refresh`);
+  if (cfg.strategy === "hold" && cfg.timing.holdFallbackSec > 0 && cfg.timing.holdFallbackSec < 60) warnings.push(`strategy=hold \u043F\u0440\u0438 holdFallbackSec=${cfg.timing.holdFallbackSec} \u2014 \u0447\u0435\u0440\u0435\u0437 ${cfg.timing.holdFallbackSec} \u0441 \u043F\u043E\u0441\u043B\u0435 openAt \u043F\u0440\u043E\u0444\u0438\u043B\u044C \u0432\u0441\u0451 \u0440\u0430\u0432\u043D\u043E \u043F\u0435\u0440\u0435\u0439\u0434\u0451\u0442 \u043D\u0430 refresh`);
   if (cfg.proxy) {
     const p = cfg.proxy;
     if (!p.host) errors.push("proxy.host \u043F\u0443\u0441\u0442");
@@ -318,8 +327,12 @@ function validateConfig(cfg, now = Date.now()) {
   if (cfg.timing.postOpenReloadMs < cfg.timing.minReloadMs) warnings.push("postOpenReloadMs < minReloadMs \u2014 \u0431\u0443\u0434\u0435\u0442 \u043F\u043E\u0434\u043D\u044F\u0442 \u0434\u043E minReloadMs");
   if (cfg.timing.pollMs < 1e3) errors.push("timing.pollMs < 1000 \u2014 \u043D\u0430\u0431\u043B\u044E\u0434\u0430\u0442\u0435\u043B\u044C \u043D\u0435 \u0447\u0430\u0449\u0435 \u0440\u0430\u0437\u0430 \u0432 \u0441\u0435\u043A\u0443\u043D\u0434\u0443 (\xA77.1)");
   if (cfg.timing.armedPollMs < cfg.timing.pollMs) errors.push("timing.armedPollMs < pollMs \u2014 \u0434\u043E openAt\u221260 \u0441 \u043E\u043F\u0440\u043E\u0441 \u043D\u0435 \u0447\u0430\u0449\u0435, \u0447\u0435\u043C \u0432 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044E\u044E \u043C\u0438\u043D\u0443\u0442\u0443");
-  if (cfg.timing.pickupWaitSec > 0 && cfg.timing.pickupRetryMs < 1500) errors.push("timing.pickupRetryMs < 1500 \u2014 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 Fulfillment \u043D\u0435 \u0447\u0430\u0449\u0435 \u0440\u0430\u0437\u0430 \u0432 1,5 \u0441 (\xA70)");
-  if (cfg.timing.pickupWaitSec < 0) errors.push("timing.pickupWaitSec \u2014 0 \u0438\u043B\u0438 \u0431\u043E\u043B\u044C\u0448\u0435");
+  if (cfg.timing.pickupWaitMin > 0 && cfg.timing.pickupRetryMs < 1500) errors.push("timing.pickupRetryMs < 1500 \u2014 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 Fulfillment \u043D\u0435 \u0447\u0430\u0449\u0435 \u0440\u0430\u0437\u0430 \u0432 1,5 \u0441 (\xA70)");
+  if (cfg.timing.restockMin > 0 && cfg.timing.restockRetryMs < 1500) errors.push("timing.restockRetryMs < 1500 \u2014 \u043D\u0435 \u0447\u0430\u0449\u0435 \u0440\u0430\u0437\u0430 \u0432 1,5 \u0441 (\xA70)");
+  if (cfg.timing.pickupWaitMin < 0) errors.push("timing.pickupWaitMin \u2014 0 \u0438\u043B\u0438 \u0431\u043E\u043B\u044C\u0448\u0435");
+  if (cfg.timing.restockMin < 0) errors.push("timing.restockMin \u2014 0 \u0438\u043B\u0438 \u0431\u043E\u043B\u044C\u0448\u0435");
+  if (cfg.timing.restockMin > 240) warnings.push(`timing.restockMin=${cfg.timing.restockMin} \u2014 \u043E\u0445\u043E\u0442\u0430 \u043D\u0430 \u0440\u0435\u0441\u0442\u043E\u043A\u0438 \u0434\u043E\u043B\u044C\u0448\u0435 4 \u0447\u0430\u0441\u043E\u0432`);
+  if (cfg.timing.holdReloadMs < 5e3) errors.push("timing.holdReloadMs < 5000 \u2014 hold \u043D\u0430 \u0437\u0430\u043A\u0440\u044B\u0442\u043E\u043C \u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0435 \u043D\u0435 \u0447\u0430\u0449\u0435 \u0440\u0430\u0437\u0430 \u0432 5 \u0441");
   if (cfg.timing.closedReloadMs < 5e3) errors.push("timing.closedReloadMs < 5000 \u2014 \u0437\u0430\u043A\u0440\u044B\u0442\u044B\u0439 \u043C\u0430\u0433\u0430\u0437\u0438\u043D \u0434\u043E \u0441\u0442\u0430\u0440\u0442\u0430 \u043D\u0435 \u0447\u0430\u0449\u0435 \u0440\u0430\u0437\u0430 \u0432 5 \u0441");
   if (cfg.timing.queueMaxWaitSec < 10) errors.push("timing.queueMaxWaitSec < 10 \u2014 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u043E\u0447\u0435\u0440\u0435\u0434\u0438 Apple \u043D\u0435\u043B\u044C\u0437\u044F \u0434\u0451\u0440\u0433\u0430\u0442\u044C \u0447\u0430\u0449\u0435");
   if (cfg.timing.holdQueueWaitSec < 10) errors.push("timing.holdQueueWaitSec < 10 \u2014 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u043E\u0447\u0435\u0440\u0435\u0434\u0438 Apple \u043D\u0435\u043B\u044C\u0437\u044F \u0434\u0451\u0440\u0433\u0430\u0442\u044C \u0447\u0430\u0449\u0435");
@@ -389,7 +402,7 @@ function waitPlan(strategy, phase, kind, ctx, t) {
       if (opened) return { reload: t.postOpenReloadMs, reason: "OPEN \u0431\u044B\u043B, \u0444\u043E\u0440\u043C\u044B \u043F\u043E\u043A\u0443\u043F\u043A\u0438 \u0435\u0449\u0451 \u043D\u0435\u0442 \u2014 \u0440\u0435\u0444\u0440\u0435\u0448" };
       if (phase === "armed") return { reload: null, reason: "\u0434\u043E openAt\u221260 \u0441 \u043D\u0435 \u0440\u0435\u0444\u0440\u0435\u0448\u0438\u043C" };
       if (!hold) return { reload: phase === "pre" ? t.preOpenReloadMs : t.postOpenReloadMs, reason: phase === "pre" ? "\u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u043C\u0438\u043D\u0443\u0442\u0430 \u2014 \u0440\u0435\u0444\u0440\u0435\u0448" : "\u043F\u043E\u0441\u043B\u0435 openAt \u2014 \u0440\u0435\u0444\u0440\u0435\u0448" };
-      if (phase === "post" && (ctx.sinceOpenAt ?? 0) >= t.holdFallbackSec * 1e3) {
+      if (phase === "post" && t.holdFallbackSec > 0 && (ctx.sinceOpenAt ?? 0) >= t.holdFallbackSec * 1e3) {
         return { reload: t.postOpenReloadMs, reason: `hold \u043D\u0435 \u0434\u043E\u0436\u0434\u0430\u043B\u0441\u044F OPEN \u0437\u0430 ${t.holdFallbackSec} \u0441 \u2014 \u043F\u0435\u0440\u0435\u0445\u043E\u0436\u0443 \u043D\u0430 refresh`, fallback: true };
       }
       return { reload: null, reason: phase === "pre" ? "hold: \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u043C\u0438\u043D\u0443\u0442\u0430, \u0442\u043E\u043B\u044C\u043A\u043E JSON" : "hold: \u043F\u043E\u0441\u043B\u0435 openAt, \u0442\u043E\u043B\u044C\u043A\u043E JSON" };
@@ -419,7 +432,7 @@ function waitPlan(strategy, phase, kind, ctx, t) {
     }
     case "closed": {
       if (opened) return { reload: t.postOpenReloadMs, reason: "OPEN \u0431\u044B\u043B, \u043C\u0430\u0433\u0430\u0437\u0438\u043D/\u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u0437\u0430\u043A\u0440\u044B\u0442\u044B \u2014 \u0440\u0435\u0444\u0440\u0435\u0448" };
-      if (hold) return { reload: t.closedReloadMs, reason: `hold: \u0437\u0430\u043A\u0440\u044B\u0442\u043E \u2014 \u0440\u0435\u0444\u0440\u0435\u0448 \u0440\u0430\u0437 \u0432 ${Math.round(t.closedReloadMs / 1e3)} \u0441 \u043D\u0435\u0437\u0430\u0432\u0438\u0441\u0438\u043C\u043E \u043E\u0442 \u0444\u0430\u0437\u044B` };
+      if (hold) return { reload: t.holdReloadMs, reason: `hold: \u0437\u0430\u043A\u0440\u044B\u0442\u043E \u2014 \u043F\u0440\u043E\u0432\u0435\u0440\u044F\u044E \u0440\u0430\u0437 \u0432 ${Math.round(t.holdReloadMs / 1e3)} \u0441, \u043D\u0435 \u0447\u0430\u0449\u0435, \u043D\u0435\u0437\u0430\u0432\u0438\u0441\u0438\u043C\u043E \u043E\u0442 \u0444\u0430\u0437\u044B` };
       return { reload: phaseMs(phase, t), reason: `\u0437\u0430\u043A\u0440\u044B\u0442\u043E \u2014 \u0440\u0435\u0444\u0440\u0435\u0448 \u043F\u043E \u0444\u0430\u0437\u0435 (${phase})` };
     }
   }

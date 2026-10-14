@@ -17,6 +17,13 @@ export function effectiveStrategy(c: Ctl): Strategy {
   return c.cfg.strategy === 'hold' && !c.ts.holdFallback ? 'hold' : 'refresh';
 }
 
+/** Время охоты вышло (pickupWaitMin / restockMin после начала дропа или «Рестоки») — вкладка больше не рефрешит. */
+export function huntOver(c: Ctl): void {
+  const min = c.cfg.restockAt ? c.t.restockMin : Math.max(c.t.pickupWaitMin, c.t.restockMin);
+  if (c.ts.state !== 'STUCK') c.log(`охота закончилась: ${min} мин после начала прошли — больше не обновляю (Start или «Рестоки» — заново)`, 'warn');
+  c.setState('STUCK', `время охоты вышло (${min} мин) — Start или «Рестоки»`);
+}
+
 /** hold не дождался своего OPEN — дальше вкладка ведёт себя как refresh. */
 export function holdFallback(c: Ctl, why: string): void {
   if (c.ts.holdFallback) return;
@@ -36,16 +43,16 @@ export function busyMs(c: Ctl): number {
  * который с мака работал; на сервере 541 даже в гостевом окне Chrome без расширения): Apple не пускает саму машину/сеть,
  * а не «занято». Повторять чаще бесполезно — это не очередь.
  */
-export const HINT_541 = 'HTTP 541 — Apple не пускает это окружение к магазину (12.10: сервер AWS — 541 с IP сервера и через прокси, '
-  + 'даже без расширения; с мака из ОАЭ всё работало); повторы реже (5→30 с). Помогает другая машина/сеть: обычный компьютер '
-  + 'или другой хостер + резидентный прокси ОАЭ — Stop, сменить, Start';
+export const HINT_541 = 'HTTP 541 — Apple не пускает к магазину; повторяю раз в 1,5–5 с, пока не пустит. Если 541 не проходит '
+  + 'минутами — это окружение (12.10: сервер AWS — 541 даже без расширения и через прокси, с мака всё работало): другая '
+  + 'машина/сеть или резидентный прокси ОАЭ — Stop, сменить, Start';
 
-/** Бэкофф после 541: 5, 10, 20, 30 с (с джиттером). */
+/** Повтор после 541 (v5): 1,5 → 2,25 → 3,4 → 5 с и дальше раз в ~5 с, пока не пустит (с джиттером). */
 export function blockedMs(c: Ctl): number {
   const n = c.ts.http541InRow++;
   if (!c.ts.hint541) { c.ts.hint541 = true; c.log(HINT_541, 'warn'); }
   void c.save();
-  return Math.min(Math.max(c.jit(5000 * 2 ** n), c.t.minReloadMs), 30000);
+  return Math.min(Math.max(c.jit(1500 * 1.5 ** Math.min(n, 4)), c.t.minReloadMs), 5000);
 }
 
 /**
@@ -56,7 +63,7 @@ export function blockedMs(c: Ctl): number {
 export function busyBackoff(c: Ctl, page?: PageInfo): void {
   if (page?.status === 541) {
     const ms = blockedMs(c);
-    c.setState('BUSY', `HTTP 541 (${c.ts.http541InRow}) — Apple не пускает этот IP; рефреш через ${(ms / 1000).toFixed(0)} с`);
+    c.setState('BUSY', `HTTP 541 (${c.ts.http541InRow}) — Apple не пускает; рефреш через ${(ms / 1000).toFixed(1)} с`);
     c.scheduleReload(ms, 'http-541');
     return;
   }

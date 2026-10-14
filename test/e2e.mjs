@@ -217,7 +217,7 @@ function makeConfig(profileId, orders, { openInSec, hub = false, mode = 'auto', 
   return {
     profileId, hubUrl: hub ? HUB_WS : '',
     openAt: new Date(Date.now() + openInSec * 1000).toISOString(),
-    mode, orders, strategy, proxy, ipCheckUrl: `${MOCK}/__ip`, ...extra,
+    mode, orders, strategy, proxy, ipCheckUrl: `${MOCK}/__ip`, autoStart: false, ...extra,
     timing: { pollMs: 1200, preOpenReloadMs: 3000, postOpenReloadMs: 1500, minReloadMs: 1500, jitterPct: 30, graceSec: 20, atbTimeoutMs: 15000, atb404BackoffMs: 1500, atb404MaxInRow: 5, manualPayTimeoutSec: 600, assistAfterFailures: 3, ...timing },
     retries: { checkout: 4, slotsPerStore: 4 },
     limits: { maxTabsTotal: 12 },
@@ -1021,8 +1021,9 @@ scenarios.acceptance = async () => {
 // ---------- живой тест 12.10 с сервера: товар уже в продаже, JSON/Add to Bag отвечают 541, самовывоза нет ----------
 
 /**
- * Товар продаётся задолго до дропа (18 Pro перед 16.10): Add to Bag активна, JSON buyable, а открывается квота
- * самовывоза. До openAt — ни одного клика и ни одного OPEN; за минуту до старта один рефреш; клик ровно в openAt.
+ * v5 (как 3.0): товар продаётся задолго до дропа (18 Pro перед 16.10), Add to Bag активна уже при Start — жмём сразу,
+ * доходим до Fulfillment и ждём там окна самовывоза (квота открывается в openAt). OPEN до openAt не объявляется;
+ * после openAt окна появляются → Billing за секунды.
  */
 scenarios['atb-before-open'] = async () => {
   const OPEN_IN = 70;
@@ -1032,8 +1033,41 @@ scenarios['atb-before-open'] = async () => {
   try {
     const openAt = Date.now() + OPEN_IN * 1000;
     await mockConfig({ openAfter: OPEN_IN });
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, targets: ['MJR54AH/A'], payment: 'applepay' })], { openInSec: OPEN_IN }));
+    assert.ok((await p.cmd({ cmd: 'start' })).ok);
+    await waitFor(async () => /Add to Bag активна при Start — жму сразу/.test(await p.log()) || null, 25000, 'лог: кнопка активна при Start — жмём', 500);
+    await waitFor(async () => /нет окон самовывоза .*до старта/.test(await p.log()) || null, 40000, 'лог: на Fulfillment ждём окна до openAt', 500);
+    const ms0 = await mockState();
+    const early = ms0.sessions.flatMap((x) => x.atbTimes).filter((t) => t < openAt - 500);
+    assert.ok(early.length >= 1, 'Add to Bag нажата до openAt');
+    const st0 = await p.status();
+    assert.ok(!st0.os.openedAt, 'OPEN до старта нет');
+    assert.ok(/товар в корзине до openAt/.test(await p.log()), 'SW: корзина до openAt — не OPEN');
+    assert.ok(st0.tabs.some((t) => t.state === 'FULFILLMENT'), `вкладка ждёт на Fulfillment: ${st0.tabs.map((t) => t.state).join(', ')}`);
+    const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, (OPEN_IN + 60) * 1000, 'Billing после openAt', 500);
+    const ms = await mockState();
+    const sess = ms.sessions.find((s) => s.bag.length);
+    say(`atb-before-open: Add to Bag за ${((openAt - Math.min(...early)) / 1000).toFixed(0)} с до openAt (кликов ${sess.atbTimes.length}), Billing +${((st.os.billingReadyAt - openAt) / 1000).toFixed(1)} с от openAt, магазин ${sess.checkout.fulfillment?.store}`);
+    assert.ok(st.os.billingReadyAt >= openAt - 500, 'Billing не раньше openAt (окон до openAt нет)');
+    assert.ok(st.os.billingReadyAt - openAt < 12000, 'Billing в первые секунды после openAt — товар уже в корзине');
+    assert.equal(sess.atbTimes.length, 1, 'Add to Bag один раз');
+  } catch (e) { await dumpOnFail(profiles, 'atb-before-open'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+/**
+ * atbAtStart: false (поведение 4.0): Add to Bag активна, но до openAt ни одного клика и ни одного OPEN;
+ * за минуту до старта один рефреш; клик ровно в openAt.
+ */
+scenarios['atb-wait-open'] = async () => {
+  const OPEN_IN = 70;
+  await startServers({ OPEN_AFTER: String(OPEN_IN), BUSY_FIRST: '0', PICKUP_AFTER_OPEN: '1' });
+  const p = await launchProfile('atb-wait-open');
+  const profiles = [p];
+  try {
+    const openAt = Date.now() + OPEN_IN * 1000;
+    await mockConfig({ openAfter: OPEN_IN });
     // openSignal any: по JSON доставка buyable с самого начала — сигнал есть, но до openAt−60 с OPEN не объявляется
-    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 2, targets: ['MJR54AH/A'], payment: 'applepay' })], { openInSec: OPEN_IN, extra: { openSignal: 'any' } }));
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 2, targets: ['MJR54AH/A'], payment: 'applepay' })], { openInSec: OPEN_IN, extra: { openSignal: 'any', atbAtStart: false } }));
     assert.ok((await p.cmd({ cmd: 'start' })).ok);
     await waitFor(async () => /Add to Bag уже активна, но до openAt/.test(await p.log()) || null, 25000, 'лог: кнопка активна, ждём openAt', 500);
     await waitFor(async () => /OPEN не объявляем/.test(await p.log()) || null, 25000, 'лог: сигнал по JSON есть, но до openAt−60 с не считается', 500);
@@ -1045,13 +1079,13 @@ scenarios['atb-before-open'] = async () => {
     const early = ms.sessions.flatMap((x) => x.atbTimes).filter((t) => t < openAt - 500);
     const first = Math.min(...ms.sessions.flatMap((x) => x.atbTimes));
     const hits = ms.sessions.flatMap((x) => x.hits).filter((h) => h < openAt - 500);
-    say(`atb-before-open: до openAt Add to Bag ${early.length} раз, загрузок товара ${hits.length}; первый клик +${((first - openAt) / 1000).toFixed(1)} с, OPEN +${((st.os.openedAt - openAt) / 1000).toFixed(1)} с (${st.os.openSource}), Billing +${((st.os.billingReadyAt - openAt) / 1000).toFixed(1)} с от openAt`);
+    say(`atb-wait-open: до openAt Add to Bag ${early.length} раз, загрузок товара ${hits.length}; первый клик +${((first - openAt) / 1000).toFixed(1)} с, OPEN +${((st.os.openedAt - openAt) / 1000).toFixed(1)} с (${st.os.openSource}), Billing +${((st.os.billingReadyAt - openAt) / 1000).toFixed(1)} с от openAt`);
     assert.equal(early.length, 0, 'ни одного Add to Bag до openAt');
     assert.ok(st.os.openedAt >= openAt - 500, 'OPEN не раньше openAt');
     assert.ok(first - openAt < 4000, 'клик в первые секунды после openAt');
     assert.ok(hits.length <= 6, `до старта страница товара грузилась редко на 2 вкладки (${hits.length})`);
     assert.ok(/обновляю страницу один раз перед openAt/.test(await p.log()), 'один рефреш в последнюю минуту');
-  } catch (e) { await dumpOnFail(profiles, 'atb-before-open'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+  } catch (e) { await dumpOnFail(profiles, 'atb-wait-open'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
 /** fulfillment-messages отвечает 541 всем (IP дата-центра): наблюдатель слепой, но опрос редкий, подсказка в логе, покупка идёт через страницу. */
@@ -1077,7 +1111,7 @@ scenarios['fm-541'] = async () => {
   } catch (e) { await dumpOnFail(profiles, 'fm-541'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
-/** Add to Bag отвечает 541: не долбить раз в 1,5 с — бэкофф 5→30 с и подсказка; IP «отпустили» → покупка. */
+/** Add to Bag отвечает 541: v5 (как 3.0) — повтор раз в 1,5–5 с, пока не пустит, и подсказка; IP «отпустили» → покупка. */
 scenarios['atb-541'] = async () => {
   await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', ATB_STATUS: '541' });
   const p = await launchProfile('atb-541');
@@ -1085,12 +1119,13 @@ scenarios['atb-541'] = async () => {
   try {
     await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1 })], { openInSec: -5 }));
     assert.ok((await p.cmd({ cmd: 'start' })).ok);
-    const ms1 = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.atbTimes.length >= 2) ? m : null; }, 40000, 'две попытки Add to Bag', 500);
-    const times = ms1.sessions.find((s) => s.atbTimes.length >= 2).atbTimes;
-    const gap = times[1] - times[0];
+    const ms1 = await waitFor(async () => { const m = await mockState(); return m.sessions.some((s) => s.atbTimes.length >= 5) ? m : null; }, 60000, 'пять попыток Add to Bag', 500);
+    const times = ms1.sessions.find((s) => s.atbTimes.length >= 5).atbTimes;
+    const gaps = times.slice(1).map((t, i) => t - times[i]);
     const log1 = await p.log();
-    say(`atb-541: интервал между попытками ${gap} мс`);
-    assert.ok(gap >= 3000, `после 541 повтор не раньше ~5 с (${gap} мс)`);
+    say(`atb-541: интервалы между попытками ${gaps.map((g) => (g / 1000).toFixed(1)).join(', ')} с`);
+    assert.ok(gaps.every((g) => g >= 1400), `после 541 повтор не чаще 1,5 с (${gaps})`);
+    assert.ok(gaps.every((g) => g <= 9000), `после 541 повтор не реже ~5 с плюс загрузка страницы (${gaps})`);
     assert.ok(/HTTP 541 после Add to Bag/.test(log1), 'исход помечен как 541');
     assert.ok(/Apple не пускает/.test(log1), 'подсказка про 541 и окружение');
     await mockConfig({ atbStatus: 0 });
@@ -1100,24 +1135,62 @@ scenarios['atb-541'] = async () => {
   } catch (e) { await dumpOnFail(profiles, 'atb-541'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
-/** Самовывоза нет ни в одном магазине: не STUCK, а повтор страницы Fulfillment раз в pickupRetryMs, пока окна не появятся. */
+/**
+ * Самовывоза нет ни в одном магазине: не STUCK, а повтор страницы Fulfillment раз в pickupRetryMs pickupWaitMin минут,
+ * дальше рестоки раз в restockRetryMs; окна появились (рестоки) → Billing.
+ */
 scenarios['pickup-retry'] = async () => {
   await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', UNAVAILABLE_STORES: 'R597,R596,R706' });
   const p = await launchProfile('pickup-retry');
   const profiles = [p];
   try {
-    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1 })], { openInSec: -5, timing: { pickupRetryMs: 2000, pickupWaitSec: 90 } }));
+    // 15 с ищем окна раз в 2 с, потом рестоки раз в 2 с до 2 мин
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1 })], { openInSec: -5, timing: { pickupRetryMs: 2000, pickupWaitMin: 0.25, restockRetryMs: 2000, restockMin: 2 } }));
     assert.ok((await p.cmd({ cmd: 'start' })).ok);
-    await waitFor(async () => /нет самовывоза ни в одном магазине .*повторяю страницу/.test(await p.log()) || null, 60000, 'лог: ждём окна самовывоза', 500);
-    await sleep(5000); // минимум два повтора
+    await waitFor(async () => /нет окон самовывоза .*ищу окна до/.test(await p.log()) || null, 60000, 'лог: ждём окна самовывоза', 500);
+    await waitFor(async () => /ловлю рестоки/.test(await p.log()) || null, 40000, 'лог: окна не появились — рестоки', 500);
     const st0 = await p.status();
     assert.ok(st0.tabs.every((t) => t.state !== 'STUCK'), 'не STUCK');
+    assert.equal(st0.hunt?.stage, 'restock', `стадия охоты в статусе: ${JSON.stringify(st0.hunt)}`);
     await mockConfig({ unavailableStores: ['R597'] });
     const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, 60000, 'Billing после появления окон', 500);
     const sess = (await mockState()).sessions.find((s) => s.bag.length);
-    say(`pickup-retry: Billing через ${((st.os.billingReadyAt - st.os.openedAt) / 1000).toFixed(1)} с после OPEN, магазин ${sess.checkout.fulfillment.store}`);
+    say(`pickup-retry: Billing через ${((st.os.billingReadyAt - st.os.startedAt) / 1000).toFixed(1)} с после Start, магазин ${sess.checkout.fulfillment.store}`);
     assert.equal(sess.checkout.fulfillment.store, 'R596', 'первый доступный магазин после ожидания');
   } catch (e) { await dumpOnFail(profiles, 'pickup-retry'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+/**
+ * Кнопка «Рестоки» (v5): дроп давно прошёл, окон нет. Рестоки сразу (без 30 мин дропа), до restockMin, потом STUCK
+ * «конец охоты»; ещё раз «Рестоки» — новая охота, окна появились → Billing. Заодно «Найти магазины» по JSON мока.
+ */
+scenarios['restock'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', UNAVAILABLE_STORES: 'R597,R596,R706' });
+  const p = await launchProfile('restock');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1 })], { openInSec: -7200, timing: { restockRetryMs: 2000, restockMin: 0.4 } }));
+    const fs = await p.cmd({ cmd: 'findStores' });
+    say(`restock: найдено магазинов ${fs.stores?.length}: ${(fs.stores ?? []).map((x) => `${x.id} ${x.city}`).join(', ')}`);
+    assert.ok(fs.ok && fs.stores.length >= 5 && fs.stores.every((x) => /^R\d{3,4}$/.test(x.id) && x.city), `findStores: ${JSON.stringify(fs)}`);
+    const r1 = await p.cmd({ cmd: 'restock' });
+    assert.ok(r1.ok, `restock: ${JSON.stringify(r1)}`);
+    const s1 = await p.status();
+    assert.ok(s1.restockAt && s1.hunt?.stage === 'restock', `сразу рестоки: ${JSON.stringify({ restockAt: s1.restockAt, hunt: s1.hunt })}`);
+    await waitFor(async () => /нет окон самовывоза .*рестоки до/.test(await p.log()) || null, 60000, 'лог: рестоки на Fulfillment', 500);
+    await waitFor(async () => { const s = await p.status(); return s.tabs.some((t) => t.state === 'STUCK') ? s : null; }, 60000, 'конец охоты → STUCK', 500);
+    assert.ok(/конец охоты/.test(await p.log()), 'лог: конец охоты');
+    const r2 = await p.cmd({ cmd: 'restock' });
+    assert.ok(r2.ok, `restock ещё раз: ${JSON.stringify(r2)}`);
+    await waitFor(async () => { const s = await p.status(); return s.tabs.some((t) => t.state === 'FULFILLMENT') ? s : null; }, 60000, 'снова на Fulfillment', 500);
+    await mockConfig({ unavailableStores: ['R597', 'R596'] });
+    const st = await waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, 60000, 'Billing после рестока', 500);
+    const sess = (await mockState()).sessions.find((s) => s.bag.length);
+    say(`restock: Billing через ${((st.os.billingReadyAt - st.os.startedAt) / 1000).toFixed(1)} с после второго «Рестоки», магазин ${sess.checkout.fulfillment.store}`);
+    assert.equal(sess.checkout.fulfillment.store, 'R706');
+    await p.cmd({ cmd: 'stop' });
+    assert.ok(!(await p.status()).restockAt, 'Stop снимает режим рестоков');
+  } catch (e) { await dumpOnFail(profiles, 'restock'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
 /**
@@ -1175,7 +1248,7 @@ scenarios['baked-profile'] = async () => {
 
 const list = want.length ? want : [
   'single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-fallback', 'auto-place',
-  'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'atb-before-open', 'fm-541', 'atb-541', 'pickup-retry', 'baked-profile',
+  'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'atb-before-open', 'atb-wait-open', 'fm-541', 'atb-541', 'pickup-retry', 'restock', 'baked-profile',
   'ordered-stays', 'no-cross-profile-blocking', 'fleet-identity', 'fleet-strategies', 'hold-fallback', 'hub-down', 'config-update', 'proxy', 'applepay-retry', 'card-slow-90s', 'acceptance',
 ];
 let failed = 0;

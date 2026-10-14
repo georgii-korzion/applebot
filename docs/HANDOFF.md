@@ -138,7 +138,7 @@ GET https://www.apple.com/ae/shop/fulfillment-messages
 - Самовывоз: `body.content.pickupMessage.stores[].partsAvailability["<PART>"].pickupDisplay` = `available` / `unavailable` / `ineligible`.
 - Фазы (12.10, товар продавался за 4 дня до дропа квоты самовывоза): до `openAt − 60 с` OPEN не объявляется и активная Add to Bag
   не нажимается; в последнюю минуту OPEN только по фронту сигнала; после `openAt` — пока сигнал есть. Опрос до `openAt − 60 с` раз в
-  `armedPollMs` (20 с). На `HTTP 541` (IP не пускают) — повторы 5→30 с и подсказка сменить прокси.
+  `armedPollMs` (20 с). На `HTTP 541` (IP не пускают) — повторы опроса реже (до 5 с) и подсказка сменить прокси; страница с 541 (5.0, как 3.0) — рефреш раз в 1,5–5 с, пока не пустит.
 - Опрос раз в ~1,2 с ±30 %, не чаще раза в секунду.
 - Запасной сигнал: в HTML страницы товара появилась `data-autom="add-to-cart"`, пропала `data-autom="continueButton"` и строка `Pre-order starting` (раз в ~6 с, только с последней минуты до старта; до того не проверяется — товар может продаваться задолго до дропа).
 - Если JSON отвечает не-JSON или ошибкой — магазин закрыт; продолжать опрос.
@@ -473,16 +473,20 @@ GET https://www.apple.com/ae/shop/fulfillment-messages
 | `minReloadMs` | 1500 | абсолютный минимум между рефрешами вкладки |
 | `jitterPct` | 30 | разброс всех интервалов |
 | `graceSec` | 20 | после `openAt` без сигнала OPEN — перейти на быстрый рефреш |
-| `hydrateWaitMs` | 12000 | ожидание формы покупки на загруженной странице |
-| `atbTimeoutMs` | 15000 | ответ на Add to Bag |
+| `hydrateWaitMs` | 20000 | ожидание формы покупки на загруженной странице |
+| `atbTimeoutMs` | 60000 | ожидание `step=attach` после Add to Bag (5.0) |
 | `atb404BackoffMs` | 1500 | пауза после 404 |
 | `atb404MaxInRow` | 5 | 404 подряд до стопа |
 | `assistAfterFailures` | 3 | неудач шага до режима ассистента |
-| `queueMaxWaitSec` | 90 | терпение на странице очереди |
+| `queueMaxWaitSec` | 180 | терпение на странице очереди (hold — `holdQueueWaitSec` 1800) |
 | `checkoutErrorRetries` | 2 | повторы при общей ошибке чекаута |
-| `cardWaitMs` | 10000 | ожидание полей карты |
+| `cardWaitMs` | 90000 | ожидание полей карты (5.0) |
 | `holdLoserBagSec` | 90 | сколько запасной профиль держит товар |
-| `manualPayTimeoutSec` | 600 | сколько ждать подтверждения оплаты |
+| `manualPayTimeoutSec` | 1800 | сколько ждать подтверждения оплаты |
+| `pickupWaitMin` / `pickupRetryMs` | 30 / 3000 | нет окон самовывоза: искать столько минут после старта, раз в столько мс (5.0) |
+| `restockMin` / `restockRetryMs` | 60 / 5000 | рестоки: до стольких минут от старта или от кнопки «Рестоки», раз в столько мс (5.0) |
+
+Полная таблица с пределами — [GUIDE.md §1.4](GUIDE.md).
 
 Внутренние ожидания шагов: кнопка Add to Bag 8 с, trade-in 1,5 с, ответ `updateSummary` 5 с, активация Add to Bag 12 с, корзина 10 + 2 с, Check Out 8 с + смена URL 5 с, Guest 12 с + 6 с, страница Fulfillment 12 с, список магазинов 10 с, даты 5 с, окна 5 с, Continue 15 с, Billing 12 с, Review Your Order 4 с + 15 с, галочка 4 с, кнопка Apple Pay 5 с, Place Order 8 с.
 

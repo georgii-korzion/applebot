@@ -547,7 +547,7 @@ function fulfillmentMessages(q, s) {
     deliveryMessage[p] = { regular: { buyability: buy, quote: open ? 'Delivers Oct 23' : '' }, compact: { buyability: buy, quote: open ? 'Delivers Oct 23' : '' } };
   }
   const stores = STORES.map((st) => ({
-    storeNumber: st.id, storeName: st.name.replace(/^Apple /, ''),
+    storeNumber: st.id, storeName: st.name.replace(/^Apple /, ''), city: st.city,
     partsAvailability: Object.fromEntries(parts.map((p) => {
       const open = PARTS[p] ? isOpen(PARTS[p], s) : false;
       const av = open && !S.unavailableStores.includes(st.id) && pickupOpen();

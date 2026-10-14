@@ -2,6 +2,7 @@
 // timeSlotId/signKey выдаёт сервер — выбор только через UI.
 import { SEL } from '../../shared/selectors';
 import { storeName } from '../../shared/parts';
+import { closedReloadMs, huntStage, phaseOf } from '../../shared/config';
 import type { Ctl } from '../ctl';
 import { assistSelect } from '../assist';
 import { orderWindows } from '../slots';
@@ -32,31 +33,58 @@ export async function fulfillmentStep(c: Ctl): Promise<void> {
 
   // 3. список магазинов
   const listed = await waitUntil(() => (storeRadios().length ? true : null), c.t.checkoutPageWaitMs, sig);
-  if (!listed) c.log('список магазинов не появился за 10 с', 'warn');
+  if (!listed) c.log(`список магазинов не появился за ${Math.round(c.t.checkoutPageWaitMs / 1000)} с`, 'warn');
 
   // 4. магазины по порядку
   if (listed) {
     for (const sid of o.stores) {
-      if (await tryStore(c, sid)) { c.ts.pickupWaitSince = undefined; return; }
+      if (await tryStore(c, sid)) { c.ts.pickupWaitSince = undefined; c.ts.pickupStage = undefined; return; }
     }
   }
 
-  // 5. самовывоза нет: на дропе квоты самовывоза (16.10) окна появляются не сразу — перезагружаем страницу
-  // раз в pickupRetryMs до pickupWaitSec, потом фолбэки / STUCK
-  if (c.t.pickupWaitSec > 0) {
-    c.ts.pickupWaitSince ??= Date.now();
-    const waited = Date.now() - c.ts.pickupWaitSince;
-    const left = c.t.pickupWaitSec * 1000 - waited;
-    if (left > 0) {
-      const ms = Math.max(c.jit(c.t.pickupRetryMs), c.t.minReloadMs);
-      if (waited < 1000) c.log(`нет самовывоза ни в одном магазине (${o.stores.join(', ')}) — повторяю страницу раз в ~${Math.round(c.t.pickupRetryMs / 1000)} с до ${Math.round(c.t.pickupWaitSec / 60)} мин`, 'warn');
-      c.setState('FULFILLMENT', `нет самовывоза — повтор через ${(ms / 1000).toFixed(1)} с (ждём окна ещё ${Math.round(left / 1000)} с)`);
-      await c.save();
-      c.scheduleReload(ms, 'pickup-retry');
-      return;
+  // 5. окон самовывоза нет (v5): ищем до конца охоты, перезагружая страницу — до openAt по фазам (товар положили
+  // в корзину при Start), первые pickupWaitMin минут после начала раз в pickupRetryMs, дальше рестоки раз в
+  // restockRetryMs до restockMin минут; потом фолбэки / STUCK
+  const now = Date.now();
+  const h = huntStage(c.cfg, c.os.startedAt, now);
+  if (h.stage !== 'over') {
+    const openAt = Date.parse(c.cfg.openAt);
+    const at = (ms: number) => new Date(ms).toLocaleTimeString();
+    let ms: number;
+    let what: string;
+    if (h.stage === 'before' && !c.os.openedAt) {
+      const phase = phaseOf(c.cfg, undefined, now);
+      ms = closedReloadMs(c.cfg, undefined, now);
+      // не проспать смену фазы и сам openAt
+      const edge = phase === 'armed' ? openAt - 60_000 : openAt;
+      if (Number.isFinite(edge)) ms = Math.min(ms, Math.max(edge - now, c.t.minReloadMs));
+      what = `до старта ${at(openAt)}`;
+    } else if (h.stage === 'restock') {
+      ms = Math.max(c.jit(c.t.restockRetryMs), c.t.minReloadMs);
+      what = `рестоки до ${at(h.until)}`;
+    } else {
+      ms = Math.max(c.jit(c.t.pickupRetryMs), c.t.minReloadMs);
+      what = `ищу окна до ${at(h.dropUntil > now ? h.dropUntil : h.until)}`;
     }
-    c.log(`окна самовывоза не появились за ${c.t.pickupWaitSec} с`, 'warn');
+    if (c.ts.pickupWaitSince === undefined) {
+      c.ts.pickupWaitSince = now;
+      c.log(`нет окон самовывоза (${o.stores.join(', ')}) — обновляю страницу: ${what}; после начала раз в ~${Math.round(c.t.pickupRetryMs / 1000)} с `
+        + `${c.t.pickupWaitMin} мин, рестоки раз в ~${Math.round(c.t.restockRetryMs / 1000)} с до ${Math.max(c.t.pickupWaitMin, c.t.restockMin)} мин`, 'warn');
+    }
+    if (c.ts.pickupStage !== h.stage) {
+      if (c.ts.pickupStage && h.stage === 'restock') c.log(`окна не появились за ${c.t.pickupWaitMin} мин — ловлю рестоки до ${at(h.until)}`, 'warn');
+      if (c.ts.pickupStage === 'before' && h.stage === 'drop') c.log('старт дропа — ищу окна самовывоза чаще');
+      c.ts.pickupStage = h.stage;
+    }
+    c.setState('FULFILLMENT', `нет окон самовывоза — ${what}, повтор через ${(ms / 1000).toFixed(1)} с`);
+    await c.save();
+    c.scheduleReload(ms, h.stage === 'restock' ? 'restock' : 'pickup-retry');
+    return;
+  }
+  if (c.ts.pickupWaitSince !== undefined) {
+    c.log(`окна самовывоза не появились до ${new Date(h.until).toLocaleTimeString()} (конец охоты)`, 'warn');
     c.ts.pickupWaitSince = undefined;
+    c.ts.pickupStage = undefined;
   }
   if (o.deliveryFallback) {
     await deliveryFallback(c);

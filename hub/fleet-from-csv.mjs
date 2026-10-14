@@ -19,6 +19,7 @@
 //   slotDay slotAfter slotBefore | день после до      окно самовывоза
 //   autoPlaceOrder | placeorder   yes/no — жать Place Order самим (карта)
 //   cardFallback   applepay / none;  applePayClick  debugger / dom;  autoStart  yes/no
+//   atbAtStart     yes/no — при Start один раз жать активную Add to Bag до openAt (по умолчанию yes)
 //   note | комментарий     игнорируется
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -56,6 +57,7 @@ const ALIASES = {
   cardFallback: ['cardfallback'],
   applePayClick: ['applepayclick'],
   autoStart: ['autostart', 'автостарт'],
+  atbAtStart: ['atbatstart', 'atb at start', 'корзина при старте'],
   note: ['note', 'notes', 'комментарий', 'коммент', 'comment', 'примечание', 'кто', 'owner'],
 };
 const BY_ALIAS = new Map();
@@ -178,7 +180,7 @@ export function fleetFromRows(rows, base, { version } = {}) {
     const slot = {};
     for (const [col, k] of Object.entries({ slotDay: 'day', slotAfter: 'after', slotBefore: 'before' })) { const v = get(col); if (v) slot[k] = v; }
     if (Object.keys(slot).length) p.slot = slot;
-    for (const k of ['autoPlaceOrder', 'autoStart']) {
+    for (const k of ['autoPlaceOrder', 'autoStart', 'atbAtStart']) {
       const v = get(k);
       if (!v) continue;
       if (yes(v)) p[k] = true; else if (no(v)) p[k] = false; else throw new Error(`${where}: ${k} «${v}»: yes/no`);

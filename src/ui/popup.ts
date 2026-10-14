@@ -3,6 +3,9 @@ import type { Cmd, Egress, OrderRecord, OrderState, TabRow } from '../shared/mes
 import type { CfgMeta, Strategy } from '../shared/config';
 
 interface Status {
+  atbAtStart?: boolean;
+  restockAt?: number;
+  hunt?: { stage: 'before' | 'drop' | 'restock' | 'over'; dropUntil: number; until: number } | null;
   ok: boolean;
   profileId: string;
   server: string;
@@ -76,7 +79,12 @@ function render(st: Status): void {
   const kv = (k: string, v: string, cls = '') => { sum.append(el('span', k, 'muted'), el('span', v, cls)); };
   const os = st.os;
   kv('сайт', st.mock ? `${st.baseUrl} — МОК, не Apple! (Настройки → baseUrl)` : st.baseUrl, st.mock ? 'warn' : '');
-  kv('старт', `${until(st.openAt)}${st.autoStart ? ' · autoStart' : ''}`);
+  kv('старт', st.restockAt ? `рестоки с ${new Date(st.restockAt).toLocaleTimeString()}` : `${until(st.openAt)}${st.autoStart ? ' · autoStart' : ''}${st.atbAtStart ? ' · Add to Bag при Start' : ''}`);
+  if (st.hunt) {
+    const hh = (ms: number) => new Date(ms).toLocaleTimeString();
+    const label = { before: `до старта; окна ищем до ${hh(st.hunt.until)}`, drop: `ищем окна до ${hh(st.hunt.dropUntil)}, рестоки до ${hh(st.hunt.until)}`, restock: `рестоки до ${hh(st.hunt.until)}`, over: 'время охоты вышло — Start или «Рестоки»' }[st.hunt.stage];
+    kv('охота', label, st.hunt.stage === 'over' ? 'warn' : '');
+  }
   kv('статус', os.armed ? (os.openedAt ? `OPEN ${ago(os.openedAt)} (${os.openSource ?? ''})` : 'взведён, ждём OPEN') : 'не запущен', os.openedAt ? 'ok' : '');
   if (os.fleetOpen && !os.openedAt) kv('флот', `${os.fleetOpen.profile} уже пустили ${ago(os.fleetOpen.at)} — ждём свой OPEN`, 'warn');
   if (st.order) {
@@ -179,6 +187,7 @@ function result(r: { ok?: boolean; error?: string; warnings?: string[] } | undef
 
 $('start').onclick = async () => result(await send({ cmd: 'start', source: 'popup' }), 'Запущено: вкладки открыты и взведены');
 $('stop').onclick = async () => result(await send({ cmd: 'stop' }), 'Остановлено');
+$('restock').onclick = async () => result(await send({ cmd: 'restock' }), 'Рестоки: охота за окнами началась (openAt на этот прогон — сейчас)');
 $('prepare').onclick = async () => result(await send({ cmd: 'prepare' }), 'Prepare: открыта вкладка прогрева');
 $('clean').onclick = async () => result(await send({ cmd: 'cleanBag' }), 'Clean bag: открыта корзина');
 $('strategy').onclick = async () => {

@@ -39,7 +39,8 @@ export function waitPlan(strategy: Strategy, phase: Phase, kind: WaitKind, ctx: 
       if (opened) return { reload: t.postOpenReloadMs, reason: 'OPEN был, формы покупки ещё нет — рефреш' };
       if (phase === 'armed') return { reload: null, reason: 'до openAt−60 с не рефрешим' };
       if (!hold) return { reload: phase === 'pre' ? t.preOpenReloadMs : t.postOpenReloadMs, reason: phase === 'pre' ? 'последняя минута — рефреш' : 'после openAt — рефреш' };
-      if (phase === 'post' && (ctx.sinceOpenAt ?? 0) >= t.holdFallbackSec * 1000) {
+      // holdFallbackSec 0 (по умолчанию, v5) — hold стоит, пока не пустят
+      if (phase === 'post' && t.holdFallbackSec > 0 && (ctx.sinceOpenAt ?? 0) >= t.holdFallbackSec * 1000) {
         return { reload: t.postOpenReloadMs, reason: `hold не дождался OPEN за ${t.holdFallbackSec} с — перехожу на refresh`, fallback: true };
       }
       return { reload: null, reason: phase === 'pre' ? 'hold: последняя минута, только JSON' : 'hold: после openAt, только JSON' };
@@ -69,7 +70,7 @@ export function waitPlan(strategy: Strategy, phase: Phase, kind: WaitKind, ctx: 
     }
     case 'closed': {
       if (opened) return { reload: t.postOpenReloadMs, reason: 'OPEN был, магазин/страница закрыты — рефреш' };
-      if (hold) return { reload: t.closedReloadMs, reason: `hold: закрыто — рефреш раз в ${Math.round(t.closedReloadMs / 1000)} с независимо от фазы` };
+      if (hold) return { reload: t.holdReloadMs, reason: `hold: закрыто — проверяю раз в ${Math.round(t.holdReloadMs / 1000)} с, не чаще, независимо от фазы` };
       return { reload: phaseMs(phase, t), reason: `закрыто — рефреш по фазе (${phase})` };
     }
   }

@@ -82,8 +82,10 @@ export interface Timing {
   holdQueueWaitSec: number;
   /** hold: заглушка без meta refresh — ждать столько, потом один рефреш. */
   holdBusyWaitSec: number;
-  /** hold: нет своего OPEN столько секунд после openAt → дальше как refresh. */
+  /** hold: нет своего OPEN столько секунд после openAt → дальше как refresh; 0 (по умолчанию, v5) — hold стоит, пока не пустят. */
   holdFallbackSec: number;
+  /** hold: закрытый магазин / пустая страница — проверять не чаще раза в holdReloadMs (заглушку очереди с автообновлением hold не трогает). */
+  holdReloadMs: number;
   /** Ожидание гидратации страницы товара (есть разметка, но ещё нет формы покупки). */
   hydrateWaitMs: number;
   /** Повторы одного и того же действия чекаута при ошибке общего вида («unexpected error»). */
@@ -96,9 +98,20 @@ export interface Timing {
   continueWaitMs: number;
   /** Опрос JSON до openAt−60 с (товар могут открыть за дни до дропа — часто опрашивать незачем); с последней минуты — pollMs. */
   armedPollMs: number;
-  /** Fulfillment без самовывоза ни в одном магазине: перезагружать страницу раз в pickupRetryMs, пока не появятся окна, до pickupWaitSec. 0 — сразу STUCK. */
-  pickupWaitSec: number;
+  /**
+   * Fulfillment без окон самовывоза (v5): страница перезагружается и ищет окна pickupWaitMin минут после начала дропа
+   * (openAt или Start, что позже) раз в pickupRetryMs; до openAt — по фазам (closedReloadMs, в последнюю минуту
+   * preOpenReloadMs). 0 — сразу фолбэки / STUCK.
+   */
+  pickupWaitMin: number;
   pickupRetryMs: number;
+  /**
+   * Рестоки: слоты, которые вернули после того, как они кончились. Охота продолжается до restockMin минут после начала
+   * дропа (Fulfillment — раз в restockRetryMs, страница товара без Add to Bag — тоже). Кнопка «Рестоки» в popup запускает
+   * такую охоту сразу, на restockMin минут. 0 — без рестоков.
+   */
+  restockMin: number;
+  restockRetryMs: number;
 }
 
 export interface Config {
@@ -112,8 +125,15 @@ export interface Config {
   openSignal: OpenSignal;
   /** Прокси профиля; null — напрямую. */
   proxy: ProxyCfg | null;
-  /** Start выполняет само расширение при запуске (один раз на openAt, FLEET-SPEC §5.4). */
+  /** Start выполняет само расширение при запуске (один раз на openAt, FLEET-SPEC §5.4). По умолчанию включён (v5). */
   autoStart: boolean;
+  /**
+   * Add to Bag при Start (v5, как 3.0): если в первую минуту после Start кнопка уже активна — жать сразу и ждать окна
+   * самовывоза на Fulfillment; если нет — ждать openAt. false — до openAt не жать никогда (как 4.0).
+   */
+  atbAtStart: boolean;
+  /** Время запуска кнопкой «Рестоки» (из storage, не из JSON): openAt на этот прогон = restockAt. */
+  restockAt?: number;
   /** Версия и хеш fleet.json на хабе (0 / '' — конфиг локальный). */
   version: number;
   cfgHash: string;
@@ -128,11 +148,11 @@ export interface Config {
 
 export const DEFAULT_TIMING: Timing = {
   pollMs: 1200, preOpenReloadMs: 3000, postOpenReloadMs: 1500, minReloadMs: 1500,
-  jitterPct: 30, graceSec: 20, atbTimeoutMs: 30000, atb404BackoffMs: 1500,
+  jitterPct: 30, graceSec: 20, atbTimeoutMs: 60000, atb404BackoffMs: 1500,
   atb404MaxInRow: 5, manualPayTimeoutSec: 1800, assistAfterFailures: 3,
-  closedReloadMs: 30000, queueMaxWaitSec: 180, holdQueueWaitSec: 600, holdBusyWaitSec: 120, holdFallbackSec: 300,
+  closedReloadMs: 30000, queueMaxWaitSec: 180, holdQueueWaitSec: 1800, holdBusyWaitSec: 120, holdFallbackSec: 0, holdReloadMs: 60000,
   hydrateWaitMs: 20000, checkoutErrorRetries: 2, cardWaitMs: 90000, checkoutPageWaitMs: 60000, continueWaitMs: 60000,
-  armedPollMs: 20000, pickupWaitSec: 600, pickupRetryMs: 5000,
+  armedPollMs: 20000, pickupWaitMin: 30, pickupRetryMs: 3000, restockMin: 60, restockRetryMs: 5000,
 };
 
 export function defaultOrder(id = 'A'): OrderCfg {
@@ -170,7 +190,8 @@ export function defaultConfig(): Config {
     strategy: 'refresh',
     openSignal: 'pickup',
     proxy: null,
-    autoStart: false,
+    autoStart: true,
+    atbAtStart: true,
     version: 0,
     cfgHash: '',
     ipCheckUrl: DEFAULT_IP_CHECK_URL,
@@ -267,6 +288,8 @@ export function normalizeConfig(raw: unknown): Config {
   const t = (r.timing ?? {}) as Record<string, unknown>;
   const timing = { ...DEFAULT_TIMING };
   for (const k of Object.keys(DEFAULT_TIMING) as (keyof Timing)[]) timing[k] = num(t[k], DEFAULT_TIMING[k]);
+  // конфиги 4.0: pickupWaitSec (секунды) → pickupWaitMin
+  if (t.pickupWaitMin === undefined && t.pickupWaitSec !== undefined) timing.pickupWaitMin = num(t.pickupWaitSec, 0) / 60;
   return {
     profileId: str(r.profileId, d.profileId),
     hubUrl: str(r.hubUrl),
@@ -275,7 +298,8 @@ export function normalizeConfig(raw: unknown): Config {
     strategy: r.strategy === 'hold' ? 'hold' : 'refresh',
     openSignal: OPEN_SIGNALS.includes(r.openSignal) ? r.openSignal as OpenSignal : d.openSignal,
     proxy: normalizeProxy(r.proxy),
-    autoStart: !!r.autoStart,
+    autoStart: r.autoStart === undefined ? d.autoStart : !!r.autoStart,
+    atbAtStart: r.atbAtStart === undefined ? d.atbAtStart : !!r.atbAtStart,
     version: Math.max(0, Math.round(num(r.version, 0))),
     cfgHash: str(r.cfgHash),
     ipCheckUrl: str(r.ipCheckUrl) || d.ipCheckUrl, // пустое поле в настройках → адрес по умолчанию
@@ -315,7 +339,10 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
     if (!o.targets.length) errors.push(`${p} нет targets`);
     for (const t of o.targets) if (!PARTS[t]) errors.push(`${p} неизвестный парт ${t}`);
     if (!o.stores.length) errors.push(`${p} нет stores`);
-    for (const s of o.stores) if (!STORES.some((x) => x.id === s)) errors.push(`${p} магазин ${s} не из списка §2.2`);
+    for (const s of o.stores) {
+      if (!/^R\d{3,4}$/.test(s)) errors.push(`${p} код магазина «${s}» — вида R597`);
+      else if (!STORES.some((x) => x.id === s)) warnings.push(`${p} магазин ${s} не из встроенного списка — проверь код («Найти магазины» в настройках)`);
+    }
     if (o.slot.after && !HHMM.test(o.slot.after)) errors.push(`${p} slot.after должен быть HH:MM`);
     if (o.slot.before && !HHMM.test(o.slot.before)) errors.push(`${p} slot.before должен быть HH:MM`);
     if (o.slot.day && !/^\d{1,2}$/.test(o.slot.day)) errors.push(`${p} slot.day — число месяца`);
@@ -342,7 +369,7 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   else if (openAt <= now) warnings.push('openAt в прошлом — старт сразу в режиме «после открытия» (так и нужно для тестов на живом товаре)');
   if (!STRATEGIES.includes(cfg.strategy)) errors.push(`strategy «${cfg.strategy}» — только refresh или hold`);
   if (!OPEN_SIGNALS.includes(cfg.openSignal)) errors.push(`openSignal «${cfg.openSignal}» — только pickup, delivery или any`);
-  if (cfg.strategy === 'hold' && cfg.timing.holdFallbackSec < 60) warnings.push(`strategy=hold при holdFallbackSec=${cfg.timing.holdFallbackSec} — через ${cfg.timing.holdFallbackSec} с после openAt профиль всё равно перейдёт на refresh`);
+  if (cfg.strategy === 'hold' && cfg.timing.holdFallbackSec > 0 && cfg.timing.holdFallbackSec < 60) warnings.push(`strategy=hold при holdFallbackSec=${cfg.timing.holdFallbackSec} — через ${cfg.timing.holdFallbackSec} с после openAt профиль всё равно перейдёт на refresh`);
   if (cfg.proxy) {
     const p = cfg.proxy;
     if (!p.host) errors.push('proxy.host пуст');
@@ -354,8 +381,12 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
   if (cfg.timing.postOpenReloadMs < cfg.timing.minReloadMs) warnings.push('postOpenReloadMs < minReloadMs — будет поднят до minReloadMs');
   if (cfg.timing.pollMs < 1000) errors.push('timing.pollMs < 1000 — наблюдатель не чаще раза в секунду (§7.1)');
   if (cfg.timing.armedPollMs < cfg.timing.pollMs) errors.push('timing.armedPollMs < pollMs — до openAt−60 с опрос не чаще, чем в последнюю минуту');
-  if (cfg.timing.pickupWaitSec > 0 && cfg.timing.pickupRetryMs < 1500) errors.push('timing.pickupRetryMs < 1500 — страницу Fulfillment не чаще раза в 1,5 с (§0)');
-  if (cfg.timing.pickupWaitSec < 0) errors.push('timing.pickupWaitSec — 0 или больше');
+  if (cfg.timing.pickupWaitMin > 0 && cfg.timing.pickupRetryMs < 1500) errors.push('timing.pickupRetryMs < 1500 — страницу Fulfillment не чаще раза в 1,5 с (§0)');
+  if (cfg.timing.restockMin > 0 && cfg.timing.restockRetryMs < 1500) errors.push('timing.restockRetryMs < 1500 — не чаще раза в 1,5 с (§0)');
+  if (cfg.timing.pickupWaitMin < 0) errors.push('timing.pickupWaitMin — 0 или больше');
+  if (cfg.timing.restockMin < 0) errors.push('timing.restockMin — 0 или больше');
+  if (cfg.timing.restockMin > 240) warnings.push(`timing.restockMin=${cfg.timing.restockMin} — охота на рестоки дольше 4 часов`);
+  if (cfg.timing.holdReloadMs < 5000) errors.push('timing.holdReloadMs < 5000 — hold на закрытом магазине не чаще раза в 5 с');
   if (cfg.timing.closedReloadMs < 5000) errors.push('timing.closedReloadMs < 5000 — закрытый магазин до старта не чаще раза в 5 с');
   if (cfg.timing.queueMaxWaitSec < 10) errors.push('timing.queueMaxWaitSec < 10 — страницу очереди Apple нельзя дёргать чаще');
   if (cfg.timing.holdQueueWaitSec < 10) errors.push('timing.holdQueueWaitSec < 10 — страницу очереди Apple нельзя дёргать чаще');
@@ -399,6 +430,36 @@ export function phaseOf(cfg: Config, openedAt: number | undefined, now = Date.no
   const openAt = Date.parse(cfg.openAt);
   if (openedAt || !Number.isFinite(openAt) || now >= openAt) return 'post';
   return now >= openAt - 60_000 ? 'pre' : 'armed';
+}
+
+export type HuntStage = 'before' | 'drop' | 'restock' | 'over';
+
+/**
+ * Где мы в охоте за окнами (v5): before — до openAt; drop — первые pickupWaitMin минут после начала (openAt или Start,
+ * что позже); restock — дальше, до restockMin минут после начала; over — время вышло. Прогон кнопкой «Рестоки»
+ * (cfg.restockAt) — сразу restock на restockMin минут.
+ */
+export function huntStage(cfg: Config, startedAt: number | undefined, now = Date.now()): { stage: HuntStage; dropUntil: number; until: number } {
+  const openAt = Date.parse(cfg.openAt);
+  const base = Math.max(Number.isFinite(openAt) ? openAt : now, startedAt ?? 0);
+  const t = cfg.timing;
+  const dropMin = cfg.restockAt ? 0 : t.pickupWaitMin;
+  const dropUntil = base + dropMin * 60_000;
+  const until = base + Math.max(dropMin, t.restockMin) * 60_000;
+  const stage: HuntStage = Number.isFinite(openAt) && now < openAt ? 'before' : now < dropUntil ? 'drop' : now < until ? 'restock' : 'over';
+  return { stage, dropUntil, until };
+}
+
+/** Строка прокси одной строкой: `http://user:pass@host:port`, `user:pass@host:port`, `socks5://host:port`, `host:port` → ProxyCfg. */
+export function parseProxyLine(line: string): ProxyCfg | null {
+  const s = line.trim();
+  if (!s || /^(none|нет|-)$/i.test(s)) return null;
+  const m = /^(?:(https?|socks5h?):\/\/)?(?:([^:@\s]+)(?::([^@\s]*))?@)?([^:@\s/]+):(\d{1,5})\/?$/i.exec(s);
+  if (!m) throw new Error(`не разобрал прокси «${s.replace(/:[^:@]*@/, ':***@')}» — нужен вид http://логин:пароль@хост:порт`);
+  const out: ProxyCfg = { scheme: /^socks/i.test(m[1] ?? '') ? 'socks5' : 'http', host: m[4], port: Number(m[5]) };
+  if (m[2]) out.username = decodeURIComponent(m[2]);
+  if (m[3]) out.password = decodeURIComponent(m[3]);
+  return out;
 }
 
 /**
@@ -455,6 +516,10 @@ export const K = {
   egress: 'egress',
   /** openAt, для которого автостарт уже выполнялся. */
   autoStarted: 'autoStarted',
+  /** Время нажатия «Рестоки» (ms): на этот прогон openAt = restockAt, окно охоты restockMin. Снимается Start/Stop. */
+  restockAt: 'restockAt',
+  /** Магазины, найденные кнопкой «Найти магазины» (fulfillment-messages): [{ id, name, city }]. */
+  storesFound: 'storesFound',
   tab: (id: number) => `tab:${id}`,
 } as const;
 
@@ -462,11 +527,13 @@ export interface CfgMeta { version: number; hash: string; receivedAt: number; so
 
 /** Итоговый конфиг профиля из chrome.storage.local. */
 export async function loadConfig(): Promise<Config> {
-  const s = await chrome.storage.local.get([K.config, K.profileId, K.hubUrl, K.modeOverride]);
+  const s = await chrome.storage.local.get([K.config, K.profileId, K.hubUrl, K.modeOverride, K.restockAt]);
   const cfg = normalizeConfig(s[K.config]);
   if (s[K.profileId]) cfg.profileId = String(s[K.profileId]);
   if (typeof s[K.hubUrl] === 'string') cfg.hubUrl = String(s[K.hubUrl]);
   const mo = s[K.modeOverride];
   if (mo === 'assist' || mo === 'auto') cfg.mode = mo;
+  const ra = Number(s[K.restockAt]);
+  if (Number.isFinite(ra) && ra > 0) { cfg.restockAt = ra; cfg.openAt = new Date(ra).toISOString(); }
   return cfg;
 }

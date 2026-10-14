@@ -1,13 +1,13 @@
 // Юнит-тесты чистых функций: node build.mjs --unit && node --test dist-test/
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_TIMING, closedReloadMs, configUrlFromHub, defaultConfig, defaultOrder, normalizeConfig, orderFor, parseIdentityHash, phaseOf, serverOf, validateConfig, jitter } from '../src/shared/config';
+import { DEFAULT_TIMING, closedReloadMs, configUrlFromHub, defaultConfig, defaultOrder, huntStage, normalizeConfig, orderFor, parseIdentityHash, parseProxyLine, phaseOf, serverOf, validateConfig, jitter } from '../src/shared/config';
 import { waitPlan } from '../src/shared/strategy';
 import { PARTS, getPart, matchBagName, partByPath, partUrl } from '../src/shared/parts';
 import { fmtLine, maskEmail, maskPhone, maskUrl, registerSecret, rel, scrub } from '../src/shared/log';
 import { orderWindows, parseSlot } from '../src/content/slots';
 import { routeKey } from '../src/content/router';
-import { fmUrl, openEdge, openParts, parseFm } from '../src/shared/watch';
+import { fmUrl, openEdge, openParts, parseFm, parseStores } from '../src/shared/watch';
 
 const validOrder = () => ({
   ...defaultOrder('A'),
@@ -50,7 +50,7 @@ test('config: валидация §10', () => {
   const bad = normalizeConfig({
     ...ok,
     orders: [
-      { ...validOrder(), contact: { firstName: '', lastName: 'X', email: 'nope', phone: '0612345678' }, targets: ['ZZZ'], stores: ['R000'] },
+      { ...validOrder(), contact: { firstName: '', lastName: 'X', email: 'nope', phone: '0612345678' }, targets: ['ZZZ'], stores: ['R000', 'X1'] },
     ],
   });
   const e = validateConfig(bad, now).errors.join('\n');
@@ -58,7 +58,8 @@ test('config: валидация §10', () => {
   assert.match(e, /email/);
   assert.match(e, /05XXXXXXXX/);
   assert.match(e, /неизвестный парт ZZZ/);
-  assert.match(e, /R000/);
+  assert.match(e, /X1/, 'код не по формату R + цифры — ошибка');
+  assert.match(validateConfig(bad, now).warnings.join('\n'), /R000/, 'неизвестный код по формату — предупреждение (можно добавить магазин)');
 
   const two = normalizeConfig({ ...ok, orders: [{ ...validOrder(), profiles: ['drop-1'] }, { ...validOrder(), id: 'B', profiles: ['drop-1'] }] });
   assert.match(validateConfig(two, now).errors.join('\n'), /нескольким заказам/);
@@ -187,11 +188,15 @@ test('watch: сигнал OPEN — pickup/delivery/any и фазы §7.3 (тов
   assert.equal(normalizeConfig({ openSignal: 'any' }).openSignal, 'any');
   assert.equal(normalizeConfig({ openSignal: 'weird' }).openSignal, 'pickup');
   const t = normalizeConfig({}).timing;
-  assert.deepEqual([t.armedPollMs, t.pickupWaitSec, t.pickupRetryMs], [20000, 600, 5000]);
+  assert.deepEqual([t.armedPollMs, t.pickupWaitMin, t.pickupRetryMs, t.restockMin, t.restockRetryMs], [20000, 30, 3000, 60, 5000]);
+  assert.deepEqual([t.atbTimeoutMs, t.cardWaitMs, t.holdFallbackSec, t.holdReloadMs], [60000, 90000, 0, 60000], 'v5: step=attach 60 с, карта 90 с, hold без отката');
   const base = { profileId: 'x', orders: [validOrder()] };
   assert.ok(validateConfig(normalizeConfig({ ...base, timing: { pickupRetryMs: 1000 } })).errors.some((e) => /pickupRetryMs/.test(e)));
+  assert.ok(validateConfig(normalizeConfig({ ...base, timing: { restockRetryMs: 1000 } })).errors.some((e) => /restockRetryMs/.test(e)));
   assert.ok(validateConfig(normalizeConfig({ ...base, timing: { armedPollMs: 500 } })).errors.some((e) => /armedPollMs/.test(e)));
-  assert.ok(!validateConfig(normalizeConfig({ ...base, timing: { pickupWaitSec: 0, pickupRetryMs: 100 } })).errors.some((e) => /pickup/.test(e)), 'pickupWaitSec=0 — повторов нет, интервал не проверяем');
+  assert.ok(!validateConfig(normalizeConfig({ ...base, timing: { pickupWaitMin: 0, pickupRetryMs: 100 } })).errors.some((e) => /pickup/.test(e)), 'pickupWaitMin=0 — повторов нет, интервал не проверяем');
+  assert.equal(normalizeConfig({ timing: { pickupWaitSec: 600 } }).timing.pickupWaitMin, 10, 'старый pickupWaitSec из 4.0 переводится в минуты');
+  assert.equal(normalizeConfig({ timing: { pickupWaitSec: 600, pickupWaitMin: 5 } }).timing.pickupWaitMin, 5);
 });
 
 // ---------- FLEET-SPEC ----------
@@ -205,9 +210,12 @@ test('fleet: стратегии ожидания — таблица §4.2 пос
   assert.equal(waitPlan('hold', 'pre', 'preorder', {}, t).reload, null, 'hold: последняя минута — только JSON');
   assert.equal(waitPlan('refresh', 'post', 'preorder', { sinceOpenAt: 5000 }, t).reload, t.postOpenReloadMs, 'refresh: после openAt — 1.5 с');
   assert.equal(waitPlan('hold', 'post', 'preorder', { sinceOpenAt: 5000 }, t).reload, null, 'hold: после openAt — ждём');
-  const fb = waitPlan('hold', 'post', 'preorder', { sinceOpenAt: t.holdFallbackSec * 1000 }, t);
+  assert.equal(waitPlan('hold', 'post', 'preorder', { sinceOpenAt: 3_600_000 }, t).reload, null, 'v5: hold с holdFallbackSec 0 стоит, пока не пустят');
+  const t300 = { ...t, holdFallbackSec: 300 };
+  const fb = waitPlan('hold', 'post', 'preorder', { sinceOpenAt: 300_000 }, t300);
   assert.equal(fb.fallback, true, 'hold через holdFallbackSec переходит на refresh');
   assert.equal(fb.reload, t.postOpenReloadMs);
+  assert.equal(waitPlan('hold', 'post', 'preorder', { sinceOpenAt: 299_000 }, t300).reload, null);
   assert.equal(waitPlan('hold', 'post', 'preorder', { sinceOpenAt: 1000, opened: true }, t).reload, t.postOpenReloadMs, 'после своего OPEN стратегии не различаются');
   // заглушка нагрузки
   assert.equal(waitPlan('hold', 'post', 'busy', { metaRefreshSec: 30 }, t).reload, null, 'hold + meta refresh — не трогаем');
@@ -226,7 +234,9 @@ test('fleet: стратегии ожидания — таблица §4.2 пос
   assert.equal(waitPlan('hold', 'post', 'queue', { waitedMs: t.queueMaxWaitSec * 1000 + 1 }, t).fallback, undefined, 'hold ещё ждёт');
   // закрыто / 404
   assert.equal(waitPlan('refresh', 'pre', 'closed', {}, t).reload, t.preOpenReloadMs, 'refresh: закрыто — по фазе');
-  assert.equal(waitPlan('hold', 'pre', 'closed', {}, t).reload, t.closedReloadMs, 'hold: закрыто — раз в 30 с всегда');
+  assert.equal(waitPlan('hold', 'pre', 'closed', {}, t).reload, t.holdReloadMs, 'hold: закрыто — раз в минуту всегда');
+  assert.equal(waitPlan('hold', 'post', 'closed', {}, t).reload, 60000, 'hold: заглушка после openAt — тоже раз в минуту, без частого рефреша');
+  assert.equal(waitPlan('refresh', 'post', 'closed', {}, t).reload, t.postOpenReloadMs, 'refresh: заглушка после openAt — рефреш сразу');
   assert.equal(waitPlan('hold', 'post', 'closed', { opened: true }, t).reload, t.postOpenReloadMs);
 });
 
@@ -262,7 +272,7 @@ test('fleet: нормализация новых полей §4/§7/§8', () => 
   const d = normalizeConfig({ profileId: 'x', strategy: 'weird', proxy: { scheme: 'socks5' }, orders: [{ id: 'A' }] });
   assert.equal(d.strategy, 'refresh', 'неизвестная стратегия → refresh');
   assert.equal(d.proxy, null, 'прокси без host/port → нет прокси');
-  assert.equal(d.autoStart, false);
+  assert.equal(d.autoStart, true, 'v5: autoStart по умолчанию включён');
   assert.equal(d.orders[0].applePayClick, 'debugger');
   assert.equal(d.orders[0].applePayRetries, 3);
   const v = validateConfig(normalizeConfig({ profileId: 'nl1-p01', proxy: { host: 'h', port: 0 }, orders: [validOrder()] }));
@@ -279,4 +289,68 @@ test('fleet: секреты в логе — пароль прокси и ток�
   assert.ok(s.includes('ab ok'), 'короткая строка не маскируется');
   assert.ok(!s.includes('SECRETTOKEN'), `token= в URL скрыт: ${s}`);
   assert.equal(maskUrl('wss://h/ws?token=abc&x=1'), 'wss://h/ws?token=…&x=1');
+});
+
+// ---------- v5 ----------
+
+test('v5: стадии охоты — дроп 30 мин, рестоки до 60 мин', () => {
+  const openAt = Date.parse('2026-10-16T12:00:00Z');
+  const cfg = normalizeConfig({ openAt: '2026-10-16T16:00:00+04:00' });
+  const min = 60_000;
+  assert.equal(huntStage(cfg, openAt - 3600_000, openAt - 1000).stage, 'before');
+  assert.equal(huntStage(cfg, openAt - 3600_000, openAt + 1000).stage, 'drop');
+  assert.equal(huntStage(cfg, openAt - 3600_000, openAt + 29 * min).stage, 'drop');
+  assert.equal(huntStage(cfg, openAt - 3600_000, openAt + 30 * min).stage, 'restock');
+  assert.equal(huntStage(cfg, openAt - 3600_000, openAt + 59 * min).stage, 'restock');
+  assert.equal(huntStage(cfg, openAt - 3600_000, openAt + 60 * min).stage, 'over');
+  // Start после openAt — отсчёт от Start
+  const late = openAt + 2 * 3600_000;
+  assert.equal(huntStage(cfg, late, late + 10 * min).stage, 'drop');
+  assert.equal(huntStage(cfg, late, late + 45 * min).stage, 'restock');
+  // «Рестоки»: openAt = момент нажатия, без фазы дропа
+  const ra = normalizeConfig({ openAt: new Date(late).toISOString() });
+  ra.restockAt = late;
+  assert.equal(huntStage(ra, late, late + 1000).stage, 'restock');
+  assert.equal(huntStage(ra, late, late + 59 * min).stage, 'restock');
+  assert.equal(huntStage(ra, late, late + 61 * min).stage, 'over');
+  // restockMin 0 — после 30 мин охота заканчивается
+  const noRs = normalizeConfig({ openAt: '2026-10-16T16:00:00+04:00', timing: { restockMin: 0 } });
+  assert.equal(huntStage(noRs, openAt, openAt + 31 * min).stage, 'over');
+});
+
+test('v5: autoStart и Add to Bag при Start по умолчанию включены', () => {
+  assert.equal(normalizeConfig({}).autoStart, true);
+  assert.equal(normalizeConfig({ autoStart: false }).autoStart, false);
+  assert.equal(normalizeConfig({}).atbAtStart, true);
+  assert.equal(normalizeConfig({ atbAtStart: 0 }).atbAtStart, false);
+});
+
+test('v5: прокси одной строкой', () => {
+  assert.deepEqual(parseProxyLine('http://u:p@1.2.3.4:8000'), { scheme: 'http', host: '1.2.3.4', port: 8000, username: 'u', password: 'p' });
+  assert.deepEqual(parseProxyLine('u:p@host.example:3128'), { scheme: 'http', host: 'host.example', port: 3128, username: 'u', password: 'p' });
+  assert.deepEqual(parseProxyLine('host.example:3128'), { scheme: 'http', host: 'host.example', port: 3128 });
+  assert.equal(parseProxyLine('socks5://h:1080')?.scheme, 'socks5');
+  assert.equal(parseProxyLine('none'), null);
+  assert.equal(parseProxyLine('  '), null);
+  assert.throws(() => parseProxyLine('u:secretpass@host'), (e: Error) => !/secretpass/.test(e.message), 'в ошибке пароль скрыт');
+});
+
+test('v5: коды магазинов из JSON Apple', () => {
+  const j = { body: { content: { pickupMessage: { stores: [
+    { storeNumber: 'R597', storeName: 'Dubai Mall', city: 'Dubai' },
+    { storeNumber: 'R706', storeName: 'Apple Al Maryah Island', address: { city: 'Abu Dhabi' } },
+    { storeNumber: 'R597', storeName: 'Dubai Mall', city: 'Dubai' },
+    { storeName: 'без номера' },
+  ] } } } };
+  assert.deepEqual(parseStores(j), [
+    { id: 'R597', name: 'Apple Dubai Mall', city: 'Dubai' },
+    { id: 'R706', name: 'Apple Al Maryah Island', city: 'Abu Dhabi' },
+  ]);
+  assert.deepEqual(parseStores(null), []);
+  const base = { profileId: 'x', orders: [{ ...validOrder(), stores: ['R597', 'r12'] }] };
+  assert.ok(validateConfig(normalizeConfig(base)).errors.some((e) => /r12|R12/.test(e)), 'код магазина — R и 3–4 цифры');
+  const extra = { profileId: 'x', orders: [{ ...validOrder(), stores: ['R597', 'R999'] }] };
+  const v = validateConfig(normalizeConfig(extra));
+  assert.ok(!v.errors.some((e) => /R999/.test(e)), 'неизвестный, но правильный код — не ошибка');
+  assert.ok(v.warnings.some((e) => /R999/.test(e)), '…а предупреждение');
 });

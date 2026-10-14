@@ -57,7 +57,8 @@ test('hub: конфиг профиля — один заказ = профиль,
   assert.equal(c.proxy.password, 'p');
   assert.equal(c.timing.graceSec, 25, 'timing с верхнего уровня');
   assert.equal(c.timing.cardWaitMs, 45000, 'timing профиля поверх defaults');
-  assert.equal(c.timing.holdFallbackSec, 300, 'остальное — §10');
+  assert.equal(c.timing.holdFallbackSec, 0, 'остальное — по умолчанию (v5: hold без отката)');
+  assert.equal(c.atbAtStart, true);
   assert.equal(c.orders.length, 1);
   const o = c.orders[0];
   assert.equal(o.id, 'nl1-p01');

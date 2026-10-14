@@ -1,6 +1,6 @@
 // До старта: наблюдатель JSON (§3.0, §7.3) и ожидание открытия по стратегии профиля (FLEET-SPEC §4).
 import { SEL } from '../../shared/selectors';
-import { phaseOf } from '../../shared/config';
+import { huntStage, phaseOf } from '../../shared/config';
 import { waitPlan } from '../../shared/strategy';
 import { normPart, partUrl } from '../../shared/parts';
 import { openEdge, openParts, pollFm } from '../../shared/watch';
@@ -10,10 +10,12 @@ import { Aborted, sleep, waitUntil, yieldTask } from '../dom';
 import { findEl } from '../find';
 import { atbFlow } from './addToBag';
 import { closedStep, reportStore } from './closed';
-import { HINT_541, effectiveStrategy, holdFallback } from './common';
+import { HINT_541, effectiveStrategy, holdFallback, huntOver } from './common';
 import { hasProductBootstrap, isBlankPage } from '../classify';
 
 const PRE_WINDOW_MS = 60_000;
+/** v5 atbAtStart: решение «жать Add to Bag до openAt» принимается по первой странице товара в эту минуту после Start. */
+const START_CHECK_MS = 60_000;
 /** Состояния ожидания открытия: сюда приходит OPEN, смена роли и новый конфиг. */
 export const WAITING_STATES = ['INIT', 'ARMED', 'PRE_RELOAD', 'WATCHING', 'HOLD', 'FAST_RELOAD', 'CLOSED', 'BUSY'];
 
@@ -36,13 +38,35 @@ export async function productStep(c: Ctl, page: PageInfo): Promise<void> {
   );
   if (what === 'atb') {
     reportStore(c, false, 'Add to Bag');
-    // товар уже в продаже задолго до дропа (18 Pro перед 16.10) — кнопку не трогаем до openAt или своего OPEN (§7.3)
-    if (!c.os.openedAt && phaseOf(c.cfg, c.os.openedAt) !== 'post') { waitOpenAtWithAtb(c); return; }
+    if (!c.os.openedAt && phaseOf(c.cfg, c.os.openedAt) !== 'post') {
+      // v5 (как 3.0): кнопка активна сразу при Start — жмём и ждём окна самовывоза уже на Fulfillment
+      if (atbBeforeOpen(c, true)) return atbFlow(c);
+      // иначе товар в продаже задолго до дропа — кнопку не трогаем до openAt или своего OPEN (§7.3)
+      waitOpenAtWithAtb(c);
+      return;
+    }
     return atbFlow(c);
   }
+  atbBeforeOpen(c, false);
   if (what === 'pre') { reportStore(c, false, 'страница товара до старта'); scheduleByPhase(c); return; }
   // ни формы покупки, ни «Continue»: магазин закрыт / пустая страница / заглушка без текста
   closedStep(c, page, isBlankPage() ? 'пустая страница' : 'нет формы покупки');
+}
+
+/**
+ * Проверка при Start (v5, atbAtStart): первая страница товара в минуту после Start решает за весь прогон — кнопка
+ * активна → жмём до openAt (и при повторах после неудачной попытки), нет → ждём openAt. Потом решение не меняется.
+ */
+function atbBeforeOpen(c: Ctl, atbNow: boolean): boolean {
+  if (!c.cfg.atbAtStart) return false;
+  if (c.ts.atStart === undefined) {
+    const fresh = !c.os.startedAt || Date.now() - c.os.startedAt < START_CHECK_MS;
+    c.ts.atStart = fresh && atbNow;
+    void c.save();
+    if (c.ts.atStart) c.log('Add to Bag активна при Start — жму сразу (atbAtStart); окна самовывоза жду на Fulfillment');
+    else if (fresh) c.log(`при Start Add to Bag нет — жду openAt ${new Date(Date.parse(c.cfg.openAt)).toLocaleTimeString()}`);
+  }
+  return c.ts.atStart;
 }
 
 /**
@@ -89,7 +113,9 @@ export function scheduleByPhase(c: Ctl): void {
 
   if (watcherHolds(c)) {
     // refresh: ждём до openAt+grace, потом рефрешим как все; hold: до holdFallbackSec после openAt
-    const until = Number.isFinite(openAt) ? openAt + (strategy === 'hold' ? c.t.holdFallbackSec : c.t.graceSec) * 1000 : Infinity;
+    // hold с holdFallbackSec 0 (v5) — без срока: стоит, пока не пустят (OPEN по JSON или Apple сама уберёт заглушку)
+    const holdUntil = c.t.holdFallbackSec > 0 ? openAt + c.t.holdFallbackSec * 1000 : Infinity;
+    const until = Number.isFinite(openAt) ? (strategy === 'hold' ? holdUntil : openAt + c.t.graceSec * 1000) : Infinity;
     if (now < until) {
       c.setState('WATCHING', `${strategy === 'hold' ? 'hold: ' : ''}опрос fulfillment-messages, без рефреша`);
       c.renderOverlay({ countdownTo: now < openAt ? openAt : undefined, timerSince: undefined });
@@ -103,7 +129,8 @@ export function scheduleByPhase(c: Ctl): void {
   if (plan.fallback) holdFallback(c, 'OPEN');
   if (plan.reload === null) {
     // ARMED до openAt−60 с (любая стратегия) или hold до openAt+holdFallbackSec
-    const next = phase === 'armed' ? openAt - PRE_WINDOW_MS : phase === 'pre' ? openAt : openAt + c.t.holdFallbackSec * 1000;
+    const next = phase === 'armed' ? openAt - PRE_WINDOW_MS : phase === 'pre' ? openAt
+      : c.t.holdFallbackSec > 0 ? openAt + c.t.holdFallbackSec * 1000 : now + 60_000;
     const label = phase === 'armed'
       ? `рефреш с ${new Date(openAt - PRE_WINDOW_MS).toLocaleTimeString()}`
       : plan.reason;
@@ -113,9 +140,13 @@ export function scheduleByPhase(c: Ctl): void {
     return;
   }
   if (phase === 'post' || opened) {
+    // охота после начала: первые pickupWaitMin минут — как раньше, потом рестоки реже, потом стоп (v5)
+    const h = huntStage(c.cfg, c.os.startedAt, now);
+    if (h.stage === 'over') { huntOver(c); return; }
+    const restock = h.stage === 'restock';
     c.renderOverlay({ countdownTo: undefined, timerSince: c.os.openedAt, timerLabel: 'OPEN' });
-    c.setState('FAST_RELOAD', opened ? 'продажи открыты — ждём активную Add to Bag' : 'сигнала OPEN нет после openAt — рефреш');
-    c.scheduleReload(Math.max(c.jit(plan.reload), min), 'post-open');
+    c.setState('FAST_RELOAD', `${restock ? 'рестоки: ' : ''}${opened ? 'продажи открыты — ждём активную Add to Bag' : 'сигнала OPEN нет после openAt — рефреш'}`);
+    c.scheduleReload(Math.max(c.jit(restock ? c.t.restockRetryMs : plan.reload), min), restock ? 'restock' : 'post-open');
     return;
   }
   c.renderOverlay({ countdownTo: openAt });
