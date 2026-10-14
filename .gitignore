@@ -10,7 +10,11 @@ out/
 # флот: реальные адреса/пароли прокси и токены — только локально
 fleet.json
 fleet/fleet.json
+accounts*.csv
+fleet*.csv
+!fleet.example.csv
 hub/runtime/
 runtime/
 dist.zip
 test/.hub/
+test/.baked/

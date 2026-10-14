@@ -93,6 +93,7 @@ export class Orchestrator {
     const l = await chrome.storage.local.get([K.cfgMeta, K.egress]);
     this.cfgMeta = (l[K.cfgMeta] as CfgMeta | undefined) ?? null;
     this.egress = (l[K.egress] as Egress | undefined) ?? null;
+    await this.applyBakedConfig();
     if (this.cfg.proxy?.password) registerSecret(this.cfg.proxy.password);
     this.hub.setUrl(this.cfg.hubUrl);
     await this.syncProxy('старт SW');
@@ -101,6 +102,37 @@ export class Orchestrator {
     setInterval(() => this.hubStatusSoon(), 10_000);
     // автостарт после перезапуска Chrome: вкладкам нужно время подключиться, чтобы Start их переиспользовал
     setTimeout(() => { void this.maybeAutoStart('запуск'); }, 3000);
+  }
+
+  /**
+   * Запечённый конфиг профиля: `scripts/bake-profiles.mjs` кладёт `profile.json` в папку расширения (запуск без хаба —
+   * 40 обычных браузеров, в каждый «Load unpacked»). Применяется при первом запуске и когда файл сменился (hash);
+   * правки в настройках живут до следующей замены файла; в гонке не трогаем.
+   */
+  private async applyBakedConfig(): Promise<void> {
+    type Baked = { config?: unknown; hash?: string };
+    let j: Baked | null = null;
+    try {
+      const r = await fetch(chrome.runtime.getURL('profile.json'), { cache: 'no-store' });
+      if (!r.ok) return;
+      j = (await r.json()) as Baked;
+    } catch { return; }
+    if (!j?.config || typeof j.hash !== 'string') return;
+    if (this.cfgMeta?.source === 'baked' && this.cfgMeta.hash === j.hash) return;
+    if (this.os.armed) { this.log('sw', 'CONFIG', 'profile.json сменился, но профиль в гонке — применю после Stop', 'warn'); return; }
+    const cfg = normalizeConfig(j.config);
+    cfg.cfgHash = j.hash;
+    const v = validateConfig(cfg);
+    if (v.errors.length) { this.log('sw', 'CONFIG', `profile.json с ошибками — не применён: ${v.errors.join('; ')}`, 'warn'); return; }
+    const meta: CfgMeta = { version: cfg.version, hash: j.hash, receivedAt: Date.now(), source: 'baked' };
+    await chrome.storage.local.set({ [K.config]: cfg, [K.profileId]: cfg.profileId, [K.hubUrl]: cfg.hubUrl, [K.cfgMeta]: meta });
+    await chrome.storage.local.remove(K.modeOverride);
+    this.cfgMeta = meta;
+    this.cfgPending = undefined;
+    this.cfg = await loadConfig();
+    this.order = orderFor(this.cfg) ?? null;
+    this.log('sw', 'CONFIG', `конфиг профиля ${cfg.profileId} из profile.json (v${cfg.version} · ${j.hash.slice(0, 8)})${cfg.hubUrl ? '' : ' · без хаба'}`);
+    for (const w of v.warnings) this.log('sw', 'CONFIG', `profile.json: ${w}`, 'warn');
   }
 
   /** Вкладку гонки/чекаута Chrome не должен выгружать (Memory Saver): content script там — вся логика. */

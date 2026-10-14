@@ -15,7 +15,8 @@
     "test:e2e": "node build.mjs --dev && node test/e2e.mjs",
     "pack": "node build.mjs && node build.mjs --hub && node scripts/pack.mjs",
     "build:hub": "node build.mjs --hub",
-    "pack:setup": "bash scripts/pack.sh"
+    "pack:setup": "bash scripts/pack.sh",
+    "bake": "node scripts/bake-profiles.mjs"
   },
   "engines": {
     "node": ">=20"

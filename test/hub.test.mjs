@@ -179,8 +179,70 @@ test('fleet-from-csv: понятные ошибки — дубль профил�
   assert.ok(warnings.some((w) => /нет колонок контакта/.test(w)));
 });
 
+// ---- scripts/bake-profiles.mjs: папка расширения на профиль с запечённым profile.json ----
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { bakeAll } from '../scripts/bake-profiles.mjs';
+
+function fakeDist(dir) {
+  mkdirSync(join(dir, 'ui'), { recursive: true });
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'Apple Drop Assistant', version: '4.0.0' }));
+  writeFileSync(join(dir, 'sw.js'), '// sw');
+  writeFileSync(join(dir, 'ui', 'popup.html'), '<p>popup</p>');
+  return dir;
+}
+
+test('bake: папка на профиль — manifest с id, profile.json с конфигом и хешем, zip, ALL.zip, INDEX.csv без секретов; профиль с ошибками пропущен', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'bake-'));
+  try {
+    const dist = fakeDist(join(tmp, 'dist'));
+    const out = join(tmp, 'out');
+    const built = buildAll(fleet(), { hubUrl: '', version: 7, hash: 'deadbeef' });
+    const r = bakeAll(built, { distDir: dist, outDir: out });
+    assert.deepEqual(r.ok, ['nl1-p01', 'nl1-p02']);
+    assert.deepEqual(Object.keys(r.bad), ['ae1-p01'], 'неполный контакт → не собран');
+    assert.ok(!existsSync(join(out, 'ae1-p01')), 'папки плохого профиля нет');
+    const m = JSON.parse(readFileSync(join(out, 'nl1-p01', 'manifest.json'), 'utf8'));
+    assert.equal(m.name, 'Apple Drop Assistant (nl1-p01)');
+    assert.equal(m.version, '4.0.0');
+    assert.equal(readFileSync(join(out, 'nl1-p01', 'ui', 'popup.html'), 'utf8'), '<p>popup</p>', 'сборка скопирована целиком');
+    const pj = JSON.parse(readFileSync(join(out, 'nl1-p02', 'profile.json'), 'utf8'));
+    assert.equal(pj.profileId, 'nl1-p02');
+    assert.match(pj.hash, /^[0-9a-f]{16}$/);
+    assert.equal(pj.config.profileId, 'nl1-p02');
+    assert.equal(pj.config.hubUrl, '', 'без хаба');
+    assert.equal(pj.config.version, 7);
+    assert.equal(pj.config.orders[0].card.number, '4111111111111111', 'карта в profile.json (папка — секрет)');
+    assert.equal(pj.config.proxy, null);
+    assert.equal(JSON.parse(readFileSync(join(out, 'nl1-p01', 'profile.json'), 'utf8')).config.proxy.password, 'p', 'пароль прокси в profile.json');
+    for (const f of ['nl1-p01.zip', 'nl1-p02.zip', 'ALL.zip', 'INDEX.csv', 'README.txt']) assert.ok(existsSync(join(out, f)), f);
+    const zip = readFileSync(join(out, 'nl1-p01.zip'));
+    assert.equal(zip.subarray(0, 4).toString('latin1'), 'PK\x03\x04');
+    assert.ok(zip.includes('nl1-p01/manifest.json'), 'в zip папка профиля');
+    const all = readFileSync(join(out, 'ALL.zip'));
+    assert.ok(all.includes('nl1-p01/profile.json') && all.includes('nl1-p02/profile.json') && all.includes('README.txt'), 'ALL.zip — все папки, README');
+    assert.ok(!all.includes('nl1-p01.zip'), 'zip профилей в ALL.zip не вложены');
+    assert.ok(!existsSync(join(out, '.all')), 'временная папка убрана');
+    const index = readFileSync(join(out, 'INDEX.csv'), 'utf8');
+    const rows = index.replace(/^﻿/, '').trim().split('\n');
+    assert.equal(rows.length, 3, 'заголовок + 2 профиля');
+    assert.equal(rows[0], 'profile;firstName;lastName;payment;proxy;strategy;targets;folder');
+    assert.match(rows[1], /^nl1-p01;Name1;Test;applepay;http:\/\/\*\*\*@proxy\.example\.com:8000;hold;MJR54AH\/A MJX54AH\/A;nl1-p01\/$/);
+    assert.match(rows[2], /^nl1-p02;Name2;Test;manual;напрямую;refresh;/);
+    assert.ok(!index.includes('4111') && !index.includes('n1@example.com'), 'INDEX без карты и e-mail');
+    assert.match(readFileSync(join(out, 'README.txt'), 'utf8'), /Загрузить распакованное/);
+    // --force: плохой профиль тоже собран; --only: остальные пропущены, без zip
+    const r2 = bakeAll(built, { distDir: dist, outDir: join(tmp, 'out2'), force: true, zip: false });
+    assert.deepEqual(r2.ok, ['nl1-p01', 'nl1-p02', 'ae1-p01']);
+    assert.ok(existsSync(join(tmp, 'out2', 'ae1-p01', 'profile.json')) && !existsSync(join(tmp, 'out2', 'ALL.zip')));
+    const r3 = bakeAll(built, { distDir: dist, outDir: join(tmp, 'out3'), only: ['nl1-p02'] });
+    assert.deepEqual([r3.ok, r3.skipped, Object.keys(r3.bad)], [['nl1-p02'], ['nl1-p01', 'ae1-p01'], []]);
+    assert.throws(() => bakeAll(built, { distDir: join(tmp, 'nope'), outDir: join(tmp, 'out4') }), /manifest\.json/);
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
 // ---- fleet.ps1 для Windows PowerShell 5.1 ----
-import { readFileSync } from 'node:fs';
 
 test('fleet.ps1: начинается с UTF-8 BOM (Windows PowerShell 5.1 без BOM читает файл в ANSI, кириллица и «—» ломают разбор)', () => {
   const b = readFileSync(new URL('../fleet/fleet.ps1', import.meta.url));

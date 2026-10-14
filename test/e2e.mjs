@@ -4,7 +4,7 @@
 //   node test/e2e.mjs single assist  — выбранные
 // CHROME_PATH — путь к Chromium/Chrome (по умолчанию ищется в PLAYWRIGHT_BROWSERS_PATH).
 import { chromium } from 'playwright-core';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const EXT = join(root, 'dist-dev');
+const BAKED = join(root, 'test/.baked');
 const MOCK = 'http://127.0.0.1:4777';
 const HUB_PORT = 18765;
 const HUB = `http://127.0.0.1:${HUB_PORT}`;
@@ -151,14 +152,15 @@ function startLocalProxy({ username = 'proxyuser', password = 'proxypass' } = {}
 }
 
 // ---------- профили ----------
-async function launchProfile(name, { startUrl } = {}) {
+async function launchProfile(name, { startUrl, ext } = {}) {
+  const extDir = ext ?? EXT; // ext — папка расширения с запечённым profile.json (scripts/bake-profiles.mjs)
   const dir = join(root, 'test/.profiles', name);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const ctx = await chromium.launchPersistentContext(dir, {
     executablePath: findChrome(),
     headless: HEADLESS,
-    args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`, '--no-first-run', '--no-default-browser-check', '--lang=en-US'],
+    args: [`--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`, '--no-first-run', '--no-default-browser-check', '--lang=en-US'],
     viewport: { width: 1280, height: 900 },
     locale: 'en-US',
     timezoneId: 'Asia/Dubai',
@@ -1118,9 +1120,62 @@ scenarios['pickup-retry'] = async () => {
   } catch (e) { await dumpOnFail(profiles, 'pickup-retry'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
+/**
+ * Без хаба и серверов: scripts/bake-profiles.mjs делает папку расширения на профиль с profile.json внутри; при загрузке
+ * SW применяет конфиг сам (source 'baked'): имя, заказ, стратегия, без хаба. pc-p01 (autoStart выкл.) — Start руками → Billing;
+ * pc-p02 (autoStart вкл.) взводится сам при запуске браузера → Billing без единой команды.
+ */
+scenarios['baked-profile'] = async () => {
+  const OPEN_IN = 10;
+  const fl = makeFleet('baked-profile', {
+    'pc-p01': { payment: 'manual', card: CARD, strategy: 'hold', autoStart: false },
+    'pc-p02': { payment: 'applepay', strategy: 'refresh' },
+  }, { openInSec: OPEN_IN });
+  rmSync(BAKED, { recursive: true, force: true });
+  const out = execFileSync(process.execPath, [join(root, 'scripts/bake-profiles.mjs'), fl.file, '--dist', 'dist-dev', '--no-build', '--no-zip', '--out', BAKED], { encoding: 'utf8' });
+  say(`baked-profile: ${out.trim().split('\n').find((l) => /собрано/.test(l))}`);
+  const baked = Object.fromEntries(['pc-p01', 'pc-p02'].map((id) => [id, JSON.parse(readFileSync(join(BAKED, id, 'profile.json'), 'utf8'))]));
+  assert.equal(baked['pc-p01'].profileId, 'pc-p01');
+  assert.equal(baked['pc-p01'].config.hubUrl, '', 'без хаба');
+  assert.ok(JSON.parse(readFileSync(join(BAKED, 'pc-p02', 'manifest.json'), 'utf8')).name.endsWith('(pc-p02)'), 'имя расширения с id профиля');
+  await startServers({ OPEN_AFTER: String(OPEN_IN) });
+  const a = await launchProfile('baked-a', { ext: join(BAKED, 'pc-p01') });
+  const b = await launchProfile('baked-b', { ext: join(BAKED, 'pc-p02') });
+  const profiles = [a, b];
+  try {
+    const st = await waitFor(async () => { const s = await a.status(); return s.profileId === 'pc-p01' && s.cfg.meta?.source === 'baked' ? s : null; }, 20000, 'конфиг из profile.json');
+    say(`baked-profile: pc-p01 — конфиг v${st.cfg.version} (${st.cfg.meta.source} · ${st.cfg.hash}), стратегия ${st.strategy}, заказ ${st.order?.id}`);
+    assert.equal(st.cfg.hash, baked['pc-p01'].hash, 'хеш из profile.json');
+    assert.equal(st.strategy, 'hold', 'стратегия профиля из таблицы');
+    assert.equal(st.order?.id, 'pc-p01', 'заказ = профиль');
+    assert.ok(!st.hub?.connected, 'хаба нет');
+    assert.ok(!st.os.armed, 'autoStart выключен — ждёт Start');
+    assert.ok(!a.ctx.pages().some((pg) => pg.url().includes('options.html')), 'страница настроек при установке не открывалась — конфиг уже есть');
+    const stored = await a.control.evaluate(() => chrome.storage.local.get(['profileId', 'hubUrl']));
+    assert.equal(stored.profileId, 'pc-p01');
+    assert.equal(stored.hubUrl ?? '', '');
+    const logA = await a.log();
+    assert.ok(/конфиг профиля pc-p01 из profile\.json \(v1 · [0-9a-f]{8}\) · без хаба/.test(logA), 'лог о применении profile.json');
+    assert.ok(!logA.includes('4111111111111111') && !logA.includes(CONTACTS[0].email), 'карта и контакт не в логе');
+    // pc-p02: autoStart — гонка взведена сама через ~3 с после старта SW
+    const stB = await waitFor(async () => { const s = await b.status(); return s.profileId === 'pc-p02' && s.os.armed ? s : null; }, 20000, 'pc-p02 взвёлся сам (autoStart)');
+    assert.equal(stB.strategy, 'refresh');
+    assert.ok(/autoStart \(запуск\) — выполняю Start/.test(await b.log()), 'лог autoStart');
+    const r = await a.cmd({ cmd: 'start' });
+    assert.ok(r.ok, `start: ${r.error}`);
+    const [dA, dB] = await Promise.all(profiles.map((p) => waitFor(async () => { const s = await p.status(); return s.os.billingReadyAt ? s : null; }, 60000, `${p.name}: Billing`)));
+    say(`baked-profile: Billing pc-p01 через ${((dA.os.billingReadyAt - dA.os.openedAt) / 1000).toFixed(1)} с, pc-p02 через ${((dB.os.billingReadyAt - dB.os.openedAt) / 1000).toFixed(1)} с после OPEN`);
+    const sessions = (await mockState()).sessions.filter((s) => s.bag.length);
+    assert.equal(sessions.length, 2, 'две корзины — по одной на браузер');
+    for (const s of sessions) assert.equal(s.bag[0].part, 'MK254AH/A');
+    // карта pc-p01 из profile.json дошла до Review
+    await waitFor(async () => (await mockState()).sessions.some((s) => s.checkout.review?.cardLast4 === '1111') || null, 20000, 'карта из profile.json заполнена');
+  } catch (e) { await dumpOnFail(profiles, 'baked-profile'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
 const list = want.length ? want : [
   'single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-fallback', 'auto-place',
-  'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'atb-before-open', 'fm-541', 'atb-541', 'pickup-retry',
+  'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'atb-before-open', 'fm-541', 'atb-541', 'pickup-retry', 'baked-profile',
   'ordered-stays', 'no-cross-profile-blocking', 'fleet-identity', 'fleet-strategies', 'hold-fallback', 'hub-down', 'config-update', 'proxy', 'applepay-retry', 'card-slow-90s', 'acceptance',
 ];
 let failed = 0;

@@ -30,6 +30,8 @@ npm run build          # → dist/
 
 После изменения кода: `npm run build`, затем «Обновить» в `chrome://extensions` в каждом профиле.
 
+**Много браузеров без хаба** (компьютерный клуб, ноутбуки): таблица аккаунтов как [fleet.example.csv](fleet.example.csv) → `npm run bake accounts.csv` → в `out/profiles/` папка расширения на каждый профиль с `profile.json` внутри (контакт, карта, прокси, цели). В каждом браузере «Загрузить распакованное» → папка `<id>` — расширение само применяет конфиг и при `autoStart` взводит гонку; настройки не нужны. Подробно — [docs/FLEET-RUNBOOK.md §3а](docs/FLEET-RUNBOOK.md); с хабом и серверами — §1–3 там же.
+
 Окружение (§7.5): VPN выключен, язык Chrome — English, часовой пояс Mac — Дубай, `caffeinate -d` в Терминале.
 
 ---
@@ -139,6 +141,7 @@ Playwright в e2e — только тестовый стенд, чтобы за�
 | `auto-place` | Карта + `autoPlaceOrder`: галочка условий, «Place Order» нажат ровно один раз, «подтверди в приложении банка» 2,5 с (`THREEDS_MS`) — ждём, номер заказа пойман, запись о заказе | ✓ |
 | `card-fallback` | Блок карты не появился за `cardWaitMs` (4 с в тесте): переключение на Apple Pay → Review → галочка → кнопка Apple Pay, заказ не размещён | ✓ |
 | `closed-blank` / `closed-backsoon` / `closed-redirect` / `closed-offsite` | магазин закрыт до старта: пустая страница, «We’ll be back», редирект в `/ae/` и вне `/ae/`; вкладки обновляются по фазам (проверяются интервалы), после открытия — до Billing | Billing через 4,5–4,9 с после открытия |
+| `baked-profile` | Две папки расширения из `scripts/bake-profiles.mjs` (fleet.json → `profile.json` в каждой): конфиг применён при загрузке (`source: baked`, хеш, стратегия, без хаба, настройки не открывались); `pc-p01` (autoStart выкл.) — Start → Billing, карта из `profile.json` на Review; `pc-p02` (autoStart вкл.) взвёлся сам и дошёл до Billing без команд | Billing через ~7 с после OPEN |
 | `acceptance` | 3 заказа × 2 профиля × 2 вкладки + хаб: все 3 заказа на Billing, без дублей, корзины проигравших очищены, очередь оплаты по одному, «Следующий» | Billing через 4,8–5,1 с после OPEN |
 
 Мок вручную: `npm run build:dev` → загрузить `dist-dev/` → в настройках `baseUrl = http://127.0.0.1:4777` → `OPEN_AFTER=60 npm run mock`. Параметры мока — в шапке [test/mock-server.mjs](test/mock-server.mjs) (`RENAME_AUTOM`, `STORE_CLOSED`, `QUEUE_AFTER_OPEN`, `CHECKOUT_ERR_FIRST`, `EMPTY_BAG_FIRST`, `ATB_404_RATE`, `ATB_404_FIRST`, `ACPART_DELAY_MS`, `COUNTRY_PICKER`, `REQUIRE_TRUSTED`, `UNAVAILABLE_STORES`, `TAKEN_FIRST_SLOT`, `DEFAULT_CITY`, …).
@@ -180,6 +183,6 @@ src/content/steps/     preopen · addToBag · bag · guest · fulfillment · con
 src/ui/                popup · options · offscreen (звук)
 hub/server.mjs         хаб + дашборд (Node 20+, ws)
 test/                  mock-server.mjs · e2e.mjs · unit.test.ts
-scripts/               open-profiles.command (macOS)
+scripts/               bake-profiles.mjs (папка расширения с profile.json на каждый профиль, без хаба) · pack.mjs · zip.mjs · open-profiles.command (macOS)
 docs/SPEC.md           ТЗ v3 · docs/RESEARCH-iphone18-preorder.md — как прошёл предзаказ 18 Pro и что учтено
 ```

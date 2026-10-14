@@ -44,6 +44,7 @@ chrome.alarms.onAlarm.addListener(() => {
 
 chrome.runtime.onInstalled.addListener(async (d) => {
   if (d.reason !== 'install') return;
+  await orch.ready; // запечённый profile.json применяется при старте — тогда настройки открывать не нужно
   const s = await chrome.storage.local.get(K.config);
   if (!s[K.config]) void chrome.runtime.openOptionsPage();
 });
