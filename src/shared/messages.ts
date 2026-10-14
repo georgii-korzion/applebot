@@ -61,6 +61,8 @@ export interface TabState {
   cardFilled?: boolean;
   /** Обязательные поля Billing Address, которых нет в настройках (улица, Area) — Review не жмём, пока человек не допишет. */
   billingMissing?: string[];
+  /** Сколько раз Apple отклонила карту (после Place Order вернула на Billing) — дальше Apple Pay. */
+  cardDeclined?: number;
   payTurn?: boolean;
   applePayTried?: boolean;
   /** Попытки открыть лист Apple Pay (QR): программный клик → debugger-клик → человек; повтор до applePayRetries. */

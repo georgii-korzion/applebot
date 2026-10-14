@@ -641,6 +641,35 @@ scenarios['auto-place'] = async () => {
   } catch (e) { await dumpOnFail(profiles, 'auto-place'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
+/**
+ * Живой тест 14.10: Place Order картой → Apple вернула на Billing «Your payment authorisation failed on card •••NNNN».
+ * Расширение сразу выбирает Apple Pay → Review → лист с кодом; Place Order повторно не жмёт, в очереди не стоит.
+ */
+scenarios['card-declined'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', CARD_DECLINE: '1' });
+  const p = await launchProfile('card-declined');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD, payment: 'manual', autoPlaceOrder: true })], { openInSec: -5 }));
+    const r = await p.cmd({ cmd: 'start' });
+    assert.ok(r.ok, r.error);
+    await waitFor(async () => /лист Apple Pay открыт/.test(await p.log()) || null, 60000, 'карта отклонена → Apple Pay → лист открыт', 500);
+    const ms = await mockState();
+    const ck = ms.sessions.find((x) => x.checkout.declined).checkout;
+    const st = await p.status();
+    const log = await p.log();
+    const tab = st.tabs.find((t) => /checkout/.test(t.url ?? ''));
+    say(`card-declined: Place Order ${ck.placeOrderClicks}, отказов ${ck.declined}, способ ${ck.method}, кликов Apple Pay ${ck.applePayClicks}; вкладка ${tab?.state}: ${tab?.detail}`);
+    assert.equal(ck.placeOrderClicks, 1, 'Place Order картой — один раз');
+    assert.equal(ck.declined, 1);
+    assert.equal(ck.method, 'APPLE_PAY', 'после отказа выбран Apple Pay');
+    assert.ok(/оплата картой не прошла .*переключаюсь на Apple Pay/.test(log), 'лог: переключение на Apple Pay');
+    assert.ok(/PAYING: карта отклонена → Apple Pay/.test(log), 'сразу наш ход, без очереди');
+    assert.ok(tab && tab.state !== 'PAY_QUEUE' && /Apple Pay/.test(tab.detail ?? ''), `вкладка на Apple Pay: ${tab?.state} ${tab?.detail}`);
+    assert.equal(ms.orders.length, 0, 'заказа нет — Apple Pay подтверждает человек');
+  } catch (e) { await dumpOnFail(profiles, 'card-declined'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
 // ---------- флот (FLEET-SPEC §12.3) ----------
 const identityUrl = (id) => `${MOCK}/ae/shop/buy-iphone/iphone-duo#drop=${encodeURIComponent(id)}&hub=${encodeURIComponent(HUB_WS)}`;
 const hubProfile = async (id) => (await hubState()).profiles.find((p) => p.name === id);
@@ -1287,7 +1316,7 @@ scenarios['baked-profile'] = async () => {
 };
 
 const list = want.length ? want : [
-  'single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-no-billing', 'card-fallback', 'auto-place',
+  'single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-no-billing', 'card-fallback', 'auto-place', 'card-declined',
   'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'atb-before-open', 'atb-wait-open', 'fm-541', 'atb-541', 'pickup-retry', 'restock', 'baked-profile',
   'ordered-stays', 'no-cross-profile-blocking', 'fleet-identity', 'fleet-strategies', 'hold-fallback', 'hub-down', 'config-update', 'proxy', 'applepay-retry', 'card-slow-90s', 'acceptance',
 ];

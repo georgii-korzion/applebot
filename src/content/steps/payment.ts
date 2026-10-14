@@ -14,6 +14,13 @@ const REVIEW_URL = /_s=Review/i;
 export async function paymentStep(c: Ctl): Promise<void> {
   const sig = c.signal;
   const o = c.order!;
+  // live 14.10: после Place Order картой Apple вернула на Billing «Your payment authorisation failed on card •••NNNN» —
+  // сразу Apple Pay, не стоим в очереди (просьба владельца)
+  const back = ['PAY_QUEUE', 'PAYING', 'REVIEW', 'NEED_HUMAN', 'PAY_TIMEOUT'].includes(c.ts.state) || !!c.ts.placeOrderTried;
+  if (back && c.ts.payMethod !== 'applepay') {
+    const seen = await waitUntil(() => (cardDeclinedText() ? 'declined' : findEl('payCard') || findEl('payApplePay') ? 'form' : null), c.t.checkoutPageWaitMs, sig);
+    if (seen === 'declined' || (seen === 'form' && (await waitUntil(() => cardDeclinedText(), 1000, sig)))) { await onCardDeclined(c); return; }
+  }
   if (['PAY_QUEUE', 'PAYING', 'REVIEW', 'ORDERED', 'NEED_HUMAN'].includes(c.ts.state)) {
     // вернулись на Billing (например, из Review) — ничего не трогаем, человек в процессе
     if (c.ts.state === 'PAYING' && c.ts.payTurn) await onTurn(c);
@@ -62,6 +69,47 @@ export async function paymentStep(c: Ctl): Promise<void> {
   c.setState('PAY_QUEUE', 'в очереди на оплату');
   c.send({ t: 'BILLING_READY', store: c.ts.store ?? '', slot: c.ts.slot ?? '', slotLabel: c.ts.slotLabel ?? '', method, price: c.ts.price, cardFilled: !!c.ts.cardFilled });
   showPayBanner(c);
+}
+
+function cardDeclinedText(): string | null {
+  return SEL.txtCardDeclined.exec(document.body?.innerText ?? '')?.[0] ?? null;
+}
+
+/**
+ * Карту отклонили (Apple вернула на Billing после Place Order): выбираем Apple Pay и сразу идём на Review → лист с
+ * кодом (наш ход уже был — в очередь не встаём). Apple Pay нет на странице — просим другую карту.
+ */
+async function onCardDeclined(c: Ctl): Promise<void> {
+  const o = c.order!;
+  const sig = c.signal;
+  const msg = cardDeclinedText() ?? 'payment authorisation failed';
+  c.ts.cardDeclined = (c.ts.cardDeclined ?? 0) + 1;
+  const ap = await waitUntil(() => findEl('payApplePay'), 5000, sig);
+  if (!ap) {
+    c.log(`Apple: оплата картой не прошла («${msg}»), Apple Pay на странице нет — нужна другая карта`, 'warn');
+    c.setState('NEED_HUMAN', 'карта отклонена, Apple Pay нет — введи другую карту');
+    c.alert(`Заказ ${o.id}: карта отклонена`, 'Apple Pay на странице нет — введи другую карту');
+    c.overlay.banner(`${payLabel(c)} · карта отклонена`, 'Apple Pay недоступен — введи другую карту и нажми Review', 'warn');
+    return;
+  }
+  c.log(`Apple: оплата картой не прошла («${msg}») — переключаюсь на Apple Pay`, 'warn');
+  if (!isChecked(ap)) pickRadio(ap);
+  await sleep(300, sig);
+  c.ts.payMethod = 'applepay';
+  c.ts.applePayTried = false;
+  c.ts.applePayTries = 0;
+  c.ts.billingMissing = undefined;
+  c.ts.payTurn = true;
+  c.ts.payStartedAt = Date.now();
+  c.setState('PAYING', 'карта отклонена → Apple Pay');
+  await c.save();
+  c.alert(`Заказ ${o.id}: карта отклонена → Apple Pay`, 'Сейчас откроется код Apple Pay — сканируй телефоном');
+  showPayBanner(c);
+  if (!o.autoReview) {
+    c.overlay.banner(`${payLabel(c)} · карта отклонена — выбран Apple Pay`, 'Нажми Review Your Order, потом Apple Pay', 'warn');
+    return;
+  }
+  await onTurn(c);
 }
 
 /**

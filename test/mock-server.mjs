@@ -14,6 +14,7 @@
 //   HYDRATE_MS=250         задержка «гидратации» страницы конфигурации
 //   ATTACH_DELAY_MS=900    200 → beacon/atb → step=attach
 //   THREEDS_MS=0           после Place Order — «подтверди в приложении банка» N мс, потом thank-you (3-D Secure)
+//   CARD_DECLINE=0         Place Order картой → назад на Billing с «Your payment authorisation failed on card •••NNNN» (живой тест 14.10)
 //   CARD_DELAY_MS=0        блок карты на Billing появляется через N мс после выбора «Credit or Debit Card» (Apple 30.09: несколько секунд)
 //   DEFAULT_CITY=Dubai     город в чекауте по умолчанию
 //   QUEUE_AFTER_OPEN=0     после открытия первые N заходов сессии на страницу товара — «очередь» с meta refresh (2 с),
@@ -59,6 +60,7 @@ const S = {
   attachDelayMs: num(env.ATTACH_DELAY_MS, 900),
   cardDelayMs: num(env.CARD_DELAY_MS, 0),
   threeDsMs: num(env.THREEDS_MS, 0),
+  cardDecline: env.CARD_DECLINE === '1',
   defaultCity: env.DEFAULT_CITY ?? 'Dubai',
   storeClosed: env.STORE_CLOSED ?? '',
   queueAfterOpen: num(env.QUEUE_AFTER_OPEN, 0),
@@ -298,7 +300,7 @@ function checkoutPage(s) {
   const boot = {
     stores: STORES.map((x, i) => ({ ...x, available: !S.unavailableStores.includes(x.id) && pickupOpen(), dist: (2.1 + i * 7.3).toFixed(1) })),
     cities: CITIES, defaultCity: S.defaultCity, dates, slots: Object.fromEntries(dates.map((d, i) => [d.day, slotsFor(i, d.day)])),
-    items: bagJson(s).items, cardDelayMs: S.cardDelayMs, threeDsMs: S.threeDsMs,
+    items: bagJson(s).items, cardDelayMs: S.cardDelayMs, threeDsMs: S.threeDsMs, cardDecline: S.cardDecline,
     apTrustedOnly: S.applePayTrustedOnly, apSheetTtlMs: S.applePaySheetTtlMs,
   };
   return page(s, 'Checkout - Apple (AE)', `<div id="app"></div><script id="boot" type="application/json">${JSON.stringify(boot)}</script>`, { scripts: `<script>(${checkoutClient.toString()})();</script>` });
@@ -460,6 +462,9 @@ function checkoutClient() {
   // --- Billing: граница автоматизации ---
   function billing() {
     var mountSeq = 0;
+    // CARD_DECLINE: Apple вернула с Review после Place Order картой — ошибка сверху, способ оплаты снова не выбран
+    if (st.declineMsg) app.appendChild(el('<div class="rs-error decline" role="alert">' + st.declineMsg + '</div>'));
+    st.method = null;
     app.appendChild(el('<h1>How do you want to pay?</h1>'
       + '<input class="vh" type="radio" name="billingOptions" id="bo-c" value="CREDIT" data-autom="checkout-billingOptions-CREDIT"><label for="bo-c">Credit or Debit Card</label>'
       + '<input class="vh" type="radio" name="billingOptions" id="bo-a" value="APPLE_PAY" data-autom="checkout-billingOptions-APPLE_PAY"><label for="bo-a">Apple Pay</label>'
@@ -521,9 +526,10 @@ function checkoutClient() {
       if (!termsOk()) return;
       place.disabled = true;
       post('/ae/shop/checkoutx?_a=placeOrder&_m=checkout.review', {}).then(function (r) {
-        var go = function () { location.assign('/ae/shop/checkout/thankyou?o=' + r.orderNo); };
+        if (r.declined) { st.declineMsg = 'Your payment authorisation failed on card \u2022\u2022\u2022' + r.last4 + '. Please verify your information and try again, or try another payment method.'; go('Billing'); return; }
+        var thanks = function () { location.assign('/ae/shop/checkout/thankyou?o=' + r.orderNo); };
         // THREEDS_MS: «подтверди в приложении банка» — как 3-D Secure у банка (в жизни — iframe/редирект банка)
-        if (B.threeDsMs > 0) { app.appendChild(el('<div id="threeds" role="dialog"><h2>Confirm the payment in your bank app</h2><p>Waiting for your bank…</p></div>')); setTimeout(go, B.threeDsMs); } else go();
+        if (B.threeDsMs > 0) { app.appendChild(el('<div id="threeds" role="dialog"><h2>Confirm the payment in your bank app</h2><p>Waiting for your bank…</p></div>')); setTimeout(thanks, B.threeDsMs); } else thanks();
       });
     };
   }
@@ -698,6 +704,7 @@ const server = http.createServer(async (req, res) => {
       if (a === 'applePaySheetClosed') { s.checkout.applePaySheetClosed = (s.checkout.applePaySheetClosed ?? 0) + 1; return json(res, { ok: true }); }
       if (a === 'placeOrder') {
         s.checkout.placeOrderClicks = (s.checkout.placeOrderClicks ?? 0) + 1;
+        if (S.cardDecline && s.checkout.review?.method === 'CREDIT') { s.checkout.declined = (s.checkout.declined ?? 0) + 1; return json(res, { ok: false, declined: true, last4: s.checkout.review.cardLast4 }); }
         const no = `W${String(100000000 + Math.floor(Math.random() * 899999999))}`;
         orders.push({ orderNo: no, sid: s.sid, items: s.bag.map((i) => ({ part: i.part, qty: i.qty })), checkout: s.checkout, at: Date.now() });
         s.bag = [];

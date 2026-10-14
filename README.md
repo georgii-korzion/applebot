@@ -23,6 +23,8 @@
 | `step=attach` после Add to Bag | 60 с | `atbTimeoutMs` |
 | Поля карты на Billing | 90 с | `cardWaitMs` |
 | Apple Pay на Review | как 4.0 (программный клик → настоящий через `chrome.debugger` → подсветка) | `applePayClick` |
+| Карту отклонили | Apple вернула на Billing «payment authorisation failed» — расширение сразу выбирает Apple Pay → Review → лист с кодом, Place Order повторно не жмёт (5.0.2) | — |
+| Оплата картой без улицы/Area плательщика | имя, фамилия, город заполняются; Review не жмёт, просит дописать адрес (5.0.1) | `billing` |
 | HTTP 541 | рефреш раз в 1,5–5 с, пока не пустит (как 3.0) | — |
 | Запуск гонки | autoStart включён по умолчанию, можно выключить | `autoStart` |
 | Прокси | в настройках можно вставить строкой `http://user:pass@host:port` | `proxy` |

@@ -75,6 +75,8 @@ export const SEL = {
   // Review без галочки (18 Pro, live): «Please read and accept the terms & conditions of this order.»
   /** Текст ошибки Apple «Please read and accept the terms & conditions of this order» — без «agree to the terms»: так написан сам label галочки. */
   txtTermsError: /(read and accept|accept the terms\s*(&|and)\s*conditions)/i,
+  /** Billing после Place Order картой (live 14.10): «Your payment authorisation failed on card •••7681. … try another payment method.» */
+  txtCardDeclined: /payment authori[sz]ation (has )?failed[^.\n]*|card (was|has been) declined[^.\n]*/i,
   txtEmptyBag: /Your bag is empty/i,
   txtOrderNo: /\bW\d{9,11}\b/,
   txtThanks: /(thank you|your order number|order number)/i,
