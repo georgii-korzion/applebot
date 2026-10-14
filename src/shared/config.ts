@@ -355,7 +355,14 @@ export function validateConfig(cfg: Config, now = Date.now()): Validation {
     if (o.card.number && o.payment === 'manual') warnings.push(`${p} карта задана — хранится в этом профиле Chrome открытым текстом; после дропа удали её из настроек`);
     if (o.autoPlaceOrder && o.payment === 'manual') warnings.push(`${p} autoPlaceOrder — расширение нажмёт Place Order само (один раз); если банк не запросит подтверждение в приложении, заказ оформится без тебя`);
     if (o.autoPlaceOrder && !o.autoReview) warnings.push(`${p} autoPlaceOrder без autoReview — до Review дойти должен человек`);
-    if (o.payment === 'manual' && !(o.billing.street || o.address.street) && !(o.billing.area || o.address.area)) warnings.push(`${p} оплата картой: Apple требует Billing Address (улица, Area, город) — заполни «Плательщик» в настройках, иначе Review не откроется`);
+    // live 14.10: у Street Address на Billing подсказка «Please enter a maximum of 35 characters»
+    const bStreet = o.billing.street || o.address.street, bArea = o.billing.area || o.address.area;
+    if (bStreet.length > 35) errors.push(`${p} адрес плательщика: улица длиннее 35 символов (${bStreet.length}) — Apple не примет`);
+    if (bArea.length > 35) warnings.push(`${p} адрес плательщика: Area длиннее 35 символов (${bArea.length}) — Apple может не принять`);
+    if (o.payment === 'manual') {
+      const need = [!(o.billing.street || o.address.street) && 'улица', !(o.billing.area || o.address.area) && 'Area', !(o.billing.city || o.address.city) && 'город'].filter(Boolean);
+      if (need.length) warnings.push(`${p} оплата картой: Apple требует адрес плательщика — в настройках пусто: ${need.join(', ')} («Плательщик»). Без них Review не откроется, расширение его не нажмёт — допишешь на странице сам`);
+    }
     if (o.racersPerProfile > 6) warnings.push(`${p} racersPerProfile=${o.racersPerProfile} — много вкладок в одном профиле`);
     for (const pr of o.profiles) profileUse.set(pr, [...(profileUse.get(pr) ?? []), o.id]);
     tabs += Math.max(1, o.profiles.length) * o.racersPerProfile;

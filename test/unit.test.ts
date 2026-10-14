@@ -354,3 +354,13 @@ test('v5: коды магазинов из JSON Apple', () => {
   assert.ok(!v.errors.some((e) => /R999/.test(e)), 'неизвестный, но правильный код — не ошибка');
   assert.ok(v.warnings.some((e) => /R999/.test(e)), '…а предупреждение');
 });
+
+test('v5: оплата картой без адреса плательщика — предупреждение с перечнем полей', () => {
+  const o = { ...validOrder(), payment: 'manual', billing: { title: '', firstName: '', lastName: '', street: '', area: '', town: '', city: 'Dubai' }, address: { street: '', area: '', city: 'Dubai' } };
+  const w = validateConfig(normalizeConfig({ profileId: 'x', orders: [o] })).warnings.join('\n');
+  assert.match(w, /в настройках пусто: улица, Area/);
+  const ok = { ...o, billing: { ...o.billing, street: 'Al Wasl Rd 10', area: 'Jumeirah' } };
+  assert.ok(!/в настройках пусто/.test(validateConfig(normalizeConfig({ profileId: 'x', orders: [ok] })).warnings.join('\n')));
+  const long = { ...o, billing: { ...o.billing, street: 'x'.repeat(36), area: 'Jumeirah' } };
+  assert.ok(validateConfig(normalizeConfig({ profileId: 'x', orders: [long] })).errors.some((e) => /35/.test(e)), 'улица длиннее 35 символов — Apple не примет');
+});

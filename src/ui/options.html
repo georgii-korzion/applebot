@@ -124,7 +124,7 @@
         <label for="o_bcity">Плательщик: город</label>
         <select id="o_bcity"><option>Dubai</option><option>Abu Dhabi</option><option>Sharjah</option><option>Ajman</option><option>Al Ain</option><option>Fujairah</option><option>Ras Al Khaimah</option><option>Umm Al Quwain</option></select>
         <label for="o_btitle">Плательщик: Title</label><input id="o_btitle" placeholder="необязательно: Mr. / Ms." autocomplete="off">
-        <div class="hint">Billing Address на странице оплаты картой — Apple требует его (снято на живом 18 Pro 30.09). Имя/фамилия пустые — берутся из контакта получателя; улица/Area пустые — из адреса доставки ниже. Для Apple Pay не нужен.</div>
+        <div class="hint">Billing Address на странице оплаты картой — Apple требует его (снято на живом 18 Pro 30.09). Имя/фамилия пустые — берутся из контакта получателя; улица/Area пустые — из адреса доставки ниже. <b>Для карты улица (до 35 символов) и Area обязательны</b>: без них расширение заполнит остальное, но Review не нажмёт — допишешь на странице. Для Apple Pay не нужен.</div>
         <label for="o_autoreview">Нажимать Review самим</label><input id="o_autoreview" type="checkbox" style="justify-self:start">
         <div class="hint">Когда подошла очередь оплаты: заполненная карта → «Review Your Order». Для Apple Pay — переход на Review и попытка открыть лист с кодом.</div>
         <label for="o_autoplace">Нажимать Place Order самим</label><input id="o_autoplace" type="checkbox" style="justify-self:start">

@@ -59,6 +59,8 @@ export interface TabState {
   countryTried?: boolean;
   price?: string;
   cardFilled?: boolean;
+  /** Обязательные поля Billing Address, которых нет в настройках (улица, Area) — Review не жмём, пока человек не допишет. */
+  billingMissing?: string[];
   payTurn?: boolean;
   applePayTried?: boolean;
   /** Попытки открыть лист Apple Pay (QR): программный клик → debugger-клик → человек; повтор до applePayRetries. */

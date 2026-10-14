@@ -125,6 +125,8 @@ async function fillCard(c: Ctl, num: HTMLInputElement): Promise<void> {
 /**
  * Billing Address при оплате картой (18 Pro, live 30.09): First/Last Name, Street Address, Area, City обязательны,
  * Title и Town — нет. Без адреса «Review Your Order» отвечает «Please complete this mandatory field».
+ * Заполняем всё, что есть (имя и фамилия — из контакта, если «Плательщик» пуст); улицы/Area нет в настройках —
+ * их допишет человек: ставим c.ts.billingMissing, Review сами не жмём (live 14.10: жали Review с пустым адресом).
  */
 async function fillBillingAddress(c: Ctl): Promise<void> {
   const o = c.order!;
@@ -134,14 +136,10 @@ async function fillBillingAddress(c: Ctl): Promise<void> {
   const city = b.city || o.address.city;
   const root = billingRoot();
   const first = await waitUntil(() => findField('billFirstName', root) ?? findField('billStreet', root), 3000, c.signal);
-  if (!first) { c.log('Billing Address: полей адреса нет — Apple не спросил адрес плательщика'); return; }
-  if (!street || !area) {
-    c.log('Billing Address нужен для карты, но «Плательщик: улица / Area» в настройках пусты — заполни адрес сам', 'warn');
-    c.overlay.banner(`${payLabel(c)} · заполни Billing Address`, 'В настройках пусто: Плательщик: улица / Area', 'warn');
-    return;
-  }
+  if (!first) { c.log('Billing Address: полей адреса нет — Apple не спросил адрес плательщика'); c.ts.billingMissing = undefined; return; }
   const done: string[] = [];
   const missed: string[] = [];
+  const empty: string[] = [];
   const fields: [Key, string, string][] = [
     ['billFirstName', b.firstName || o.contact.firstName, 'имя'],
     ['billLastName', b.lastName || o.contact.lastName, 'фамилия'],
@@ -150,7 +148,7 @@ async function fillBillingAddress(c: Ctl): Promise<void> {
     ['billTown', b.town, 'Town'],
   ];
   for (const [key, val, label] of fields) {
-    if (!val) continue;
+    if (!val) { if (key !== 'billTown') empty.push(label); continue; }
     const f = findField(key, root);
     if (!f) { missed.push(label); continue; }
     if (f.value !== val) setInput(f, val);
@@ -159,7 +157,7 @@ async function fillBillingAddress(c: Ctl): Promise<void> {
   }
   const selects: [Key, string, string][] = [['billTitle', b.title, 'Title'], ['billCity', city, 'город']];
   for (const [key, val, label] of selects) {
-    if (!val) continue;
+    if (!val) { if (key === 'billCity') empty.push(label); continue; }
     const s = findSelect(key, root);
     if (!s) { if (key === 'billCity') missed.push(label); continue; }
     const opt = Array.from(s.options).find((x) => x.text.trim().toLowerCase() === val.toLowerCase() || x.value.toLowerCase() === val.toLowerCase());
@@ -168,8 +166,14 @@ async function fillBillingAddress(c: Ctl): Promise<void> {
     await sleep(60, c.signal);
     (s.value === opt.value ? done : missed).push(label);
   }
-  c.log(`адрес плательщика: заполнено ${done.join(', ') || '—'}${missed.length ? `; не удалось: ${missed.join(', ')}` : ''}`, missed.length ? 'warn' : 'info');
-  if (missed.length) c.overlay.banner(`${payLabel(c)} · допиши в Billing Address: ${missed.join(', ')}`, 'Остальное расширение заполнило', 'warn');
+  const todo = [...empty, ...missed];
+  c.ts.billingMissing = todo.length ? todo : undefined;
+  c.log(`адрес плательщика: заполнено ${done.join(', ') || '—'}${empty.length ? `; в настройках пусто: ${empty.join(', ')}` : ''}${missed.length ? `; не удалось: ${missed.join(', ')}` : ''}`, todo.length ? 'warn' : 'info');
+  if (todo.length) {
+    c.overlay.banner(`${payLabel(c)} · допиши адрес плательщика: ${todo.join(', ')}`, 'Review расширение не нажмёт, пока адрес не полный — допиши и нажми Review сам', 'warn');
+    const key: Key | null = empty.includes('улица') || missed.includes('улица') ? 'billStreet' : empty.includes('Area') || missed.includes('Area') ? 'billArea' : null;
+    if (key) findField(key, root)?.scrollIntoView({ block: 'center' });
+  }
 }
 
 export function payLabel(c: Ctl): string {
@@ -187,6 +191,7 @@ export function showPayBanner(c: Ctl): void {
   } else if (c.ts.state === 'PAYING') {
     const what = c.ts.payMethod === 'applepay'
       ? 'Apple Pay: сканируй код телефоном и подтверди'
+      : c.ts.billingMissing?.length ? `допиши адрес плательщика (${c.ts.billingMissing.join(', ')}) и нажми Review → Place Order`
       : c.ts.cardFilled ? 'карта заполнена — проверь и нажми Review → Place Order' : 'введи карту и нажми Review → Place Order';
     c.overlay.banner(`${label} · ${what}`, `Финальное действие — за тобой. ${dup}`, 'warn');
   } else if (c.ts.state === 'REVIEW') {
@@ -215,6 +220,15 @@ async function onTurn(c: Ctl): Promise<void> {
   if (REVIEW_URL.test(location.href)) { await onReviewTurn(c); return; }
   if (!c.order?.autoReview) {
     if (c.ts.payMethod === 'manual') { const f = findField('cardNumber'); if (f && !c.ts.cardFilled) f.focus(); }
+    return;
+  }
+  if (c.ts.payMethod === 'manual' && c.ts.billingMissing?.length) {
+    // с неполным адресом Review только покажет «Please enter…» — ждём человека
+    c.setState('PAYING', `допиши адрес плательщика: ${c.ts.billingMissing.join(', ')} → Review`);
+    c.log(`Review не жму: в адресе плательщика не хватает ${c.ts.billingMissing.join(', ')} — допиши и нажми Review сам`, 'warn');
+    const root = billingRoot();
+    const f = c.ts.billingMissing.includes('улица') ? findField('billStreet', root) : c.ts.billingMissing.includes('Area') ? findField('billArea', root) : null;
+    f?.focus();
     return;
   }
   const btn = await waitEnabled('reviewButton', c.t.checkoutPageWaitMs, sig);

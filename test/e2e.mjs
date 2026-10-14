@@ -555,6 +555,46 @@ scenarios['card-slow'] = async () => {
   } catch (e) { await dumpOnFail(profiles, 'card-slow'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
+/**
+ * Живой тест 14.10: оплата картой, а улица и Area плательщика в настройках пусты. Расширение заполняет карту, имя,
+ * фамилию и город, Review не жмёт и просит дописать адрес; человек дописал и нажал Review → Review.
+ */
+scenarios['card-no-billing'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0' });
+  const p = await launchProfile('card-no-billing');
+  const profiles = [p];
+  try {
+    const billing = { title: '', firstName: '', lastName: '', street: '', area: '', town: '', city: 'Dubai' };
+    const cfg = makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD, payment: 'manual', billing })], { openInSec: -5 });
+    await p.setConfig(cfg);
+    const r2 = await p.cmd({ cmd: 'start' });
+    assert.ok(r2.ok, r2.error);
+    assert.ok((r2.warnings ?? []).some((w) => /в настройках пусто: улица, Area/.test(w)), `предупреждение при Start: ${JSON.stringify(r2.warnings)}`);
+    await waitFor(async () => (await p.status()).os.billingReadyAt, 60000, 'Billing', 500);
+    const st = await waitFor(async () => { const s = await p.status(); return s.tabs.find((t) => /допиши адрес плательщика/.test(t.detail ?? '')) ? s : null; }, 30000, 'просьба дописать адрес', 500);
+    const pg = await billingPage(p);
+    const vals = await pg.evaluate(() => Object.fromEntries(['firstName', 'lastName', 'street', 'street2', 'city', 'cardNumber'].map((n) => [n, document.querySelector(`[name=${n}]`)?.value ?? null])));
+    say(`card-no-billing: поля ${JSON.stringify({ ...vals, cardNumber: vals.cardNumber ? `****${vals.cardNumber.replace(/\D/g, '').slice(-4)}` : null })}`);
+    assert.equal(vals.firstName, 'Ahmed', 'имя плательщика — из контакта');
+    assert.equal(vals.lastName, 'Test');
+    assert.equal(vals.city, 'Dubai', 'город выбран');
+    assert.equal(vals.street, '', 'улицу расширение не выдумывает');
+    assert.ok(vals.cardNumber, 'карта заполнена');
+    await sleep(3000);
+    assert.ok(!(await mockState()).sessions.some((x) => x.checkout.review), 'Review с неполным адресом не нажат');
+    assert.ok(/Review не жму: в адресе плательщика не хватает улица, Area/.test(await p.log()), 'лог: Review не жму');
+    // человек дописал адрес и нажал Review
+    await pg.fill('[name=street]', 'Al Wasl Rd 10');
+    await pg.fill('[name=street2]', 'Jumeirah');
+    await pg.click('#cont');
+    const ms = await waitFor(async () => { const m = await mockState(); return m.sessions.some((x) => x.checkout.review) ? m : null; }, 20000, 'Review после ручного адреса');
+    const rv = ms.sessions.find((x) => x.checkout.review).checkout.review;
+    assert.deepEqual([rv.billing.first, rv.billing.last, rv.billing.street, rv.billing.area, rv.billing.city], ['Ahmed', 'Test', 'Al Wasl Rd 10', 'Jumeirah', 'Dubai']);
+    assert.equal(rv.cardLast4, '1111');
+    assert.equal(st.tabs.find((t) => /допиши/.test(t.detail ?? '')).state, 'PAYING');
+  } catch (e) { await dumpOnFail(profiles, 'card-no-billing'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
 /** Блок карты не появился за cardWaitMs → Apple Pay (cardFallback=applepay) → Review → галочка → кнопка Apple Pay. */
 scenarios['card-fallback'] = async () => {
   await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', CARD_DELAY_MS: '60000' });
@@ -1247,7 +1287,7 @@ scenarios['baked-profile'] = async () => {
 };
 
 const list = want.length ? want : [
-  'single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-fallback', 'auto-place',
+  'single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-no-billing', 'card-fallback', 'auto-place',
   'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'atb-before-open', 'atb-wait-open', 'fm-541', 'atb-541', 'pickup-retry', 'restock', 'baked-profile',
   'ordered-stays', 'no-cross-profile-blocking', 'fleet-identity', 'fleet-strategies', 'hold-fallback', 'hub-down', 'config-update', 'proxy', 'applepay-retry', 'card-slow-90s', 'acceptance',
 ];
