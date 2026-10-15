@@ -17,7 +17,7 @@ import { checkoutClick, fixBag } from './steps/bag';
 import { guestStep } from './steps/guest';
 import { fulfillmentStep, shippingStep } from './steps/fulfillment';
 import { contactStep } from './steps/contact';
-import { applePayCoords, checkPayTimeout, onFocusForPay, ordered, paymentStep, reviewStep, showPayBanner, watchForOrderNo } from './steps/payment';
+import { applePayCoords, checkPayTimeout, continueCoords, onFocusForPay, ordered, paymentStep, reviewStep, showPayBanner, watchForOrderNo } from './steps/payment';
 import { cleanStep, prepStep } from './steps/prepare';
 
 async function dispatch(c: Ctl): Promise<void> {
@@ -279,7 +279,7 @@ function onSwMessage(c: Ctl, m: S2C): void {
       break;
     }
     case 'APPLEPAY_COORDS_REQ': {
-      const p = applePayCoords();
+      const p = m.target === 'billingContinue' ? continueCoords() : applePayCoords();
       if (p) c.send({ t: 'APPLEPAY_COORDS', x: p.x, y: p.y });
       break;
     }

@@ -673,35 +673,51 @@ scenarios['card-declined'] = async () => {
 
 /**
  * Живой тест 15.10: после отказа карты выбран Apple Pay, расширение нажало Billing «Continue» — Review не открылся, вкладка
- * молча ждала. Мок DECLINE_CONTINUE_TRUSTED: программный клик Continue игнорируется. Ждём: два клика расширения, в логе —
- * что на странице, затем подсветка Continue (ASSIST); «человек» жмёт → Review → лист Apple Pay.
+ * молча ждала. Мок DECLINE_CONTINUE_TRUSTED: программный клик Continue игнорируется.
+ * (а) applePayClick 'dom': два клика расширения, в логе — что на странице, подсветка Continue (ASSIST), «человек» жмёт → лист.
+ * (б) applePayClick 'debugger' (владелец, 15.10): после двух кликов — настоящий клик через chrome.debugger; в Playwright attach
+ *     обычно падает (CDP занят) — тогда та же подсветка для человека.
  */
 scenarios['card-declined-human'] = async () => {
-  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', CARD_DECLINE: '1', DECLINE_CONTINUE_TRUSTED: '1' });
-  const p = await launchProfile('card-declined-human');
-  const profiles = [p];
-  try {
-    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD, payment: 'manual', autoPlaceOrder: true })], { openInSec: -5 }));
-    assert.ok((await p.cmd({ cmd: 'start' })).ok);
-    const st = await waitFor(async () => { const s = await p.status(); return s.tabs.some((t) => t.state === 'ASSIST') ? s : null; }, 90000, 'ASSIST: нажми Continue', 500);
-    const tab = st.tabs.find((t) => t.state === 'ASSIST');
-    const log = await p.log();
-    const ck = (await mockState()).sessions.find((x) => x.checkout.declined).checkout;
-    say(`card-declined-human: программных кликов Continue ${ck.billingContinueUntrusted}, вкладка ${tab.state}: ${tab.detail}`);
-    assert.equal(ck.billingContinueUntrusted, 2, 'расширение нажало Continue дважды, мок оба раза не принял');
-    assert.match(tab.detail, /Нажми «Continue» — дальше расширение откроет Apple Pay/);
-    assert.ok(/страница не ответила: способ оплаты Apple Pay; кнопка «Continue» \[continue-button-review\]/.test(log), 'в логе — что на странице');
-    assert.ok(/PAYING: жму «Continue» ещё раз/.test(log), 'повтор клика');
-    const pg = p.appleTabs().find((x) => /_s=Billing/.test(x.url()));
-    assert.match(await pg.locator('#cont').evaluate((b) => b.style.outline), /solid/, 'Continue подсвечена');
-    await pg.click('#cont'); // «человек»
-    await waitFor(async () => /лист Apple Pay открыт/.test(await p.log()) || null, 30000, 'после клика человека — Review → лист Apple Pay', 500);
-    const ms = await mockState();
-    const ck2 = ms.sessions.find((x) => x.checkout.declined).checkout;
-    assert.equal(ck2.method, 'APPLE_PAY');
-    assert.equal(ck2.placeOrderClicks, 1, 'Place Order картой — один раз');
-    assert.equal(ms.orders.length, 0, 'заказа нет — Apple Pay подтверждает человек');
-  } catch (e) { await dumpOnFail(profiles, 'card-declined-human'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+  const run = async (name, applePayClick) => {
+    await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', CARD_DECLINE: '1', DECLINE_CONTINUE_TRUSTED: '1' });
+    const p = await launchProfile(name);
+    const profiles = [p];
+    try {
+      await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD, payment: 'manual', autoPlaceOrder: true, applePayClick })], { openInSec: -5 }));
+      assert.ok((await p.cmd({ cmd: 'start' })).ok);
+      const outcome = await waitFor(async () => {
+        const s = await p.status();
+        if (s.tabs.some((t) => t.state === 'ASSIST')) return { via: 'human', s };
+        if (/лист Apple Pay открыт/.test(await p.log())) return { via: 'debugger', s };
+        return null;
+      }, 90000, 'ASSIST или лист после debugger-клика', 500);
+      const log = await p.log();
+      const ck = (await mockState()).sessions.find((x) => x.checkout.declined).checkout;
+      const tab = outcome.s.tabs.find((t) => /checkout/.test(t.url ?? ''));
+      say(`${name}: программных кликов Continue ${ck.billingContinueUntrusted}, исход ${outcome.via}, вкладка ${tab?.state}: ${tab?.detail}`);
+      assert.equal(ck.billingContinueUntrusted, 2, 'расширение нажало Continue дважды, мок оба раза не принял');
+      assert.ok(/страница не ответила: способ оплаты Apple Pay; кнопка «Continue» \[continue-button-review\]/.test(log), 'в логе — что на странице');
+      assert.ok(/PAYING: жму «Continue» ещё раз/.test(log), 'повтор клика');
+      if (applePayClick === 'debugger') assert.ok(/debugger-клик по Continue на Billing \(после отказа карты\)/.test(log), 'запрошен debugger-клик по Continue');
+      else assert.ok(!/debugger-клик/.test(log), 'при applePayClick=dom debugger не трогаем');
+      if (outcome.via === 'human') {
+        assert.match(tab.detail, /Нажми «Continue» — дальше расширение откроет Apple Pay/);
+        const pg = p.appleTabs().find((x) => /_s=Billing/.test(x.url()));
+        assert.match(await pg.locator('#cont').evaluate((b) => b.style.outline), /solid/, 'Continue подсвечена');
+        await pg.click('#cont'); // «человек»
+        await waitFor(async () => /лист Apple Pay открыт/.test(await p.log()) || null, 30000, 'после клика человека — Review → лист Apple Pay', 500);
+      }
+      const ms = await mockState();
+      const ck2 = ms.sessions.find((x) => x.checkout.declined).checkout;
+      assert.equal(ck2.method, 'APPLE_PAY');
+      assert.equal(ck2.placeOrderClicks, 1, 'Place Order картой — один раз');
+      assert.equal(ms.orders.length, 0, 'заказа нет — Apple Pay подтверждает человек');
+      assert.ok(!/debugger не отключ/.test(await p.log()));
+    } catch (e) { await dumpOnFail(profiles, name); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+  };
+  await run('card-declined-dom', 'dom');
+  await run('card-declined-dbg', 'debugger');
 };
 
 // ---------- флот (FLEET-SPEC §12.3) ----------

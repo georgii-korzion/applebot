@@ -1,6 +1,6 @@
 {
   "name": "apple-drop-assistant",
-  "version": "5.0.3",
+  "version": "5.0.4",
   "private": true,
   "description": "Chrome MV3 extension: pre-order assistant for apple.com/ae (stops before payment)",
   "type": "module",

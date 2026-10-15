@@ -157,10 +157,13 @@ export type C2S =
   | { t: 'PREPARED'; ok: boolean; detail: string }
   | { t: 'CLEANED'; count: number }
   | { t: 'STORE'; closed: boolean; reason: string }
-  | { t: 'APPLEPAY_CLICK_REQ'; x: number; y: number }
+  | { t: 'APPLEPAY_CLICK_REQ'; x: number; y: number; target?: DbgTarget }
   | { t: 'APPLEPAY_COORDS'; x: number; y: number }
   | { t: 'LOG'; level: 'info' | 'warn' | 'error'; msg: string; state?: string }
   | { t: 'PING' };
+
+/** Куда debugger-клик: кнопка Apple Pay на Review (по умолчанию) или Continue на Billing после отказа карты (владелец, 15.10). */
+export type DbgTarget = 'applePay' | 'billingContinue';
 
 // SW → content
 export type S2C =
@@ -176,7 +179,7 @@ export type S2C =
   | { t: 'DIAG'; net: { url: string; status: number; ago: number }[] }
   | { t: 'NET'; kind: 'updateSummary'; acpartNone: boolean; at: number }
   | { t: 'SW_WATCH'; at: number; ok: boolean }
-  | { t: 'APPLEPAY_COORDS_REQ' }
+  | { t: 'APPLEPAY_COORDS_REQ'; target?: DbgTarget }
   | { t: 'APPLEPAY_CLICK_DONE'; ok: boolean; error?: string }
   | { t: 'MODE'; mode: Mode; extra?: Partial<TabState> };
 

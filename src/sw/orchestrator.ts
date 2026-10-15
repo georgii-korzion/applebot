@@ -7,7 +7,7 @@ import {
 import { LogStore, fmtLine, maskUrl, registerSecret, scrub } from '../shared/log';
 import {
   newOrderState, newTabState,
-  type C2S, type Cmd, type Egress, type Hub2S, type HubCmd, type Mode, type OrderRecord, type OrderState, type Role, type S2C, type TabRow, type TabState,
+  type C2S, type Cmd, type DbgTarget, type Egress, type Hub2S, type HubCmd, type Mode, type OrderRecord, type OrderState, type Role, type S2C, type TabRow, type TabState,
 } from '../shared/messages';
 import { partLabel, partUrl, storeName } from '../shared/parts';
 import { fmUrl, openEdge, openParts, parseStores, pollFm, type FoundStore } from '../shared/watch';
@@ -323,7 +323,7 @@ export class Orchestrator {
         await this.onStore(tabId, m.closed, m.reason);
         break;
       case 'APPLEPAY_CLICK_REQ':
-        await this.onApplePayClick(tabId, { x: m.x, y: m.y });
+        await this.onApplePayClick(tabId, { x: m.x, y: m.y }, m.target ?? 'applePay');
         break;
       case 'APPLEPAY_COORDS':
         this.coordsWaiters.get(tabId)?.({ x: m.x, y: m.y });
@@ -653,22 +653,23 @@ export class Orchestrator {
   }
 
   // ---------- Apple Pay: настоящий клик через debugger (FLEET-SPEC §8) ----------
-  private async onApplePayClick(tabId: number, p: Point): Promise<void> {
+  private async onApplePayClick(tabId: number, p: Point, target: DbgTarget): Promise<void> {
     if (this.order?.applePayClick !== 'debugger') {
       this.sendTab(tabId, { t: 'APPLEPAY_CLICK_DONE', ok: false, error: 'applePayClick=dom' }, false);
       return;
     }
-    this.log(tabId, 'APPLEPAY', `debugger-клик по кнопке Apple Pay (${Math.round(p.x)}, ${Math.round(p.y)})`);
-    const r = await debuggerClick(tabId, p, () => this.requestCoords(tabId));
+    const what = target === 'billingContinue' ? 'Continue на Billing (после отказа карты)' : 'кнопке Apple Pay';
+    this.log(tabId, 'APPLEPAY', `debugger-клик по ${what} (${Math.round(p.x)}, ${Math.round(p.y)})`);
+    const r = await debuggerClick(tabId, p, () => this.requestCoords(tabId, target));
     this.log(tabId, 'APPLEPAY', r.ok ? 'debugger-клик отправлен, debugger отключится через 1,5 с' : `debugger-клик не удался: ${r.error}`, r.ok ? 'info' : 'warn');
     this.sendTab(tabId, { t: 'APPLEPAY_CLICK_DONE', ok: r.ok, error: r.error }, false);
   }
 
-  private requestCoords(tabId: number): Promise<Point | null> {
+  private requestCoords(tabId: number, target: DbgTarget): Promise<Point | null> {
     return new Promise((resolve) => {
       const to = setTimeout(() => { this.coordsWaiters.delete(tabId); resolve(null); }, 1000);
       this.coordsWaiters.set(tabId, (p) => { clearTimeout(to); this.coordsWaiters.delete(tabId); resolve(p); });
-      this.sendTab(tabId, { t: 'APPLEPAY_COORDS_REQ' }, false);
+      this.sendTab(tabId, { t: 'APPLEPAY_COORDS_REQ', target }, false);
     });
   }
 

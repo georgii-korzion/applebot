@@ -257,7 +257,7 @@ src/sw/                      service worker
   orchestrator.ts            состояние заказа, лок Add to Bag, очередь оплаты внутри профиля, записи заказов, хаб v2, identity, autoStart, команды
   watcher.ts                 роли вкладок (watcher/racer)
   proxy.ts                   прокси профиля через chrome.proxy + onAuthRequired, проверка выходного IP
-  applePay.ts                один настоящий клик по Apple Pay через chrome.debugger (FLEET-SPEC §8)
+  applePay.ts                один настоящий клик через chrome.debugger: Apple Pay на Review (FLEET-SPEC §8), Continue на Billing после отказа карты
   hubClient.ts, notify.ts, windows.ts, diag.ts
 src/ui/                      popup, options, offscreen (звук), ui.css
 hub/                         хаб v2: server.mjs (http+ws), config.mjs (fleet.json → конфиг), store.mjs (runtime/),

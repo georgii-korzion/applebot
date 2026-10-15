@@ -313,6 +313,19 @@ async function clickToReview(c: Ctl, first: HTMLElement): Promise<void> {
     btn = (await waitEnabled('reviewButton', 3000, sig)) ?? btn;
     name = buttonName(btn);
   }
+  if (!r && ap() && c.ts.cardDeclined && c.order?.applePayClick === 'debugger') {
+    // после отказа карты (владелец, 15.10): обычный клик Apple не приняла — один настоящий клик через chrome.debugger, как по Apple Pay
+    const p = continueCoords();
+    if (p) {
+      c.setState('PAYING', `жму «${name}» настоящим кликом (debugger)`);
+      r = await clickAndWatch(c, btn, async () => {
+        const res = await c.request({ t: 'APPLEPAY_CLICK_REQ', x: p.x, y: p.y, target: 'billingContinue' }, 'APPLEPAY_CLICK_DONE', 10000);
+        if (!res) c.log('SW не ответил на запрос debugger-клика', 'warn');
+        else if (!res.ok) c.log(`debugger-клик по «${name}» не выполнен: ${res.error ?? ''}`, 'warn');
+      });
+      if (!r) c.log(`«${name}» после debugger-клика: страница не ответила: ${billingDiag()}`, 'warn');
+    }
+  }
   if (!r) {
     // клик расширения страница не приняла — жмёт человек (assistClick ждёт настоящий клик); после него смотрим исход так же
     r = await clickAndWatch(c, btn, () => assistClick(c, clickable(btn), 'Оплата', ap() ? `Нажми «${name}» — дальше расширение откроет Apple Pay` : `Нажми «${name}»`));
@@ -414,9 +427,19 @@ async function chooseRadio(c: Ctl, el: HTMLElement, what: string): Promise<boole
 
 /** Центр кнопки Apple Pay в координатах viewport — для настоящего клика через chrome.debugger из SW (FLEET-SPEC §8). */
 export function applePayCoords(): { x: number; y: number } | null {
-  const btn = findEl('applePayButton');
-  if (!btn) return null;
-  const r = clickable(btn).getBoundingClientRect();
+  return centerOf(findEl('applePayButton'));
+}
+
+/** Центр Continue / Review Your Order — только на Billing (debugger-клик после отказа карты). */
+export function continueCoords(): { x: number; y: number } | null {
+  return /_s=Billing/i.test(location.href) ? centerOf(findEl('reviewButton')) : null;
+}
+
+function centerOf(el: HTMLElement | null): { x: number; y: number } | null {
+  if (!el) return null;
+  const b = clickable(el);
+  let r = b.getBoundingClientRect();
+  if (r.top < 0 || r.bottom > innerHeight) { b.scrollIntoView({ block: 'center' }); r = b.getBoundingClientRect(); }
   if (!r.width || !r.height) return null;
   return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }

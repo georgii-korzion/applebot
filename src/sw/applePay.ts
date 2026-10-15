@@ -1,4 +1,5 @@
-// Настоящий клик по кнопке Apple Pay через chrome.debugger (FLEET-SPEC §8).
+// Настоящий клик по кнопке Apple Pay через chrome.debugger (FLEET-SPEC §8), а после отказа карты — по Continue на Billing,
+// если Apple не приняла обычный клик (владелец, 15.10).
 // Единственное место, где используется debugger: один attach на попытку, три Input.dispatchMouseEvent, всегда detach.
 // Никаких других команд CDP. Лист Apple Pay / QR Chrome открывает только на доверенное событие — программный клик
 // из content script он отвергает (правило браузера, не защита Apple).
