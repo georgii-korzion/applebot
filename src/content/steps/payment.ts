@@ -6,10 +6,13 @@ import { storeName } from '../../shared/parts';
 import { isMockBase } from '../../shared/config';
 import type { Ctl } from '../ctl';
 import { assistClick } from '../assist';
-import { clickEl, clickable, isChecked, pickRadio, qa, resolveInput, setInput, setSelect, sleep, textOf, waitForUrl, waitUntil } from '../dom';
+import { clickEl, clickable, isChecked, isEnabled, isVisible, pickRadio, qa, resolveInput, setInput, setSelect, sleep, textOf, waitForResource, waitUntil } from '../dom';
 import { billingRoot, findEl, findField, findSelect, waitEl, waitEnabled, type Key } from '../find';
 
 const REVIEW_URL = /_s=Review/i;
+const CHECKOUTX = /\/shop\/checkoutx/;
+/** Сколько ждать хоть какой-то реакции страницы на клик Review/Continue, прежде чем повторить или звать человека. */
+const QUIET_MS = 6000;
 
 export async function paymentStep(c: Ctl): Promise<void> {
   const sig = c.signal;
@@ -93,8 +96,7 @@ async function onCardDeclined(c: Ctl): Promise<void> {
     return;
   }
   c.log(`Apple: оплата картой не прошла («${msg}») — переключаюсь на Apple Pay`, 'warn');
-  if (!isChecked(ap)) pickRadio(ap);
-  await sleep(300, sig);
+  await chooseRadio(c, ap, 'Apple Pay');
   c.ts.payMethod = 'applepay';
   c.ts.applePayTried = false;
   c.ts.applePayTries = 0;
@@ -282,17 +284,132 @@ async function onTurn(c: Ctl): Promise<void> {
   const btn = await waitEnabled('reviewButton', c.t.checkoutPageWaitMs, sig);
   if (!btn) { c.log('кнопка Review Your Order не активна — дальше человек', 'warn'); return; }
   if (findEl('termsCheckbox')) await acceptTerms(c, 1000); // иногда условия уже на Billing
-  c.setState('PAYING', 'Review Your Order');
-  clickEl(btn);
-  const went = await waitForUrl(REVIEW_URL, c.t.continueWaitMs, sig);
-  // смена _s=Review → watchRoute перезапустит диспетчер (reviewStep → onReviewTurn) с новым signal;
-  // продолжать отсюда нельзя: этот шаг вот-вот прервут, и клик Apple Pay оборвался бы на полпути
-  if (went) return;
-  {
-    const err = /Please\s[^.\n]{3,120}|unexpected error|something went wrong/i.exec(document.body?.innerText ?? '')?.[0];
-    c.setState('PAYING', `Review не открылся${err ? `: ${err}` : ''} — проверь форму и нажми Review сам`);
-    c.overlay.banner(`${payLabel(c)} · проверь форму оплаты и нажми Review Your Order`, err ?? 'Расширение дальше не жмёт', 'warn');
+  await clickToReview(c, btn);
+}
+
+type AfterClick = 'review' | 'sheet' | 'error' | 'slow';
+
+/**
+ * Billing → Review. Live 15.10: после отказа карты выбран Apple Pay, кнопка (подпись «Continue») нажата, Review не открылся,
+ * вкладка молча ждала 60 с. Теперь после клика ждём Review, лист Apple Pay или ошибку формы; пока страница работает
+ * (кнопка занята, идут запросы checkoutx) — ждём дальше, до continueWaitMs. QUIET_MS тишины — пишем в лог, что на странице,
+ * повторяем один раз (Apple Pay выбираем заново, если слетел), потом подсвечиваем кнопку и зовём человека (звук, окно вперёд).
+ * Смена _s=Review → watchRoute перезапустит диспетчер (reviewStep → onReviewTurn) с новым signal — отсюда сразу выходим.
+ */
+async function clickToReview(c: Ctl, first: HTMLElement): Promise<void> {
+  const sig = c.signal;
+  const ap = () => c.ts.payMethod === 'applepay';
+  let btn = first;
+  let name = buttonName(btn);
+  let r: AfterClick | null = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    c.setState('PAYING', attempt === 1 ? `жму «${name}» → Review` : `жму «${name}» ещё раз`);
+    r = await clickAndWatch(c, btn, () => clickEl(btn));
+    if (r) break;
+    c.log(`«${name}» нажата, за ${QUIET_MS / 1000} с страница не ответила: ${billingDiag()}`, 'warn');
+    if (attempt === 2) break;
+    if (ap()) { const radio = findEl('payApplePay'); if (radio && radioState(radio) === false) { c.log('Apple Pay не выбран — выбираю ещё раз', 'warn'); await chooseRadio(c, radio, 'Apple Pay'); } }
+    await sleep(800, sig);
+    btn = (await waitEnabled('reviewButton', 3000, sig)) ?? btn;
+    name = buttonName(btn);
   }
+  if (!r) {
+    // клик расширения страница не приняла — жмёт человек (assistClick ждёт настоящий клик); после него смотрим исход так же
+    r = await clickAndWatch(c, btn, () => assistClick(c, clickable(btn), 'Оплата', ap() ? `Нажми «${name}» — дальше расширение откроет Apple Pay` : `Нажми «${name}»`));
+  }
+  if (r === 'review') return;
+  if (r === 'sheet') {
+    c.log('лист Apple Pay открылся с Billing — сканируй код телефоном');
+    c.setState('PAYING', 'Apple Pay: лист открыт — сканируй код телефоном');
+    c.overlay.banner(`${payLabel(c)} · сканируй код телефоном и подтверди`, 'Расширение ничего не подтверждает', 'warn');
+    return;
+  }
+  const err = pageErrors();
+  c.log(`Review не открылся${err ? `: ${err}` : r === 'slow' ? ` за ${c.t.continueWaitMs / 1000} с` : ''} — дальше человек`, 'warn');
+  c.setState('PAYING', `Review не открылся${err ? `: ${err}` : ''} — проверь форму и нажми «${name}» сам`);
+  c.overlay.banner(`${payLabel(c)} · проверь форму оплаты и нажми «${name}»`, err || 'Расширение дальше не жмёт', 'warn');
+}
+
+/** Клик (расширения или человека) и исход: null — QUIET_MS тишины, страница клик не заметила. */
+async function clickAndWatch(c: Ctl, btn: HTMLElement, click: () => void | Promise<void>): Promise<AfterClick | null> {
+  const errBefore = pageErrors();
+  await click();
+  const t0 = performance.now();
+  const focused = document.hasFocus(); // сразу после клика: лист (окно браузера) открывается позже
+  const end = Date.now() + c.t.continueWaitMs;
+  let quietEnd = Date.now() + QUIET_MS;
+  for (;;) {
+    if (REVIEW_URL.test(location.href)) return 'review';
+    // лист Apple Pay прямо с Billing; только если страница была в фокусе в момент клика (открытый popup — не лист)
+    if (c.ts.payMethod === 'applepay' && focused && sheetOpen(c)) return 'sheet';
+    const err = pageErrors();
+    if (err && err !== errBefore) return 'error';
+    if (pageBusy(btn, t0)) quietEnd = Date.now() + QUIET_MS;
+    if (Date.now() >= end) return 'slow';
+    if (Date.now() >= quietEnd) return null;
+    await sleep(150, c.signal);
+  }
+}
+
+/** Страница работает после клика: кнопка занята / крутится или только что завершился запрос checkoutx. */
+function pageBusy(btn: HTMLElement, t0: number): boolean {
+  const b = clickable(btn);
+  if (b.isConnected && (!isEnabled(b) || b.getAttribute('aria-busy') === 'true' || b.querySelector('[class*="spinner" i], [class*="loading" i]'))) return true;
+  const now = performance.now();
+  return performance.getEntriesByType('resource').some((e) => CHECKOUTX.test(e.name) && e.startTime >= t0 - 300 && (e as PerformanceResourceTiming).responseEnd >= now - 1000);
+}
+
+function buttonName(btn: HTMLElement): string {
+  return textOf(clickable(btn)).slice(0, 40) || 'Review Your Order';
+}
+
+/** Видимые ошибки формы (без плашки об отказе карты — она висит с прошлой попытки). */
+function pageErrors(): string {
+  const out: string[] = [];
+  for (const el of qa<HTMLElement>('[role="alert"], [class*="error" i]')) {
+    const t = textOf(el);
+    if (!t || t.length > 300 || !isVisible(el) || SEL.txtCardDeclined.test(t) || out.some((x) => x.includes(t) || t.includes(x))) continue;
+    out.push(t);
+  }
+  if (out.length) return out.join(' | ').slice(0, 200);
+  const body = (document.body?.innerText ?? '').replace(/[^\n]*payment authori[sz]ation[^\n]*/gi, '');
+  return /Please (enter|select|complete|provide|choose|fill)[^.\n]{0,120}|unexpected error|something went wrong/i.exec(body)?.[0] ?? '';
+}
+
+/** Что на Billing, когда клик не сработал: выбранный способ, кнопка, фокус — по логу видно, что чинить. */
+function billingDiag(): string {
+  const ap = findEl('payApplePay');
+  const card = findEl('payCard');
+  const method = ap && radioState(ap) ? 'Apple Pay' : card && radioState(card) ? 'карта' : 'не выбран';
+  const b = findEl('reviewButton');
+  const btn = b ? `«${buttonName(b)}» [${b.getAttribute('data-autom') ?? clickable(b).getAttribute('data-autom') ?? '—'}${isEnabled(clickable(b)) ? '' : ', не активна'}]` : 'не найдена';
+  const err = pageErrors();
+  return `способ оплаты ${method}; кнопка ${btn}; ошибок ${err ? `«${err}»` : 'нет'}; страница ${document.hasFocus() ? 'в фокусе' : 'без фокуса'}`;
+}
+
+/** radio выбран? input → checked, свой контрол → aria-checked; null — не понять. */
+function radioState(el: Element): boolean | null {
+  const input = resolveInput(el);
+  if (input) return input.checked;
+  const a = (el.closest('[aria-checked]') ?? el.querySelector('[aria-checked]'))?.getAttribute('aria-checked');
+  return a == null ? null : a === 'true';
+}
+
+/**
+ * Выбрать способ оплаты и убедиться, что выбор принят: label, не отметился — сам input. Потом ждём запрос checkoutx
+ * (Apple перестраивает форму под способ) — кнопка, нажатая раньше, может ничего не сделать.
+ */
+async function chooseRadio(c: Ctl, el: HTMLElement, what: string): Promise<boolean> {
+  const sig = c.signal;
+  if (radioState(el) === true) return true;
+  const t0 = performance.now();
+  pickRadio(el);
+  let ok = await waitUntil(() => radioState(el) !== false || null, 1500, sig);
+  if (!ok) { resolveInput(el)?.click(); ok = await waitUntil(() => radioState(el) !== false || null, 1500, sig); }
+  if (!ok) { c.log(`radio «${what}» не отметился после двух кликов`, 'warn'); return false; }
+  await waitForResource(CHECKOUTX, t0, 3000, sig);
+  await sleep(500, sig);
+  return true;
 }
 
 /** Центр кнопки Apple Pay в координатах viewport — для настоящего клика через chrome.debugger из SW (FLEET-SPEC §8). */

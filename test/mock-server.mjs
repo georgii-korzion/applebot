@@ -33,6 +33,8 @@
 //   BUSY_META=0            у заглушки «Almost there» есть <meta http-equiv=refresh content=N> (0 — нет)
 //   APPLEPAY_TRUSTED_ONLY=0  «Continue with Pay» открывает лист только по настоящему клику (event.isTrusted)
 //   APPLEPAY_SHEET_TTL_MS=0  лист Apple Pay сам закрывается через N мс без заказа (повтор QR)
+//   DECLINE_CONTINUE_TRUSTED=0  после отказа карты (CARD_DECLINE) кнопка Billing «Continue» с Apple Pay реагирует только на
+//                          настоящий клик (live 15.10: расширение нажало Continue — Review не открылся)
 //   PROXY_REQUIRED_HEADER=0  без заголовка X-Mock-Proxy все запросы → 403 (e2e поднимает локальный прокси, который его ставит)
 //   FM_STATUS=0            fulfillment-messages отвечает этим HTTP-статусом (541 — как Apple IP дата-центра, живой тест 12.10)
 //   ATB_STATUS=0           Add to Bag (add-to-cart=) отвечает этим статусом страницей без разметки (541)
@@ -72,6 +74,7 @@ const S = {
   busyMeta: num(env.BUSY_META, 0),
   applePayTrustedOnly: env.APPLEPAY_TRUSTED_ONLY === '1',
   applePaySheetTtlMs: num(env.APPLEPAY_SHEET_TTL_MS, 0),
+  declineContinueTrusted: env.DECLINE_CONTINUE_TRUSTED === '1',
   proxyRequiredHeader: env.PROXY_REQUIRED_HEADER === '1',
   fmStatus: num(env.FM_STATUS, 0),
   atbStatus: num(env.ATB_STATUS, 0),
@@ -301,7 +304,7 @@ function checkoutPage(s) {
     stores: STORES.map((x, i) => ({ ...x, available: !S.unavailableStores.includes(x.id) && pickupOpen(), dist: (2.1 + i * 7.3).toFixed(1) })),
     cities: CITIES, defaultCity: S.defaultCity, dates, slots: Object.fromEntries(dates.map((d, i) => [d.day, slotsFor(i, d.day)])),
     items: bagJson(s).items, cardDelayMs: S.cardDelayMs, threeDsMs: S.threeDsMs, cardDecline: S.cardDecline,
-    apTrustedOnly: S.applePayTrustedOnly, apSheetTtlMs: S.applePaySheetTtlMs,
+    apTrustedOnly: S.applePayTrustedOnly, apSheetTtlMs: S.applePaySheetTtlMs, declineContTrusted: S.declineContinueTrusted,
   };
   return page(s, 'Checkout - Apple (AE)', `<div id="app"></div><script id="boot" type="application/json">${JSON.stringify(boot)}</script>`, { scripts: `<script>(${checkoutClient.toString()})();</script>` });
 }
@@ -469,7 +472,7 @@ function checkoutClient() {
       + '<input class="vh" type="radio" name="billingOptions" id="bo-c" value="CREDIT" data-autom="checkout-billingOptions-CREDIT"><label for="bo-c">Credit or Debit Card</label>'
       + '<input class="vh" type="radio" name="billingOptions" id="bo-a" value="APPLE_PAY" data-autom="checkout-billingOptions-APPLE_PAY"><label for="bo-a">Apple Pay</label>'
       + '<div id="card"></div><p><input data-autom="form-field-taxRegNumber" placeholder="TRN (optional)"></p>'
-      + '<div id="err" class="rs-error" role="alert"></div><button type="button" data-autom="continue-button-review" id="cont">Review Your Order</button>'));
+      + '<div id="err" class="rs-error" role="alert"></div><button type="button" data-autom="continue-button-review" id="cont">' + (st.declineMsg ? 'Continue' : 'Review Your Order') + '</button>'));
     app.querySelectorAll('input[name=billingOptions]').forEach(function (i) {
       i.addEventListener('change', function () {
         st.method = i.value;
@@ -488,7 +491,9 @@ function checkoutClient() {
         if (i.value === 'CREDIT' && B.cardDelayMs > 0) { c.innerHTML = '<p class="loading">Loading payment form…</p>'; setTimeout(mount, B.cardDelayMs); } else mount();
       });
     });
-    document.getElementById('cont').onclick = function () {
+    document.getElementById('cont').onclick = function (e) {
+      // DECLINE_CONTINUE_TRUSTED: после отказа карты Continue с Apple Pay — только настоящий клик (счётчик не через checkoutx)
+      if (B.declineContTrusted && st.declineMsg && st.method === 'APPLE_PAY' && !(e && e.isTrusted)) { post('/ae/shop/mockx?_a=billingContinueUntrusted', {}); return; }
       if (!st.method) return setErr('Please select a payment method.');
       if (st.method === 'CREDIT' && !/^\d{12,19}$/.test((st.card.cardNumber || '').replace(/\s/g, ''))) return setErr('Please enter a valid card number.');
       if (st.method === 'CREDIT' && !(st.bill.firstName && st.bill.lastName && st.bill.street && st.bill.street2 && st.bill.city)) return setErr('Please complete this mandatory field.');
@@ -666,7 +671,7 @@ const server = http.createServer(async (req, res) => {
       if (!s.bag.length) { res.writeHead(302, { location: '/ae/shop/bag' }); return res.end(); }
       return send(res, checkoutPage(s));
     }
-    if (path.startsWith('/ae/shop/checkoutx')) {
+    if (path.startsWith('/ae/shop/checkoutx') || path === '/ae/shop/mockx') {
       const body = Object.fromEntries(new URLSearchParams(await readBody(req)));
       const a = q.get('_a');
       await sleep(150);
@@ -701,6 +706,7 @@ const server = http.createServer(async (req, res) => {
       if (a === 'termsAccepted') { s.checkout.termsAccepted = true; return json(res, { ok: true }); }
       if (a === 'applePaySheet') { s.checkout.applePayClicks = (s.checkout.applePayClicks ?? 0) + 1; s.checkout.applePayTrusted = (s.checkout.applePayTrusted ?? 0) + (body.trusted === '1' ? 1 : 0); return json(res, { ok: true }); }
       if (a === 'applePayUntrusted') { s.checkout.applePayUntrusted = (s.checkout.applePayUntrusted ?? 0) + 1; return json(res, { ok: true }); }
+      if (a === 'billingContinueUntrusted') { s.checkout.billingContinueUntrusted = (s.checkout.billingContinueUntrusted ?? 0) + 1; return json(res, { ok: true }); }
       if (a === 'applePaySheetClosed') { s.checkout.applePaySheetClosed = (s.checkout.applePaySheetClosed ?? 0) + 1; return json(res, { ok: true }); }
       if (a === 'placeOrder') {
         s.checkout.placeOrderClicks = (s.checkout.placeOrderClicks ?? 0) + 1;

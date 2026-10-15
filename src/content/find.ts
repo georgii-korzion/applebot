@@ -64,7 +64,8 @@ export const F = {
   billCity: { sel: SEL.shipCity, alt: ['select[name*="billing" i][name*="city" i]', 'select[name*="city" i]', 'select[autocomplete="address-level2"]', 'select[data-autom*="city" i]'], attr: /\bcity\b/i, kind: 'select' },
   // Review: «Place Order» (нажимаем только при autoPlaceOrder, один раз)
   placeOrderButton: { sel: '[data-autom="continue-button-placeorder"]', alt: ['[data-autom*="placeorder" i]', '[data-autom*="place-order" i]', 'button[data-autom*="continue-button" i][data-autom*="order" i]'], text: /^place (your )?order$/i, kind: 'button' },
-  reviewButton: { sel: SEL.reviewButtonObserveOnly, alt: ['button[data-autom*="review" i]'], text: /^review your order/i, kind: 'button' },
+  // live 15.10: после отказа карты та же кнопка подписана «Continue»
+  reviewButton: { sel: SEL.reviewButtonObserveOnly, alt: ['button[data-autom*="review" i]'], text: /^review your order|^continue$/i, kind: 'button' },
   // Review (18 Pro, live): кнопка «Continue with Pay» (логотип Apple — картинка, в тексте его нет)
   applePayButton: { sel: '[data-autom="apple-pay-button"]', alt: ['apple-pay-button', 'button[data-autom*="apple-pay" i]', 'button[aria-label*="Apple Pay" i]', '[class*="apple-pay-button" i]', 'button[class*="applepay" i]'], text: /^(pay with |continue with |buy with )?(apple ?|\uF8FF ?)?pay$/i, kind: 'button' },
   // Review: «I have read, understand, and agree to the Terms & Conditions…» — без галочки Apple не пускает к оплате

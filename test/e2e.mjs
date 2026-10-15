@@ -665,9 +665,43 @@ scenarios['card-declined'] = async () => {
     assert.equal(ck.method, 'APPLE_PAY', 'после отказа выбран Apple Pay');
     assert.ok(/оплата картой не прошла .*переключаюсь на Apple Pay/.test(log), 'лог: переключение на Apple Pay');
     assert.ok(/PAYING: карта отклонена → Apple Pay/.test(log), 'сразу наш ход, без очереди');
+    assert.ok(/PAYING: жму «Continue» → Review/.test(log), 'кнопка после отказа — «Continue»');
     assert.ok(tab && tab.state !== 'PAY_QUEUE' && /Apple Pay/.test(tab.detail ?? ''), `вкладка на Apple Pay: ${tab?.state} ${tab?.detail}`);
     assert.equal(ms.orders.length, 0, 'заказа нет — Apple Pay подтверждает человек');
   } catch (e) { await dumpOnFail(profiles, 'card-declined'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
+};
+
+/**
+ * Живой тест 15.10: после отказа карты выбран Apple Pay, расширение нажало Billing «Continue» — Review не открылся, вкладка
+ * молча ждала. Мок DECLINE_CONTINUE_TRUSTED: программный клик Continue игнорируется. Ждём: два клика расширения, в логе —
+ * что на странице, затем подсветка Continue (ASSIST); «человек» жмёт → Review → лист Apple Pay.
+ */
+scenarios['card-declined-human'] = async () => {
+  await startServers({ OPEN_AFTER: '0', BUSY_FIRST: '0', CARD_DECLINE: '1', DECLINE_CONTINUE_TRUSTED: '1' });
+  const p = await launchProfile('card-declined-human');
+  const profiles = [p];
+  try {
+    await p.setConfig(makeConfig('drop-1', [makeOrder('A', 0, ['drop-1'], { racersPerProfile: 1, card: CARD, payment: 'manual', autoPlaceOrder: true })], { openInSec: -5 }));
+    assert.ok((await p.cmd({ cmd: 'start' })).ok);
+    const st = await waitFor(async () => { const s = await p.status(); return s.tabs.some((t) => t.state === 'ASSIST') ? s : null; }, 90000, 'ASSIST: нажми Continue', 500);
+    const tab = st.tabs.find((t) => t.state === 'ASSIST');
+    const log = await p.log();
+    const ck = (await mockState()).sessions.find((x) => x.checkout.declined).checkout;
+    say(`card-declined-human: программных кликов Continue ${ck.billingContinueUntrusted}, вкладка ${tab.state}: ${tab.detail}`);
+    assert.equal(ck.billingContinueUntrusted, 2, 'расширение нажало Continue дважды, мок оба раза не принял');
+    assert.match(tab.detail, /Нажми «Continue» — дальше расширение откроет Apple Pay/);
+    assert.ok(/страница не ответила: способ оплаты Apple Pay; кнопка «Continue» \[continue-button-review\]/.test(log), 'в логе — что на странице');
+    assert.ok(/PAYING: жму «Continue» ещё раз/.test(log), 'повтор клика');
+    const pg = p.appleTabs().find((x) => /_s=Billing/.test(x.url()));
+    assert.match(await pg.locator('#cont').evaluate((b) => b.style.outline), /solid/, 'Continue подсвечена');
+    await pg.click('#cont'); // «человек»
+    await waitFor(async () => /лист Apple Pay открыт/.test(await p.log()) || null, 30000, 'после клика человека — Review → лист Apple Pay', 500);
+    const ms = await mockState();
+    const ck2 = ms.sessions.find((x) => x.checkout.declined).checkout;
+    assert.equal(ck2.method, 'APPLE_PAY');
+    assert.equal(ck2.placeOrderClicks, 1, 'Place Order картой — один раз');
+    assert.equal(ms.orders.length, 0, 'заказа нет — Apple Pay подтверждает человек');
+  } catch (e) { await dumpOnFail(profiles, 'card-declined-human'); throw e; } finally { await closeProfiles(profiles); await stopServers(); }
 };
 
 // ---------- флот (FLEET-SPEC §12.3) ----------
@@ -1316,7 +1350,7 @@ scenarios['baked-profile'] = async () => {
 };
 
 const list = want.length ? want : [
-  'single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-no-billing', 'card-fallback', 'auto-place', 'card-declined',
+  'single', 'hostile', 'assist', 'prepare', 'queue', 'checkout-errors', 'renamed-selectors', 'applepay-turn', 'card-slow', 'card-no-billing', 'card-fallback', 'auto-place', 'card-declined', 'card-declined-human',
   'closed-backsoon', 'closed-redirect', 'closed-offsite', 'closed-blank', 'atb-before-open', 'atb-wait-open', 'fm-541', 'atb-541', 'pickup-retry', 'restock', 'baked-profile',
   'ordered-stays', 'no-cross-profile-blocking', 'fleet-identity', 'fleet-strategies', 'hold-fallback', 'hub-down', 'config-update', 'proxy', 'applepay-retry', 'card-slow-90s', 'acceptance',
 ];
