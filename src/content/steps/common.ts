@@ -1,5 +1,5 @@
 // Общие переходы состояний вкладки и ожидание по стратегии (FLEET-SPEC §4.2 через waitPlan).
-import { phaseOf, type Strategy } from '../../shared/config';
+import { msToPhaseEdge, phaseOf, type Strategy } from '../../shared/config';
 import { waitPlan } from '../../shared/strategy';
 import type { Ctl } from '../ctl';
 import type { PageInfo } from '../classify';
@@ -87,7 +87,9 @@ export function busyBackoff(c: Ctl, page?: PageInfo): void {
     c.timer(((page?.metaRefreshSec ?? 60) + 10) * 1000, () => c.rerun('busy-meta-recheck'));
     return;
   }
-  const ms = plan.reload === 0 ? 0 : Math.max(c.jit(plan.reload), c.t.minReloadMs);
+  let ms = plan.reload === 0 ? 0 : Math.max(c.jit(plan.reload), c.t.minReloadMs);
+  // refresh до старта: рефреш раз в минуты, но смену фазы (openAt−60 с) и сам openAt не проспать
+  if (ms && effectiveStrategy(c) === 'refresh' && !c.os.openedAt) ms = Math.min(ms, Math.max(msToPhaseEdge(c.cfg, c.os.openedAt), c.t.minReloadMs));
   c.setState('BUSY', `заглушка Apple (${n + 1}) — ${plan.reason}${ms ? `, рефреш через ${(ms / 1000).toFixed(1)} с` : ''}`);
   c.scheduleReload(ms, 'busy');
 }

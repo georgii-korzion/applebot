@@ -150,7 +150,7 @@ export const DEFAULT_TIMING: Timing = {
   pollMs: 1200, preOpenReloadMs: 3000, postOpenReloadMs: 1500, minReloadMs: 1500,
   jitterPct: 30, graceSec: 20, atbTimeoutMs: 60000, atb404BackoffMs: 1500,
   atb404MaxInRow: 5, manualPayTimeoutSec: 1800, assistAfterFailures: 3,
-  closedReloadMs: 30000, queueMaxWaitSec: 180, holdQueueWaitSec: 1800, holdBusyWaitSec: 120, holdFallbackSec: 0, holdReloadMs: 60000,
+  closedReloadMs: 120000, queueMaxWaitSec: 180, holdQueueWaitSec: 1800, holdBusyWaitSec: 120, holdFallbackSec: 0, holdReloadMs: 60000,
   hydrateWaitMs: 20000, checkoutErrorRetries: 2, cardWaitMs: 90000, checkoutPageWaitMs: 60000, continueWaitMs: 60000,
   armedPollMs: 20000, pickupWaitMin: 30, pickupRetryMs: 3000, restockMin: 60, restockRetryMs: 5000,
 };
@@ -477,7 +477,15 @@ export function parseProxyLine(line: string): ProxyCfg | null {
 export function closedReloadMs(cfg: Config, openedAt: number | undefined, now = Date.now()): number {
   const t = cfg.timing;
   const ms = { armed: t.closedReloadMs, pre: t.preOpenReloadMs, post: t.postOpenReloadMs }[phaseOf(cfg, openedAt, now)];
-  return Math.max(jitter(ms, t.jitterPct), t.minReloadMs);
+  return Math.min(Math.max(jitter(ms, t.jitterPct), t.minReloadMs), Math.max(msToPhaseEdge(cfg, openedAt, now), t.minReloadMs));
+}
+
+/** Сколько до смены фазы (openAt−60 с, потом openAt); после openAt — Infinity. Рефреш до старта (минуты) её не проспит. */
+export function msToPhaseEdge(cfg: Config, openedAt: number | undefined, now = Date.now()): number {
+  const openAt = Date.parse(cfg.openAt);
+  const phase = phaseOf(cfg, openedAt, now);
+  if (!Number.isFinite(openAt) || phase === 'post') return Infinity;
+  return (phase === 'armed' ? openAt - 60_000 : openAt) - now;
 }
 
 export function jitter(ms: number, pct: number): number {

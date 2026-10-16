@@ -131,7 +131,9 @@ test('фазы и рефреш закрытого магазина', () => {
   assert.equal(phaseOf(cfg, openAt - 90_000, openAt - 90_000), 'post', 'OPEN раньше openAt');
   for (let i = 0; i < 100; i++) {
     const a = closedReloadMs(cfg, undefined, openAt - 3_600_000);
-    assert.ok(a >= 21000 && a <= 39000, `armed ${a}`);
+    assert.ok(a >= 84000 && a <= 156000, `armed ${a} (раз в ~2 мин, 5.0.5)`);
+    const e = closedReloadMs(cfg, undefined, openAt - 70_000);
+    assert.ok(e >= 1500 && e <= 10_000, `armed у края фазы ${e} — рефреш не позже openAt−60 с`);
     const p = closedReloadMs(cfg, undefined, openAt - 10_000);
     assert.ok(p >= 2100 && p <= 3900, `pre ${p}`);
     const q = closedReloadMs(cfg, undefined, openAt + 5000);

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Apple Drop Assistant",
-  "version": "5.0.4",
+  "version": "5.0.5",
   "description": "Pre-order assistant for apple.com/ae: waits for the drop, adds to bag, walks guest checkout to payment; per-profile proxy and hub telemetry for a fleet of profiles. Payment is always confirmed by a human.",
   "minimum_chrome_version": "120",
   "permissions": [

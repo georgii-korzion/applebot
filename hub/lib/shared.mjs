@@ -95,7 +95,7 @@ var DEFAULT_TIMING = {
   atb404MaxInRow: 5,
   manualPayTimeoutSec: 1800,
   assistAfterFailures: 3,
-  closedReloadMs: 3e4,
+  closedReloadMs: 12e4,
   queueMaxWaitSec: 180,
   holdQueueWaitSec: 1800,
   holdBusyWaitSec: 120,
